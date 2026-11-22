@@ -1,14 +1,22 @@
 // Starts the local dual-backend databases, applies every migration to both, gives the plain
 // PostgreSQL database its least-privilege app role, and writes .env.test.local.
 //
-// Usage: node scripts/dev-db/setup.mjs [--reset]
-//   --reset  drops both databases' volumes first (all local test data is lost)
+// Usage: node scripts/dev-db/setup.mjs [--reset | --down]
+//   --reset  drops this checkout's database volumes first (all local test data is lost)
+//   --down   stops this checkout's stack and drops its volumes, then exits
+//
+// Each checkout (git worktree) runs its own stack: Compose project `polynovea-dev-<id>` and ports
+// derived from the checkout's path (override with POLYNOVEA_DEV_PORT_BASE before the first run), both
+// recorded in .env.test.local. Sessions in different worktrees used to share one stack, so a reset or
+// a PostgREST restart in one swapped the databases under the other's running tests. Setup also waits
+// until PostgREST serves the newest migration, and the dual tests refuse to start until both
+// databases are on it (lib/db/testing/dualGlobalSetup.ts).
 //
 // Local test only. The generated passwords and JWT secret live in .env.test.local (gitignored)
 // and protect containers bound to 127.0.0.1. Never point this script at a real database.
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
 import { bootstrapInstallRoles } from "../../lib/db/roles.mjs";
@@ -17,6 +25,7 @@ const root = process.cwd();
 const envFile = path.join(root, ".env.test.local");
 const composeFile = path.join(root, "scripts", "dev-db", "compose.yml");
 const reset = process.argv.includes("--reset");
+const down = process.argv.includes("--down");
 
 function readEnvFile(file) {
   const values = {};
@@ -48,25 +57,43 @@ const env = {
   POLYNOVEA_DEV_SUPABASE_DB_PASSWORD: existing.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD || secret(),
   POLYNOVEA_DEV_JWT_SECRET: existing.POLYNOVEA_DEV_JWT_SECRET || randomBytes(32).toString("hex"),
 };
+// This checkout's stack: a stable ID and port block from its path, kept once chosen.
+const checkoutHash = createHash("sha256").update(path.resolve(root).toLowerCase()).digest();
+const stackId = existing.POLYNOVEA_DEV_STACK || checkoutHash.toString("hex").slice(0, 8);
+const portBase = Number(existing.POLYNOVEA_DEV_PORT_BASE || process.env.POLYNOVEA_DEV_PORT_BASE || 26000 + (checkoutHash.readUInt16BE(0) % 300) * 10);
+if (!Number.isInteger(portBase) || portBase < 1024 || portBase > 65000) throw new Error("POLYNOVEA_DEV_PORT_BASE must be an integer between 1024 and 65000");
+const stack = {
+  POLYNOVEA_DEV_STACK: stackId,
+  POLYNOVEA_DEV_PORT_BASE: String(portBase),
+  POLYNOVEA_DEV_PLAIN_PORT: String(portBase),
+  POLYNOVEA_DEV_SUPABASE_PORT: String(portBase + 1),
+  POLYNOVEA_DEV_GATEWAY_PORT: String(portBase + 2),
+};
+const project = `polynovea-dev-${stackId}`;
+const plainHost = `127.0.0.1:${stack.POLYNOVEA_DEV_PLAIN_PORT}`;
+const supabaseHost = `127.0.0.1:${stack.POLYNOVEA_DEV_SUPABASE_PORT}`;
+const gatewayUrl = `http://127.0.0.1:${stack.POLYNOVEA_DEV_GATEWAY_PORT}`;
+
 const now = Math.floor(Date.now() / 1000);
 const serviceRoleKey = signJwt({ role: "service_role", iss: "supabase-dev", iat: now, exp: now + 10 * 365 * 24 * 3600 }, env.POLYNOVEA_DEV_JWT_SECRET);
 const anonKey = signJwt({ role: "anon", iss: "supabase-dev", iat: now, exp: now + 10 * 365 * 24 * 3600 }, env.POLYNOVEA_DEV_JWT_SECRET);
 
-const adminUrl = `postgresql://polynovea_admin:${env.POLYNOVEA_DEV_ADMIN_PASSWORD}@127.0.0.1:25432/polynovea`;
+const adminUrl = `postgresql://polynovea_admin:${env.POLYNOVEA_DEV_ADMIN_PASSWORD}@${plainHost}/polynovea`;
 // Stand-in for the RDS master user / Azure administrator: CREATEROLE and CREATEDB, not a superuser.
-const installerUrl = `postgresql://polynovea_installer:${env.POLYNOVEA_DEV_INSTALLER_PASSWORD}@127.0.0.1:25432/polynovea`;
-const ownerUrl = `postgresql://polynovea_owner:${env.POLYNOVEA_DEV_OWNER_PASSWORD}@127.0.0.1:25432/polynovea`;
-const appUrl = `postgresql://polynovea_app:${env.POLYNOVEA_DEV_APP_PASSWORD}@127.0.0.1:25432/polynovea`;
-const supabaseDbUrl = `postgresql://postgres:${env.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD}@127.0.0.1:25433/postgres`;
-const supabaseAdminUrl = `postgresql://supabase_admin:${env.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD}@127.0.0.1:25433/postgres`;
+const installerUrl = `postgresql://polynovea_installer:${env.POLYNOVEA_DEV_INSTALLER_PASSWORD}@${plainHost}/polynovea`;
+const ownerUrl = `postgresql://polynovea_owner:${env.POLYNOVEA_DEV_OWNER_PASSWORD}@${plainHost}/polynovea`;
+const appUrl = `postgresql://polynovea_app:${env.POLYNOVEA_DEV_APP_PASSWORD}@${plainHost}/polynovea`;
+const supabaseDbUrl = `postgresql://postgres:${env.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD}@${supabaseHost}/postgres`;
+const supabaseAdminUrl = `postgresql://supabase_admin:${env.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD}@${supabaseHost}/postgres`;
 
 const output = {
   ...env,
+  ...stack,
   // Direct ("postgres") backend: plain PostgreSQL 16, connected as the app role that cannot run DDL.
   POLYNOVEA_TEST_POSTGRES_URL: appUrl,
   POLYNOVEA_TEST_POSTGRES_OWNER_URL: ownerUrl,
   // Supabase backend: PostgREST over Supabase's PostgreSQL image.
-  POLYNOVEA_TEST_SUPABASE_URL: "http://127.0.0.1:25480",
+  POLYNOVEA_TEST_SUPABASE_URL: gatewayUrl,
   POLYNOVEA_TEST_SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
   POLYNOVEA_TEST_SUPABASE_ANON_KEY: anonKey,
   POLYNOVEA_TEST_SUPABASE_DB_URL: supabaseDbUrl,
@@ -78,9 +105,19 @@ writeFileSync(
   { mode: 0o600 },
 );
 
-const compose = (...args) => execFileSync("docker", ["compose", "-f", composeFile, "--env-file", envFile, ...args], { stdio: "inherit" });
+const compose = (...args) => execFileSync("docker", ["compose", "-p", project, "-f", composeFile, "--env-file", envFile, ...args], { stdio: "inherit" });
+if (down) {
+  compose("down", "-v");
+  console.log(`Stopped ${project} and removed its volumes.`);
+  process.exit(0);
+}
 if (reset) compose("down", "-v");
-compose("up", "-d", "--wait");
+console.log(`Stack ${project}: plain PostgreSQL ${plainHost}, Supabase PostgreSQL ${supabaseHost}, gateway ${gatewayUrl}`);
+try {
+  compose("up", "-d", "--wait");
+} catch (error) {
+  throw new Error(`Could not start ${project}. If a port is taken, set POLYNOVEA_DEV_PORT_BASE to a free block of 3 ports and remove POLYNOVEA_DEV_PORT_BASE from .env.test.local.`, { cause: error });
+}
 
 function runMigrations(databaseUrl) {
   execFileSync(process.execPath, ["scripts/run-migrations.mjs", "--all"], {
@@ -149,5 +186,28 @@ await withClient(supabaseAdminUrl, async (client) => {
 runMigrations(supabaseDbUrl);
 await withClient(supabaseDbUrl, (client) => client.query("notify pgrst, 'reload schema'"));
 compose("restart", "postgrest", "gotrue", "rest-gateway");
+await waitForPostgrest();
 
 console.log("\nLocal databases ready. Test settings written to .env.test.local.");
+
+// PostgREST reloads its schema cache asynchronously after a restart; a test that reads through it
+// before that finishes can see errors or stale tables. Wait until it serves the newest migration.
+async function waitForPostgrest() {
+  const newest = readdirSync(path.join(root, "supabase", "migrations")).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort().at(-1);
+  const url = `${gatewayUrl}/rest/v1/polynovea_migration_ledger?select=filename&order=filename.desc&limit=1`;
+  const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+  const deadline = Date.now() + 90_000;
+  let last = "no response";
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { headers });
+      const body = response.ok ? await response.json() : null;
+      if (body?.[0]?.filename === newest) return;
+      last = response.ok ? `latest migration ${body?.[0]?.filename ?? "none"}` : `HTTP ${response.status}`;
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`PostgREST did not serve ${newest} within 90 s (${last}).`);
+}

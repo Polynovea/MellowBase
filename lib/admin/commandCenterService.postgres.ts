@@ -65,24 +65,28 @@ export async function gatherCommandCenterData(workspaceId: string, actorId: stri
       .catch(() => ({ problems: 0 })),
   ]);
 
+  // Every list ends with an id tie-break, as on the Supabase path.
   const [environmentList, recentAudit, recentJobs, recentFindings, recentReleases] = await Promise.all([
     db.selectFrom("workspace_environments")
       .select(["id", "key", "name", "kind", "status", "is_default", "health_json", "last_health_check_at", "deployed_schema_revision"])
       .where("workspace_id", "=", workspaceId)
       .orderBy("is_default", "desc")
       .orderBy("created_at", "asc")
+      .orderBy("id", "asc")
       .limit(200)
       .execute(),
     db.selectFrom("platform_audit_events")
       .select(["id", "action", "entity_type", "entity_id", "metadata_json", "created_at"])
       .where("workspace_id", "=", workspaceId)
       .orderBy("created_at", "desc")
+      .orderBy("id", "desc")
       .limit(10)
       .execute(),
     db.selectFrom("delivery_jobs")
       .select(["id", "kind", "status", "queue_name", "attempt_count", "max_attempts", "last_error_code", "last_error_message", "created_at", "updated_at"])
       .where("workspace_id", "=", workspaceId)
       .orderBy("updated_at", "desc")
+      .orderBy("id", "desc")
       .limit(6)
       .execute(),
     db.selectFrom("content_health_findings")
@@ -90,12 +94,14 @@ export async function gatherCommandCenterData(workspaceId: string, actorId: stri
       .where("workspace_id", "=", workspaceId)
       .where("state", "in", ["open", "acknowledged"])
       .orderBy("last_detected_at", "desc")
+      .orderBy("id", "desc")
       .limit(6)
       .execute(),
     db.selectFrom("releases")
       .select(["id", "name", "status", "scheduled_for", "published_at", "updated_at"])
       .where("workspace_id", "=", workspaceId)
       .orderBy("updated_at", "desc")
+      .orderBy("id", "desc")
       .limit(6)
       .execute(),
   ]);
