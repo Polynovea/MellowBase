@@ -138,6 +138,17 @@ The 12 code areas move in five waves, smallest and least connected first, so the
 
 Taxonomy (24 calls) moved in phase 0. The delivery worker already uses `pg` directly and needs only the new connection settings.
 
+### Phase 1 progress (23 November 2026)
+
+| Merged | PRs | Notes |
+| --- | --- | --- |
+| Roles migration 0067: owner and app roles, a row-level security policy per table for `polynovea_app`, the `postgres` role, mirrored grants, `REVOKE CREATE` | #18 | Review found four defects to fix in migration 0068: role setup fails on RDS and Azure (non-superuser admin), the default revoke of `EXECUTE` has no effect, and Supabase's `anon` and `authenticated` still execute some functions. Tests will bootstrap as a non-superuser admin. |
+| `auth.jwt()` shim removed from database provisioning | #19 | |
+| Shared audit logger dispatches to the direct path | #20 | Follow-up: the Supabase path still skips failed audit inserts silently; a check that moved areas use `recordPlatformEvent` |
+| Wave 1 areas: navigation, routing (routes and redirects), schema, platform | #21, #22, #24, #26, #28 | #28 also fixes roles from another workspace leaking into a member's role keys on the Supabase path; follow-up adds a database constraint on `member_roles` |
+
+All merged at `cb5aece`. On the stack tip: the type-check and lint pass, 802 unit tests and 133 dual-backend tests pass, and the build passes. `npm audit` and Semgrep are clean. Next: the review fix-up PR (migration 0068), then operations, which closes wave 1, then wave 2.
+
 The shared audit logger goes first because every area writes through it. Phase 0 found that it still uses Supabase, so on a database without Supabase the audit events of moved areas are silently dropped. No area counts as moved until its audit events land. The direct-path logger now exists (`lib/platform/audit.postgres.ts`, merged in PR #17: audit row, webhook deliveries and delivery jobs in the caller's transaction) and taxonomy uses it; wave 1 makes every other area call it.
 
 **How each area moves**
