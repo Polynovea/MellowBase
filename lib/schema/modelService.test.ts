@@ -5,14 +5,15 @@ vi.mock("@/lib/admin/serviceRole", () => ({
 }));
 vi.mock("@/lib/platform/audit", () => ({
   logPlatformEvent: vi.fn(),
+  logPlatformEventFor: vi.fn(),
 }));
 
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { logPlatformEventFor } from "@/lib/platform/audit";
 import { applyChange, createModel, type ContentModelRow, type ContentModelVersionRow } from "@/lib/schema/modelService";
 
 const mockCreateServiceRoleClient = vi.mocked(createServiceRoleClient);
-const mockLogPlatformEvent = vi.mocked(logPlatformEvent);
+const mockLogPlatformEvent = vi.mocked(logPlatformEventFor);
 
 /**
  * A minimal stand-in for the Supabase query builder: every chainable method

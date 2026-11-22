@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
-import { getModel } from "@/lib/schema/modelService";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { getModel, updateModelMetadata } from "@/lib/schema/modelService";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
@@ -32,7 +31,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   try {
     const body = await req.json();
-    const patch: Record<string, unknown> = {};
+    const patch: { description?: string; icon?: string; status?: string } = {};
     if (typeof body.description === "string") patch.description = body.description;
     if (typeof body.icon === "string") patch.icon = body.icon;
     if (body.status && ["draft", "active", "archived"].includes(body.status)) patch.status = body.status;
@@ -40,11 +39,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (Object.keys(patch).length === 0) {
       return NextResponse.json({ success: false, data: null, error: "No updatable fields provided", timestamp: ts() }, { status: 400 });
     }
-    patch.updated_at = ts();
-
-    const db = createServiceRoleClient();
-    const { data, error } = await db.from("content_models").update(patch).eq("id", id).select().single();
-    if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
+    let data;
+    try {
+      data = await updateModelMetadata(auth.data!.actor.workspaceId, model.id, { ...patch, updated_at: ts() });
+    } catch (error) {
+      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
+    }
     return NextResponse.json({ success: true, data, error: null, timestamp: ts() });
   } catch (err: unknown) {
     const message = clientErrorMessage(err);
