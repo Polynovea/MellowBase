@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/admin/serviceRole", () => ({ createServiceRoleClient: vi.fn() }));
-vi.mock("@/lib/platform/audit", () => ({ logPlatformEvent: vi.fn(async () => undefined) }));
+vi.mock("@/lib/platform/audit", () => ({ logPlatformEvent: vi.fn(async () => undefined), logPlatformEventFor: vi.fn(async () => undefined) }));
 vi.mock("@/lib/developer/extensionGovernanceService", () => ({
   getActiveExtensionPrivileges: vi.fn(async () => ({
     extension_manifests: {
