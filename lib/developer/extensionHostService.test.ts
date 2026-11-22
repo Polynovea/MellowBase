@@ -29,6 +29,14 @@ describe("extensionFetch SSRF guard", () => {
     expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toBe("https://api.example.com/v1/records?x=1");
   });
 
+  it.each(["https://api.example.com//evil.example/x", "https://api.example.com//169.254.169.254/latest", "https://api.example.com/..//evil.example/"])(
+    "keeps a protocol-relative-looking path on the granted host (%s)",
+    async (url) => {
+      await extensionFetch({ ...base, url, lookup: resolvesTo("93.184.216.34") });
+      expect(new URL(String((fetchMock.mock.calls[0] as unknown[])[0])).host).toBe("api.example.com");
+    },
+  );
+
   it.each(["127.0.0.1", "10.1.2.3", "169.254.169.254", "100.64.0.1", "::1", "fd00::1", "::ffff:192.168.1.1"])(
     "refuses a granted origin whose DNS points at %s",
     async (address) => {

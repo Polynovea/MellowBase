@@ -64,7 +64,13 @@ export async function extensionFetch(params: { workspaceId: string; installation
   const grantedOrigin = new URL(String(requirement.origin));
   if (!(await assertPublicHost(grantedOrigin.hostname, params.lookup ?? defaultLookup))) throw Object.assign(new Error("Extension URL is not permitted"), { status: 403 });
   const origin = grantedOrigin.origin;
-  const response = await fetch(new URL(`${target.pathname}${target.search}`, grantedOrigin), { method: params.method, body: params.body, redirect: "manual" });
+  // Copy only path and query onto the granted origin. Assigning `pathname` can never change the
+  // host, whereas resolving a path like "//evil.example/x" against a base would.
+  const outbound = new URL(origin);
+  outbound.pathname = target.pathname;
+  outbound.search = target.search;
+  if (outbound.origin !== origin) throw Object.assign(new Error("Extension URL is not permitted"), { status: 403 });
+  const response = await fetch(outbound, { method: params.method, body: params.body, redirect: "manual" });
   if (response.status >= 300 && response.status < 400) throw Object.assign(new Error("Extension redirects are blocked; declare and request the final exact origin"), { status: 409 });
   await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "extension.network.invoked", entityType: "extension_installation", entityId: params.installationId, metadata: { origin, method: params.method, status: response.status } });
   return { status: response.status, headers: Object.fromEntries([...response.headers].filter(([key]) => ["content-type", "content-length"].includes(key))), body: await response.text() };
