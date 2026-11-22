@@ -2,7 +2,8 @@ import type { User } from "@/lib/auth/provider";
 import { hasModuleAccess, hasModuleWriteAccess, normalizeAdminUser, type AdminModule } from "@/lib/admin/access";
 import type { AdminUser } from "@/lib/admin/types";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { resolveAdminProfile, supabaseAdminProfileStore } from "@/lib/admin/profileResolution";
+import { postgresAdminProfileStore, resolveAdminProfile, supabaseAdminProfileStore } from "@/lib/admin/profileResolution";
+import { usesDirectPostgres } from "@/lib/db/backend";
 import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
 
 function getBearerToken(req: Request): string | null {
@@ -57,7 +58,8 @@ export async function requireAdminRequest(
   let profile: AdminUser | null = null;
 
   try {
-    const resolved = await resolveAdminProfile(supabaseAdminProfileStore(serviceDb), user);
+    const store = usesDirectPostgres("admin") ? postgresAdminProfileStore() : supabaseAdminProfileStore(serviceDb);
+    const resolved = await resolveAdminProfile(store, user);
     profile = resolved ? normalizeAdminUser(resolved) : null;
   } catch {
     profile = null;

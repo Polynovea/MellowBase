@@ -1,5 +1,6 @@
 import type { User } from "@/lib/auth/provider";
 import type { AdminUser } from "@/lib/admin/types";
+import { getDb, maybeOne } from "@/lib/db/index";
 
 // Resolves the admin profile for an authenticated identity.
 //
@@ -45,6 +46,29 @@ export function supabaseAdminProfileStore(db: Db): AdminProfileStore {
       const { data, error } = await db.from("admin_users").update({ auth_user_id: authUserId }).eq("id", profileId).is("auth_user_id", null).select("*").maybeSingle();
       if (error) throw error;
       return (data as AdminUser | null) ?? null;
+    },
+  };
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Direct PostgreSQL store with the same rules: strict single rows, compare-and-set link. */
+export function postgresAdminProfileStore(): AdminProfileStore {
+  const asProfile = (row: unknown) => (row ?? null) as AdminUser | null;
+  return {
+    async findActiveByAuthUserId(authUserId) {
+      if (!UUID.test(authUserId)) return null;
+      return asProfile(maybeOne(await getDb().selectFrom("admin_users").selectAll()
+        .where("auth_user_id", "=", authUserId).where("is_active", "=", true).execute()));
+    },
+    async findActiveUnlinkedByEmail(email) {
+      return asProfile(maybeOne(await getDb().selectFrom("admin_users").selectAll()
+        .where("email", "=", email).where("auth_user_id", "is", null).where("is_active", "=", true).execute()));
+    },
+    async linkAuthUser(profileId, authUserId) {
+      if (!UUID.test(profileId) || !UUID.test(authUserId)) return null;
+      return asProfile(maybeOne(await getDb().updateTable("admin_users").set({ auth_user_id: authUserId })
+        .where("id", "=", profileId).where("auth_user_id", "is", null).returningAll().execute()));
     },
   };
 }
