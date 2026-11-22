@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Media collections can run on the direct PostgreSQL path (`media=postgres`): changes commit with their audit events, and asset counts are counted in the database instead of from a list capped at 1000 rows.
 - The Command Center's recent jobs, findings, releases, environments and audit events have a stable order when rows share a timestamp (both data paths). Local test databases are now one stack per checkout (`node scripts/dev-db/setup.mjs`; `--down` removes it), and `npm run test:dual` refuses to start until both databases and PostgREST are on the newest migration.
 - The admin activity log, the admin profile lookup behind sign-in, and the Command Center can run on the direct PostgreSQL path (`admin=postgres`). The Command Center reads each table once (10 queries instead of 26), and a failed activity-log write is now logged on the server instead of disappearing.
 - Delivery jobs (the operations area) can run on the direct PostgreSQL path (`operations=postgres`). On the direct path, messages that the SQL functions raise for the caller (such as "Only terminal jobs can be replayed") reach the API caller whatever SQLSTATE they use, as they did over PostgREST, while errors from statements inside a function stay hidden.
