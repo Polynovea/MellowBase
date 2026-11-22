@@ -50,6 +50,22 @@ describe("lib/db on plain PostgreSQL", () => {
     expect(isClientSafeError(error)).toBe(true);
   });
 
+  it("callFunction passes on a message raised with a custom SQLSTATE, and hides statement errors", async () => {
+    const missing = "00000000-0000-0000-0000-000000000000";
+    // cms_cancel_delivery_job raises 'Delivery job not found' using errcode P0002.
+    const raised = await callFunction("cms_cancel_delivery_job", { p_workspace_id: missing, p_actor_id: missing, p_job_id: missing }).catch((e: unknown) => e);
+    expect(raised).toBeInstanceOf(SqlFunctionError);
+    expect((raised as Error).message).toBe("Delivery job not found");
+    expect(isClientSafeError(raised)).toBe(true);
+    // A constraint violation inside a function is not a RAISE: it keeps its driver error.
+    const statement = await callFunction("cms_enqueue_delivery_job", {
+      p_workspace_id: missing, p_actor_id: null, p_kind: "webhook", p_idempotency_key: "k", p_payload: "{}",
+      p_safe_metadata: "{}", p_run_after: new Date().toISOString(), p_priority: 100, p_max_attempts: 5, p_queue_name: "default", p_correlation_id: null,
+    }).catch((e: unknown) => e);
+    expect(statement).not.toBeInstanceOf(SqlFunctionError);
+    expect(isClientSafeError(statement)).toBe(false);
+  });
+
   it("driver errors stay hidden from API callers", async () => {
     const error = await sql`select * from no_such_table`.execute(getDb()).catch((e: unknown) => e);
     expect(isClientSafeError(error)).toBe(false);
