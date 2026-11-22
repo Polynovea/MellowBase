@@ -152,8 +152,10 @@ Taxonomy (24 calls) moved in phase 0. The delivery worker already uses `pg` dire
 | Wave 2: admin part 1 (activity log, profile resolution, Command Center) | #32 | |
 | Dual-test flake fixed: an id tie-break on every Command Center list, and one Docker test stack per checkout (two worktrees had shared and reset each other's databases) | #34 | |
 | Wave 2: media collections | #35 | |
+| Wave 2: media complete (assets, replacement, quota, storage lookups) | #37 | |
+| Wave 2: developer API tokens and API authentication | #38 | Fails closed on lookup and rate-limit errors; also fixes token last-use never being recorded |
 
-All merged at `cb5aece`. On the stack tip: the type-check and lint pass, 802 unit tests and 133 dual-backend tests pass, and the build passes. `npm audit` and Semgrep are clean. Then #30 to #32 merged at `41a8e39`: 819 unit tests and 164 dual-backend tests pass. Then #34 and #35 merged at `27a81cf`: 819 unit tests pass, and 171 dual-backend tests pass on two runs in a row, each straight after a database reset. Next: media part 2, developer, admin part 2.
+All merged at `cb5aece`. On the stack tip: the type-check and lint pass, 802 unit tests and 133 dual-backend tests pass, and the build passes. `npm audit` and Semgrep are clean. Then #30 to #32 merged at `41a8e39`: 819 unit tests and 164 dual-backend tests pass. Then #34 and #35 merged at `27a81cf`: 819 unit tests pass, and 171 dual-backend tests pass on two runs in a row, each straight after a database reset. Then #37 and #38 merged: 819 unit tests and 189 dual-backend tests pass. Next: developer parts 2 and 3, admin part 2.
 
 The shared audit logger goes first because every area writes through it. Phase 0 found that it still uses Supabase, so on a database without Supabase the audit events of moved areas are silently dropped. No area counts as moved until its audit events land. The direct-path logger now exists (`lib/platform/audit.postgres.ts`, merged in PR #17: audit row, webhook deliveries and delivery jobs in the caller's transaction) and taxonomy uses it; wave 1 makes every other area call it.
 
