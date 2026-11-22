@@ -150,8 +150,10 @@ Taxonomy (24 calls) moved in phase 0. The delivery worker already uses `pg` dire
 | Review fix-up: migration 0068 (role setup with a non-superuser admin, SCRAM password verifiers, default and Supabase `EXECUTE` revokes, a trigger refusing cross-workspace `member_roles` after archiving any bad rows), Supabase-path errors surfaced, a guard test for `recordPlatformEvent` | #30 | Dev setup now installs through a non-superuser admin, like RDS and Azure |
 | Wave 1 complete: operations (delivery jobs) | #31 | |
 | Wave 2: admin part 1 (activity log, profile resolution, Command Center) | #32 | |
+| Dual-test flake fixed: an id tie-break on every Command Center list, and one Docker test stack per checkout (two worktrees had shared and reset each other's databases) | #34 | |
+| Wave 2: media collections | #35 | |
 
-All merged at `cb5aece`. On the stack tip: the type-check and lint pass, 802 unit tests and 133 dual-backend tests pass, and the build passes. `npm audit` and Semgrep are clean. Then #30 to #32 merged at `41a8e39`: 819 unit tests and 164 dual-backend tests pass. One dual test failed once, right after a database reset, and passed on rerun; making it deterministic is queued. Next: admin part 2, media, developer.
+All merged at `cb5aece`. On the stack tip: the type-check and lint pass, 802 unit tests and 133 dual-backend tests pass, and the build passes. `npm audit` and Semgrep are clean. Then #30 to #32 merged at `41a8e39`: 819 unit tests and 164 dual-backend tests pass. Then #34 and #35 merged at `27a81cf`: 819 unit tests pass, and 171 dual-backend tests pass on two runs in a row, each straight after a database reset. Next: media part 2, developer, admin part 2.
 
 The shared audit logger goes first because every area writes through it. Phase 0 found that it still uses Supabase, so on a database without Supabase the audit events of moved areas are silently dropped. No area counts as moved until its audit events land. The direct-path logger now exists (`lib/platform/audit.postgres.ts`, merged in PR #17: audit row, webhook deliveries and delivery jobs in the caller's transaction) and taxonomy uses it; wave 1 makes every other area call it.
 
