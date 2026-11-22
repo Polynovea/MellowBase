@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { rotateWebhookSecret, setWebhookSubscriptionActive } from "@/lib/content/webhookService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requirePlatformAccess(req, { permission: "content.entry.publish" });
@@ -18,6 +19,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }
     return NextResponse.json({ success: false, data: null, error: "operation must be rotate_secret or set_active", timestamp: new Date().toISOString() }, { status: 400 });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Could not update webhook subscription", timestamp: new Date().toISOString() }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Could not update webhook subscription"), timestamp: new Date().toISOString() }, { status: 400 });
   }
 }

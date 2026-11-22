@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { createDeveloperApiToken, listDeveloperApiTokens } from "@/lib/developer/apiTokenService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) => NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
 
@@ -10,7 +11,7 @@ export async function GET(req: Request) {
   try {
     return respond(true, await listDeveloperApiTokens(auth.data!.actor.workspaceId), null);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not list API tokens", 500);
+    return respond(false, null, clientErrorMessage(error, "Could not list API tokens"), 500);
   }
 }
 
@@ -30,6 +31,6 @@ export async function POST(req: Request) {
     });
     return respond(true, result, null, 201);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not create API token", 400);
+    return respond(false, null, clientErrorMessage(error, "Could not create API token"), 400);
   }
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { listTerms, createTerm } from "@/lib/taxonomy/taxonomyService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -14,7 +15,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const terms = await listTerms(auth.data!.actor.workspaceId, id);
     return respond(true, terms, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not list terms", 500);
+    return respond(false, null, clientErrorMessage(err, "Could not list terms"), 500);
   }
 }
 
@@ -44,6 +45,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     return respond(true, term, null, 201);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not create term", 400);
+    return respond(false, null, clientErrorMessage(err, "Could not create term"), 400);
   }
 }

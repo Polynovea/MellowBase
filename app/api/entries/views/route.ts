@@ -3,6 +3,7 @@ import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { createSavedEntryView, listSavedEntryViews } from "@/lib/content/savedViewService";
 import { getModel } from "@/lib/schema/modelService";
 import { canActorOperateModel } from "@/lib/schema/modelAccess";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const response = (success: boolean, data: unknown, error: string | null, status = 200) => NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
 
@@ -27,6 +28,6 @@ export async function POST(req: Request) {
     const result = await createSavedEntryView({ workspaceId: auth.data!.actor.workspaceId, actorAdminUserId: auth.data!.actor.adminUserId, name: body.name, filters: body.filters });
     return result.ok ? response(true, result.data, null, 201) : response(false, null, result.error, result.status);
   } catch (error) {
-    return response(false, null, error instanceof Error ? error.message : "Invalid saved view", 400);
+    return response(false, null, clientErrorMessage(error, "Invalid saved view"), 400);
   }
 }

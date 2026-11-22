@@ -3,6 +3,7 @@ import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getMenu, saveMenuDraft, listMenuVersions } from "@/lib/navigation/navigationService";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { logPlatformEvent } from "@/lib/platform/audit";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -59,7 +60,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const refreshed = await getMenu(auth.data!.actor.workspaceId, id);
     return respond(true, { menu: refreshed }, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not update navigation menu", 400);
+    return respond(false, null, clientErrorMessage(err, "Could not update navigation menu"), 400);
   }
 }
 
@@ -75,7 +76,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     .eq("workspace_id", auth.data!.actor.workspaceId)
     .eq("id", id);
 
-  if (error) return respond(false, null, error.message, 400);
+  if (error) return respond(false, null, clientErrorMessage(error), 400);
 
   await logPlatformEvent({
     workspaceId: auth.data!.actor.workspaceId,

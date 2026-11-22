@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getModel, validateChange } from "@/lib/schema/modelService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
 
@@ -25,7 +26,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     return NextResponse.json({ success: true, data: result.data, error: null, timestamp: ts() });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = clientErrorMessage(err);
     return NextResponse.json({ success: false, data: null, error: message, timestamp: ts() }, { status: 400 });
   }
 }

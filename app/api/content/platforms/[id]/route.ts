@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
 
@@ -20,7 +21,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       .select()
       .single();
 
-    if (error) return NextResponse.json({ success: false, data: null, error: error.message, timestamp: ts() }, { status: 500 });
+    if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
 
     await logAdminActivity({
       actor: auth.data!.profile,
@@ -33,7 +34,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
     return NextResponse.json({ success: true, data, error: null, timestamp: ts() });
   } catch (err: any) {
-    return NextResponse.json({ success: false, data: null, error: err.message || err, timestamp: ts() }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(err), timestamp: ts() }, { status: 400 });
   }
 }
 
@@ -45,7 +46,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     const { id } = await params;
     const db = createServiceRoleClient();
     const { error } = await db.from("platforms").delete().eq("id", id);
-    if (error) return NextResponse.json({ success: false, data: null, error: error.message, timestamp: ts() }, { status: 500 });
+    if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
 
     await logAdminActivity({
       actor: auth.data!.profile,
@@ -56,6 +57,6 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
 
     return NextResponse.json({ success: true, data: null, error: null, timestamp: ts() });
   } catch (err: any) {
-    return NextResponse.json({ success: false, data: null, error: err.message || err, timestamp: ts() }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(err), timestamp: ts() }, { status: 400 });
   }
 }

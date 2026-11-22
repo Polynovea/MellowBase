@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { listRoutes, registerRoute } from "@/lib/routing/routeService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -16,7 +17,7 @@ export async function GET(req: Request) {
     const routes = await listRoutes(auth.data!.actor.workspaceId, locale);
     return respond(true, routes, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not list routes", 500);
+    return respond(false, null, clientErrorMessage(err, "Could not list routes"), 500);
   }
 }
 
@@ -46,6 +47,6 @@ export async function POST(req: Request) {
 
     return respond(true, route, null, 201);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not register route", 400);
+    return respond(false, null, clientErrorMessage(err, "Could not register route"), 400);
   }
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { replaceAsset } from "@/lib/media/replacementService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -33,6 +34,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     return respond(true, result.data, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not replace asset", 500);
+    return respond(false, null, clientErrorMessage(err, "Could not replace asset"), 500);
   }
 }

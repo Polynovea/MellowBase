@@ -61,13 +61,14 @@ export async function deleteObject(key: string): Promise<void> {
 
 export async function createPresignedUpload(
   key: string,
-  contentType: string
+  contentType: string,
+  contentLength: number
 ): Promise<{ uploadUrl: string; readUrl: string }> {
   const client = getClient();
   const uploadUrl = await getSignedUrl(
     client,
-    new PutObjectCommand({ Bucket: bucketName, Key: key, ContentType: contentType }),
-    { expiresIn: 60 * 30 } // 30 minutes
+    new PutObjectCommand({ Bucket: bucketName, Key: key, ContentType: contentType, ContentLength: contentLength }),
+    { expiresIn: 60 * 15, signableHeaders: new Set(["content-type", "content-length"]) } // size and type are signed; 15 minutes
   );
 
   return {

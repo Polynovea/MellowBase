@@ -8,6 +8,7 @@ import { createServiceRoleClient, hasServiceRoleKey } from "@/lib/admin/serviceR
 import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
 import { syncDefaultWorkspaceMembership } from "@/lib/admin/workspaceMembership";
 import type { AdminActivityLog } from "@/lib/admin/types";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
 
@@ -42,7 +43,7 @@ export async function GET(req: Request) {
     .limit(12);
 
   if (error) {
-    return NextResponse.json({ success: false, data: null, error: error.message, timestamp: ts() }, { status: 500 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
   }
 
   return NextResponse.json({
@@ -131,7 +132,7 @@ export async function POST(req: Request) {
     if (error) {
       if (provisioned) await serviceRoleSupabase.from("admin_users").delete().eq("id", provisioned.id);
       await identity.deleteUser(authUser.id);
-      return NextResponse.json({ success: false, data: null, error: error.message, timestamp: ts() }, { status: 500 });
+      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
     }
 
     try {
@@ -178,6 +179,6 @@ export async function POST(req: Request) {
       const msg = first?.message ?? "Validation error";
       return NextResponse.json({ success: false, data: null, error: `${field}: ${msg}`, timestamp: ts() }, { status: 400 });
     }
-    return NextResponse.json({ success: false, data: null, error: error.message || "Invalid payload", timestamp: ts() }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Invalid payload"), timestamp: ts() }, { status: 400 });
   }
 }

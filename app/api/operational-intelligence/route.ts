@@ -14,6 +14,7 @@ import { activateDesiredStateRevision, createDesiredStateRevision, reconcileOper
 import type { OperationalDesiredState } from "@/lib/intelligence/operationalTypes";
 import { refreshOperationalWorldModel } from "@/lib/intelligence/worldModelService";
 import { getModel, getVersion } from "@/lib/schema/modelService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const response = (data: unknown, status = 200) => Response.json({
   success: status < 400,
@@ -60,7 +61,7 @@ export async function GET(req: Request) {
     const overview = environmentId ? await getOperationalIntelligenceOverview(workspaceId, environmentId) : null;
     return response({ environments, environmentId, overview });
   } catch (error) {
-    return response(error instanceof Error ? error.message : "Could not load operational intelligence", 500);
+    return response(clientErrorMessage(error, "Could not load operational intelligence"), 500);
   }
 }
 
@@ -123,6 +124,6 @@ export async function POST(req: Request) {
     if (operation === "ml_evaluate_online") return response(await refreshOnlineModelEvaluations(workspaceId, environmentId));
     return response("Unsupported operational intelligence operation", 400);
   } catch (error: any) {
-    return response(error instanceof Error ? error.message : "Operational intelligence operation failed", Number(error?.status) || 400);
+    return response(clientErrorMessage(error, "Operational intelligence operation failed"), Number(error?.status) || 400);
   }
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { assignRelease } from "@/lib/content/releaseService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -24,6 +25,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     return result.ok ? respond(true, result.data, null) : respond(false, null, result.error, result.status);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not assign release", 400);
+    return respond(false, null, clientErrorMessage(error, "Could not assign release"), 400);
   }
 }

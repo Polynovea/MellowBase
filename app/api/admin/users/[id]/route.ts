@@ -6,6 +6,7 @@ import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { syncDefaultWorkspaceMembership } from "@/lib/admin/workspaceMembership";
 import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
 
@@ -84,7 +85,7 @@ export async function PATCH(
       .single();
 
     if (error) {
-      return NextResponse.json({ success: false, data: null, error: error.message, timestamp: ts() }, { status: 500 });
+      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
     }
 
     try {
@@ -121,7 +122,7 @@ export async function PATCH(
       const msg = first?.message ?? "Validation error";
       return NextResponse.json({ success: false, data: null, error: `${field}: ${msg}`, timestamp: ts() }, { status: 400 });
     }
-    return NextResponse.json({ success: false, data: null, error: error.message || "Invalid payload", timestamp: ts() }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Invalid payload"), timestamp: ts() }, { status: 400 });
   }
 }
 
@@ -159,7 +160,7 @@ export async function DELETE(
 
   const { error } = await db.from("admin_users").delete().eq("id", id);
   if (error) {
-    return NextResponse.json({ success: false, data: null, error: error.message, timestamp: ts() }, { status: 500 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
   }
 
   await logAdminActivity({

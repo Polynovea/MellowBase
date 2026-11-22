@@ -4,6 +4,7 @@ import { decryptConfig, encryptConfig } from "@/lib/content/secureConfig";
 import { enqueueDeliveryJob } from "@/lib/operations/deliveryJobService";
 import { logPlatformEvent } from "@/lib/platform/audit";
 import { assertSafeOutboundUrl } from "@/lib/infrastructure/networkSafety";
+import { guardedFetch } from "@/lib/infrastructure/guardedNetwork";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const retryAt = (attempt: number) => new Date(Date.now() + Math.min(3_600_000, 1_000 * 2 ** attempt)).toISOString();
@@ -183,7 +184,7 @@ export async function dispatchWebhookDelivery(deliveryId: string) {
   try {
     const { secret } = decryptConfig<{ secret: string }>(delivery.webhook_subscriptions.signing_secret_encrypted);
     await assertSafeOutboundUrl(delivery.webhook_subscriptions.endpoint_url, "production");
-    const response = await fetch(delivery.webhook_subscriptions.endpoint_url, {
+    const response = await guardedFetch(delivery.webhook_subscriptions.endpoint_url, {
       method: "POST",
       headers: {
         "content-type": "application/json",

@@ -16,6 +16,8 @@ the server-only `npm run bootstrap:admin` command after the auth identity exists
 Every administrator, including the initial master/owner, requires an auditable
 `admin_users` row plus workspace membership. The default-deny RLS decision in
 this ADR remains current; only the historical bootstrap exception is superseded.
+The current identity and bootstrap rules are in
+[ADR-018](ADR-018-admin-identity-resolution.md).
 
 ## Context
 

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getModel } from "@/lib/schema/modelService";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
 
@@ -43,10 +44,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
     const db = createServiceRoleClient();
     const { data, error } = await db.from("content_models").update(patch).eq("id", id).select().single();
-    if (error) return NextResponse.json({ success: false, data: null, error: error.message, timestamp: ts() }, { status: 500 });
+    if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
     return NextResponse.json({ success: true, data, error: null, timestamp: ts() });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = clientErrorMessage(err);
     return NextResponse.json({ success: false, data: null, error: message, timestamp: ts() }, { status: 400 });
   }
 }

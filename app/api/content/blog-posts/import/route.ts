@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { convertToHtml, htmlToBlogDraft, isSupportedImportExtension } from "@/lib/admin/blogImport";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 export const runtime = "nodejs";
 
@@ -35,7 +36,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true, data: draft, error: null, timestamp: ts() });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = clientErrorMessage(err);
     return NextResponse.json({ success: false, data: null, error: message, timestamp: ts() }, { status: 400 });
   }
 }

@@ -8,9 +8,10 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createClient } from "@supabase/supabase-js";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
-import { assertSafeOutboundUrl } from "@/lib/infrastructure/networkSafety";
+import { allowsPrivateNetwork, assertSafeOutboundUrl } from "@/lib/infrastructure/networkSafety";
 import type { EnvironmentKind } from "@/lib/infrastructure/types";
 import { deleteObject, resolveObjectUrl, uploadObject, createPresignedUpload as createLegacyR2PresignedUpload } from "@/lib/r2Storage";
+import { guardedFetchFor, guardedS3RequestHandler } from "@/lib/infrastructure/guardedNetwork";
 
 export interface StorageProvider {
   readonly key: string;
@@ -20,7 +21,8 @@ export interface StorageProvider {
   upload(input: { body: Buffer; key: string; contentType: string }): Promise<{ key: string; url: string }>;
   remove(key: string): Promise<void>;
   resolveReadUrl(key: string): Promise<string>;
-  createPresignedUpload?(key: string, contentType: string): Promise<{ uploadUrl: string; readUrl: string }>;
+  /** contentLength is signed into the URL, so the provider rejects a body of any other size. */
+  createPresignedUpload?(key: string, contentType: string, contentLength: number): Promise<{ uploadUrl: string; readUrl: string }>;
 }
 
 interface StorageConnectionRow {
@@ -121,6 +123,7 @@ async function s3Provider(connection: StorageConnectionRow, credentials: Record<
     endpoint,
     forcePathStyle,
     credentials: { accessKeyId, secretAccessKey },
+    requestHandler: guardedS3RequestHandler({ allowPrivate: allowsPrivateNetwork(environmentKind) }),
   });
   const publicUrl = trimSlash(configText(config, "publicUrl"));
 
@@ -142,8 +145,8 @@ async function s3Provider(connection: StorageConnectionRow, credentials: Record<
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     },
     resolveReadUrl,
-    async createPresignedUpload(key, contentType) {
-      const uploadUrl = await getSignedUrl(client, new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType }), { expiresIn: 1800 });
+    async createPresignedUpload(key, contentType, contentLength) {
+      const uploadUrl = await getSignedUrl(client, new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType, ContentLength: contentLength }), { expiresIn: 900, signableHeaders: new Set(["content-type", "content-length"]) });
       return { uploadUrl, readUrl: await resolveReadUrl(key) };
     },
   };
@@ -156,7 +159,7 @@ async function supabaseStorageProvider(connection: StorageConnectionRow, credent
   const key = credentials.service_role_key || credentials.anon_key;
   if (!projectUrl || !bucket || !key) throw new Error(`${connection.name}: Supabase Storage configuration is incomplete`);
   await assertSafeOutboundUrl(projectUrl, environmentKind, { allowHttpLocal: true });
-  const client = createClient(projectUrl, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const client = createClient(projectUrl, key, { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: guardedFetchFor({ allowPrivate: allowsPrivateNetwork(environmentKind) }) } });
   const visibility = configText(config, "visibility") || "private";
   const configuredPublicUrl = trimSlash(configText(config, "publicUrl"));
 

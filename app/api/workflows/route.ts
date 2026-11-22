@@ -3,6 +3,7 @@ import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { listWorkflowDefinitions, saveWorkflowDefinition } from "@/lib/content/workflowDefinitionService";
 import { listModels } from "@/lib/schema/modelService";
 import { listWorkspaceRoles } from "@/lib/platform/actor";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -18,7 +19,7 @@ export async function GET(req: Request) {
     ]);
     return respond(true, { definitions, models, roles }, null);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not load workflows", 500);
+    return respond(false, null, clientErrorMessage(error, "Could not load workflows"), 500);
   }
 }
 
@@ -41,6 +42,6 @@ export async function POST(req: Request) {
     });
     return respond(true, data, null, body.id ? 200 : 201);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not save workflow", 400);
+    return respond(false, null, clientErrorMessage(error, "Could not save workflow"), 400);
   }
 }

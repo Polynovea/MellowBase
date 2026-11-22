@@ -3,6 +3,7 @@ import { getDbItem, getDbItemByField, updateDbItem, deleteDbItem } from "@/lib/d
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { revalidateWebsiteBlog } from "@/lib/admin/revalidate";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
 
@@ -41,7 +42,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
     return NextResponse.json({ success: true, data, error: null, timestamp: ts() });
   } catch (err: any) {
-    return NextResponse.json({ success: false, data: null, error: err.message || err, timestamp: ts() }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(err), timestamp: ts() }, { status: 400 });
   }
 }
 
@@ -61,6 +62,6 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     });
     return NextResponse.json({ success, data: null, error: null, timestamp: ts() });
   } catch (err: any) {
-    return NextResponse.json({ success: false, data: null, error: err.message || err, timestamp: ts() }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(err), timestamp: ts() }, { status: 400 });
   }
 }

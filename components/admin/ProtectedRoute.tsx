@@ -84,43 +84,53 @@ function LoginScreen({
             </div>
 
             {/* Form */}
-            <form onSubmit={onSubmit} className="flex flex-col gap-5">
+            <form onSubmit={onSubmit} aria-busy={loading} className="flex flex-col gap-5">
               <div className="flex flex-col gap-1.5">
-                <label className="font-body text-[10px] font-semibold uppercase tracking-[0.1em] text-fg-muted">
+                <label htmlFor="login-email" className="font-body text-[10px] font-semibold uppercase tracking-[0.1em] text-fg-muted">
                   Email
                 </label>
                 <div className="relative group">
                   <input
+                    id="login-email"
+                    name="email"
                     type="email"
+                    autoComplete="username"
                     placeholder="you@example.com"
                     value={identifier}
                     onChange={(e) => setIdentifier(e.target.value)}
                     required
                     autoFocus
-                    className="w-full h-12 rounded-xl border border-subtle bg-surface-1 pl-4 pr-11 text-sm text-on-surface outline-none transition-all placeholder:text-fg-muted focus:border-primary"
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={error ? "login-error" : undefined}
+                    className="w-full h-12 rounded-xl border border-subtle bg-surface-1 pl-4 pr-11 text-sm text-on-surface outline-none transition-all placeholder:text-fg-muted focus:border-primary focus-visible:ring-2 focus-visible:ring-primary/60"
                   />
-                  <User size={15} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-fg-muted transition-colors group-focus-within:text-primary/60" />
+                  <User size={15} aria-hidden="true" className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-fg-muted transition-colors group-focus-within:text-primary/60" />
                 </div>
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label className="font-body text-[10px] font-semibold uppercase tracking-[0.1em] text-fg-muted">
+                <label htmlFor="login-password" className="font-body text-[10px] font-semibold uppercase tracking-[0.1em] text-fg-muted">
                   Password
                 </label>
                 <div className="relative group">
                   <input
+                    id="login-password"
+                    name="password"
                     type="password"
+                    autoComplete="current-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
-                    className="w-full h-12 rounded-xl border border-subtle bg-surface-1 pl-4 pr-11 text-sm text-on-surface outline-none transition-all focus:border-primary"
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={error ? "login-error" : undefined}
+                    className="w-full h-12 rounded-xl border border-subtle bg-surface-1 pl-4 pr-11 text-sm text-on-surface outline-none transition-all focus:border-primary focus-visible:ring-2 focus-visible:ring-primary/60"
                   />
-                  <Lock size={15} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-fg-muted transition-colors group-focus-within:text-primary/60" />
+                  <Lock size={15} aria-hidden="true" className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-fg-muted transition-colors group-focus-within:text-primary/60" />
                 </div>
               </div>
 
               {error && (
-                <p className="rounded-xl border border-danger bg-danger-muted px-3 py-2.5 text-xs text-danger">{error}</p>
+                <p id="login-error" role="alert" className="rounded-xl border border-danger bg-danger-muted px-3 py-2.5 text-xs text-danger">{error}</p>
               )}
 
               <div className="pt-1">
@@ -141,9 +151,9 @@ function LoginScreen({
 
             {/* Footer */}
             <div className="mt-8 flex flex-col items-center gap-3">
-              <button type="button" className="font-body text-[10px] font-semibold uppercase tracking-[0.1em] text-fg-muted transition-colors hover:text-primary">
-                Forgot access credentials?
-              </button>
+              <p className="text-center font-body text-[10px] font-semibold uppercase tracking-[0.1em] text-fg-muted">
+                Forgot your password? Ask a workspace owner to reset it.
+              </p>
               <div className="h-px w-8 bg-surface-2" />
               <p className="text-center font-body text-[11px] text-fg-muted leading-relaxed max-w-[260px]">
                 Authorized personnel only. Access monitored by Global Security Protocols.

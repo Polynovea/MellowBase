@@ -4,6 +4,7 @@ import { createRemediationTask, getContentHealth, queueContentHealthScan, scanCo
 import { listModels } from "@/lib/schema/modelService";
 import { canActorOperateModel } from "@/lib/schema/modelAccess";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 async function visibleEntryIds(actor: any) {
   const models = await listModels(actor.workspaceId);
@@ -52,7 +53,7 @@ export async function GET(req: Request) {
     };
     return NextResponse.json({ success: true, data: { ...health, findings, tasks, profiles, stewardship, members, currentActorId: auth.data!.actor.adminUserId, summary }, error: null });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Could not load content health" }, { status: 500 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Could not load content health") }, { status: 500 });
   }
 }
 
@@ -99,6 +100,6 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ success: false, data: null, error: "Unsupported content-health operation" }, { status: 400 });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Content-health operation failed" }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Content-health operation failed") }, { status: 400 });
   }
 }

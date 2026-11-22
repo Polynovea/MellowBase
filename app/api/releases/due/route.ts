@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { processDueReleases } from "@/lib/content/releaseService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -22,6 +23,6 @@ export async function POST(req: Request) {
     });
     return respond(true, data, null);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not process due releases", 500);
+    return respond(false, null, clientErrorMessage(error, "Could not process due releases"), 500);
   }
 }

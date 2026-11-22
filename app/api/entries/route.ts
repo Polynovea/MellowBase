@@ -3,6 +3,7 @@ import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { createEntry, listEntries } from "@/lib/content/entryService";
 import { getModel, listModels } from "@/lib/schema/modelService";
 import { canActorOperateModel } from "@/lib/schema/modelAccess";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const response = (success: boolean, data: unknown, error: string | null, status = 200) => NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
 
@@ -40,5 +41,5 @@ export async function POST(req: Request) {
     if (!access.allowed) return response(false, null, access.error, access.status);
     const result = await createEntry({ workspaceId: auth.data!.actor.workspaceId, modelId: body.modelId, data: body.data, locale: body.locale, changeSummary: body.changeSummary, actorAdminUserId: auth.data!.actor.adminUserId });
     return result.ok ? response(true, result.data, null, 201) : response(false, null, result.error, result.status);
-  } catch (error) { return response(false, null, error instanceof Error ? error.message : "Invalid entry request", 400); }
+  } catch (error) { return response(false, null, clientErrorMessage(error, "Invalid entry request"), 400); }
 }

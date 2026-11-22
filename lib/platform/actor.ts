@@ -38,7 +38,7 @@ export async function getWorkspaceById(workspaceId: string): Promise<Workspace |
  * Resolves an authenticated CMS actor for one admin identity within one
  * workspace. This is the one place that reads workspace_members/
  * member_roles/roles/role_permissions — nothing else should query those
- * tables directly (see ADR-013).
+ * tables directly (see ADR-018, which supersedes ADR-013).
  *
  * Every identity, including the first owner/master, must have an auditable
  * admin_users row and active workspace membership. First-admin setup is

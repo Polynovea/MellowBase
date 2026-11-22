@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { listAssets, registerUpload } from "@/lib/media/assetService";
 import { getStorageProvider } from "@/lib/media/storageProvider";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) => NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
 
@@ -16,12 +17,12 @@ export async function GET(req: Request) {
         const provider = await getStorageProvider({ workspaceId, storageProviderKey: asset.storage_provider });
         return { ...asset, preview_url: await provider.resolveReadUrl(asset.storage_key), storage_status: "available" };
       } catch (error) {
-        return { ...asset, preview_url: null, storage_status: "unavailable", storage_error: error instanceof Error ? error.message : "Storage provider unavailable" };
+        return { ...asset, preview_url: null, storage_status: "unavailable", storage_error: clientErrorMessage(error, "Storage provider unavailable") };
       }
     }));
     return respond(true, withUrls, null);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not list assets", 500);
+    return respond(false, null, clientErrorMessage(error, "Could not list assets"), 500);
   }
 }
 
@@ -43,6 +44,6 @@ export async function POST(req: Request) {
     });
     return result.ok ? respond(true, result.data, null, 201) : respond(false, null, result.error, result.status);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not upload asset", 400);
+    return respond(false, null, clientErrorMessage(error, "Could not upload asset"), 400);
   }
 }

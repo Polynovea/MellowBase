@@ -4,6 +4,7 @@ import { getEntry, listEntryVersions, saveDraft } from "@/lib/content/entryServi
 import { markTranslationsStale } from "@/lib/content/localizationService";
 import { getModel } from "@/lib/schema/modelService";
 import { canActorOperateModel } from "@/lib/schema/modelAccess";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const response = (success: boolean, data: unknown, error: string | null, status = 200) => NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
 
@@ -33,5 +34,5 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const result = await saveDraft({ workspaceId: auth.data!.actor.workspaceId, entryId: id, data: body.data, locale: body.locale, changeSummary: body.changeSummary, actorAdminUserId: auth.data!.actor.adminUserId, expectedVersionNumber: body.expectedVersionNumber }); if (result.ok) await markTranslationsStale(auth.data!.actor.workspaceId, id);
     if (!result.ok && "conflict" in result) return response(false, result.conflict, result.error, result.status);
     return result.ok ? response(true, result.data, null) : response(false, null, result.error, result.status);
-  } catch (error) { return response(false, null, error instanceof Error ? error.message : "Invalid entry request", 400); }
+  } catch (error) { return response(false, null, clientErrorMessage(error, "Invalid entry request"), 400); }
 }

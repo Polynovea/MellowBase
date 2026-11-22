@@ -2,6 +2,7 @@ import { requirePlatformAccess } from "@/lib/platform/permissions";
 import type { PermissionKey } from "@/lib/platform/permissionCatalog";
 import { listEnvironments } from "@/lib/infrastructure/environmentService";
 import { applyEnvironmentSchema, bindWebsiteConnection, createWorkspaceBackup, ensureEnvironmentComponents, executeUpgrade, listOperabilityOverview, planEnvironmentSchema, planUpgrade, portabilityCheck, queueWebsiteTest, requestInfrastructureApproval, restoreBackup, reviewInfrastructureApproval, runComponentAction, runProvisioning, runSystemDoctor } from "@/lib/infrastructure/operabilityService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const response=(data:unknown,status=200)=>Response.json({success:status<400,data:status<400?data:null,error:status>=400?String(data):null,timestamp:new Date().toISOString()},{status});
 const permissionFor=(op:string):PermissionKey=>({
@@ -14,7 +15,7 @@ const permissionFor=(op:string):PermissionKey=>({
 export async function GET(req:Request){
   const auth=await requirePlatformAccess(req,{permission:["environment.read","infrastructure.diagnose"]});if(auth.error)return auth.error;
   try{const url=new URL(req.url),environmentId=url.searchParams.get("environmentId")||undefined;const [environments,overview]=await Promise.all([listEnvironments(auth.data!.actor.workspaceId),listOperabilityOverview(auth.data!.actor.workspaceId,environmentId)]);return response({environments,overview});}
-  catch(error){return response(error instanceof Error?error.message:"Could not load infrastructure state",500);}
+  catch(error){return response(clientErrorMessage(error, "Could not load infrastructure state"),500);}
 }
 
 export async function POST(req:Request){
@@ -38,5 +39,5 @@ export async function POST(req:Request){
     if(operation==="schema_plan")return response(await planEnvironmentSchema({workspaceId,environmentId:String(body.environmentId),modelId:String(body.modelId),proposedSchema:body.schema,actorId}));
     if(operation==="schema_apply")return response(await applyEnvironmentSchema({workspaceId,environmentId:String(body.environmentId),modelId:String(body.modelId),proposedSchema:body.schema,actorId,changeSummary:body.changeSummary||undefined,acknowledgeUnsafe:Boolean(body.acknowledgeUnsafe),approvalRequestId:body.approvalRequestId||null}));
     return response("Unsupported infrastructure operation",400);
-  }catch(error:any){return response(error instanceof Error?error.message:"Infrastructure operation failed",Number(error?.status)||400);}
+  }catch(error:any){return response(clientErrorMessage(error, "Infrastructure operation failed"),Number(error?.status)||400);}
 }

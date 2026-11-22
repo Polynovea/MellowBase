@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { logPlatformEvent } from "@/lib/platform/audit";
 import { getStorageProvider } from "@/lib/media/storageProvider";
+import { checkWorkspaceQuota } from "@/lib/media/uploadLimits";
 
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "video/mp4", "video/webm", "application/pdf"]);
 const MAX_SIZE = 20 * 1024 * 1024;
@@ -13,6 +14,7 @@ export async function listAssets(workspaceId: string): Promise<AssetRow[]> { con
 export async function registerUpload(params: { workspaceId: string; actorAdminUserId: string; file: File; folder?: string; altText?: string; caption?: string; environmentId?: string | null }): Promise<AssetResult<AssetRow>> {
   if (!ALLOWED_TYPES.has(params.file.type)) return { ok: false, error: `Unsupported file type: ${params.file.type}`, status: 415 };
   if (params.file.size > MAX_SIZE) return { ok: false, error: "Asset exceeds 20 MB limit", status: 413 };
+  const quota = await checkWorkspaceQuota(params.workspaceId, params.file.size); if (!quota.ok) return { ok: false, error: quota.error, status: quota.status };
   const body = Buffer.from(await params.file.arrayBuffer()); const checksum = createHash("sha256").update(body).digest("hex"); const db = createServiceRoleClient();
   const { data: existing } = await db.from("assets").select("*").eq("workspace_id", params.workspaceId).eq("checksum", checksum).is("archived_at", null).maybeSingle();
   if (existing) return { ok: true, data: existing };

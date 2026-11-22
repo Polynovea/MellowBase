@@ -2,24 +2,13 @@ import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { logPlatformEvent } from "@/lib/platform/audit";
 import { getActiveExtensionPrivileges } from "@/lib/developer/extensionGovernanceService";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { BlockList, isIP } from "node:net";
+import { isIP } from "node:net";
+import { guardedFetch, isBlockedAddress } from "@/lib/infrastructure/guardedNetwork";
 
 export type HostLookup = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+export type ExtensionFetch = (url: URL, init: RequestInit) => Promise<Response>;
 
-// Every address range an extension must never reach: loopback, private, link-local
-// (cloud metadata), carrier-grade NAT, multicast, reserved and the IPv6 equivalents.
-const blockedAddresses = new BlockList();
-for (const [net, prefix] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 4], ["240.0.0.0", 4]] as const) blockedAddresses.addSubnet(net, prefix, "ipv4");
-for (const [net, prefix] of [["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8], ["64:ff9b::", 96], ["2001:db8::", 32]] as const) blockedAddresses.addSubnet(net, prefix, "ipv6");
-
-function blockedAddress(address: string) {
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
-  if (mapped) return blockedAddresses.check(mapped[1], "ipv4");
-  const family = isIP(address);
-  if (family === 4) return blockedAddresses.check(address, "ipv4");
-  if (family === 6) return blockedAddresses.check(address, "ipv6");
-  return true;
-}
+const blockedAddress = isBlockedAddress;
 
 // Resolve the host and refuse if ANY address it resolves to is internal, so a public
 // name pointing at a private IP cannot be used to reach internal services.
@@ -53,7 +42,7 @@ export async function authorizeExtensionRoute(params: { workspaceId: string; ins
   return { extensionKey: state.extensionKey, route, grantedPermissions: state.installation.granted_permissions };
 }
 
-export async function extensionFetch(params: { workspaceId: string; installationId: string; actorId: string; url: string; method: string; body?: string; lookup?: HostLookup }) {
+export async function extensionFetch(params: { workspaceId: string; installationId: string; actorId: string; url: string; method: string; body?: string; lookup?: HostLookup; fetchImpl?: ExtensionFetch }) {
   const state = await active(params.workspaceId, params.installationId);
   let target: URL; try { target = new URL(params.url); } catch { throw Object.assign(new Error("Extension URL is invalid"), { status: 400 }); }
   if (target.username || target.password) throw Object.assign(new Error("Extension URL is not permitted"), { status: 403 });
@@ -70,7 +59,8 @@ export async function extensionFetch(params: { workspaceId: string; installation
   outbound.pathname = target.pathname;
   outbound.search = target.search;
   if (outbound.origin !== origin) throw Object.assign(new Error("Extension URL is not permitted"), { status: 403 });
-  const response = await fetch(outbound, { method: params.method, body: params.body, redirect: "manual" });
+  // guardedFetch re-checks the addresses at connect time, so DNS cannot be rebound between the check above and the request.
+  const response = await (params.fetchImpl ?? ((url, init) => guardedFetch(url, init)))(outbound, { method: params.method, body: params.body, redirect: "manual" });
   if (response.status >= 300 && response.status < 400) throw Object.assign(new Error("Extension redirects are blocked; declare and request the final exact origin"), { status: 409 });
   await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "extension.network.invoked", entityType: "extension_installation", entityId: params.installationId, metadata: { origin, method: params.method, status: response.status } });
   return { status: response.status, headers: Object.fromEntries([...response.headers].filter(([key]) => ["content-type", "content-length"].includes(key))), body: await response.text() };

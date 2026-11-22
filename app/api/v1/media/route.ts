@@ -3,6 +3,7 @@ import { apiError, apiSuccess } from "@/lib/developer/apiContract";
 import { listAssets, registerUpload } from "@/lib/media/assetService";
 import { logDeveloperApiMutation } from "@/lib/developer/developerAudit";
 import { getStorageProvider } from "@/lib/media/storageProvider";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 export async function GET(req:Request){
   const auth=await requireDeveloperApi(req,{scope:"media.read"});if(auth.error)return auth.error;
@@ -10,7 +11,7 @@ export async function GET(req:Request){
   const assets=await listAssets(workspaceId);
   const data=await Promise.all(assets.map(async asset=>{
     try{const provider=await getStorageProvider({workspaceId,storageProviderKey:asset.storage_provider});return{...asset,read_url:await provider.resolveReadUrl(asset.storage_key),storage_status:"available"};}
-    catch(error){return{...asset,read_url:null,storage_status:"unavailable",storage_error:error instanceof Error?error.message:"Storage provider unavailable"};}
+    catch(error){return{...asset,read_url:null,storage_status:"unavailable",storage_error:clientErrorMessage(error, "Storage provider unavailable")};}
   }));
   return apiSuccess(data,{requestId:auth.data!.requestId,rateLimit:auth.data!.rateLimit});
 }
@@ -24,5 +25,5 @@ export async function POST(req:Request){
     if(!result.ok)return apiError("MEDIA_UPLOAD_FAILED",result.error,result.status,{requestId:auth.data!.requestId,rateLimit:auth.data!.rateLimit});
     await logDeveloperApiMutation(auth.data!,"developer.media.uploaded","asset",result.data.id,{filename:result.data.filename,mimeType:result.data.mime_type,storageProvider:result.data.storage_provider});
     return apiSuccess(result.data,{status:201,requestId:auth.data!.requestId,rateLimit:auth.data!.rateLimit});
-  }catch(e){return apiError("MEDIA_UPLOAD_FAILED",e instanceof Error?e.message:"Could not upload media",400,{requestId:auth.data!.requestId,rateLimit:auth.data!.rateLimit});}
+  }catch(e){return apiError("MEDIA_UPLOAD_FAILED",clientErrorMessage(e, "Could not upload media"),400,{requestId:auth.data!.requestId,rateLimit:auth.data!.rateLimit});}
 }

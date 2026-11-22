@@ -1,8 +1,19 @@
 # ADR-013: CMS Actor vs External Identity
 
-**Status:** Accepted; master-email bypass superseded before OSS V1 release
+**Status:** Superseded by [ADR-018](ADR-018-admin-identity-resolution.md) (2026-11-22). Historical record only.
 **Date:** 2026-09-01
 **Phase:** 1, Milestone B
+
+> **Superseded.** For current behaviour read
+> [ADR-018](ADR-018-admin-identity-resolution.md). What changed: the
+> `admin_users` bridge decided here is kept, but there is no master-email
+> bypass or synthetic actor, the first owner is created with
+> `npm run bootstrap:admin`, and admin sessions resolve the profile by
+> `admin_users.auth_user_id` instead of by email. Everything below about
+> `MASTER_EMAIL`, `lib/admin/constants.ts` and the email check in
+> `resolveActor()` describes code that no longer exists;
+> `isMasterUser()` in `lib/admin/access.ts` now checks the stored `master`
+> role, not an email.
 
 ## 2026-09-13 amendment
 

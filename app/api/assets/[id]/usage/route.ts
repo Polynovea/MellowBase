@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getAssetUsageGraph } from "@/lib/content/impactGraphService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -14,6 +15,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const usage = await getAssetUsageGraph(auth.data!.actor.workspaceId, id);
     return respond(true, usage, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not fetch asset usage", 500);
+    return respond(false, null, clientErrorMessage(err, "Could not fetch asset usage"), 500);
   }
 }

@@ -2,6 +2,7 @@
 ## Imperial Operations — Product UI Color, Surface and Interaction System
 
 **Status:** Canonical product UI specification
+**Implementation status:** Token migration partially complete; open follow-up. See "Implementation status — 2026-11-22" at the end of section 38.
 **Applies to:** Polynovea CMS admin/product surfaces
 **Theme pair:** Imperial Night / Imperial Ivory
 **Primary mode:** Dark
@@ -1587,6 +1588,87 @@ Search and remove remaining direct:
 - `text-white/*` hierarchy values;
 - random semantic colors;
 - page-local border systems.
+
+## Implementation status — 2026-11-22
+
+**Open follow-up.** Steps 1–11 are in place. Step 12 (hard-coded color
+audit) is not finished, and some screens still rely on a CSS bridge instead
+of semantic classes. Counts below are from a search of `app/` and
+`components/` `.tsx` files on this date.
+
+Done:
+
+- **Tokens (steps 1, 10).** `app/globals.css` defines the brand variables
+  (`:root`), Imperial Night (`[data-theme="dark"]`) and Imperial Ivory
+  (`[data-theme="light"]`) surface, border, text, icon, action, semantic and
+  `--chart-1`…`--chart-8` variables. `components/admin/ThemeToggle.tsx`
+  switches between system, light and dark.
+- **Utility contract (section 32).** The Tailwind v4 `@theme inline` block
+  in `app/globals.css` maps the tokens to utilities (`bg-canvas`,
+  `bg-surface-1`…`3`, `bg-elevated`, `bg-field`, `text-fg-primary`/`secondary`/
+  `muted`/`disabled`, `border-subtle`/`default`, `text-success`,
+  `bg-review-muted`, and so on). There is no `tailwind.config.*`. These
+  semantic utilities are used about 2,000 times across the admin.
+- **Primitives (steps 4–6, 9).** `app/globals.css` provides `ui-page*`,
+  `ui-section*`, `ui-card*`, `ui-btn-*`, `ui-badge-*`, `ui-alert-*`,
+  `ui-empty*`, `ui-list-row` and `ui-table`, all built on the tokens.
+  `components/admin/AdminLayout.tsx` uses the token classes.
+- **Opacity-driven text (step 2, section 33).** No `text-white/NN` remains.
+- **Charts (step 11).** `components/admin/analytics/AnalyticsOverview.tsx`
+  uses the `--chart-*` variables.
+
+Remaining:
+
+1. **Migration bridge.** The "Admin migration bridge" block at the end of
+   `app/globals.css` rewrites legacy classes inside `.admin-shell`
+   (`bg-[#111114]`, `bg-zinc-800/900`, `border-white/10`, `text-zinc-*`,
+   `text-violet-*`, `text-amber-*`, `text-red-*` and similar) to tokens with
+   `!important`. It keeps old screens readable but is not the contract.
+   Remove it once the files below no longer use those classes.
+2. **Raw Tailwind palette and hard-coded hex in admin JSX** (step 12):
+   - `components/admin/experience/BlockRenderer.tsx` (about 36 hex values,
+     mostly `#e6d3a3`)
+   - `components/admin/Modal.tsx`, `components/admin/ProtectedRoute.tsx`,
+     `components/admin/MetricsForm.tsx`,
+     `components/admin/experience/StudioShell.tsx`,
+     `components/admin/experience/BlockInspector.tsx`,
+     `components/admin/schema/CapabilitySelector.tsx`,
+     `components/admin/schema/FieldEditor.tsx`,
+     `components/admin/schema/PermissionPolicyEditor.tsx`,
+     `components/admin/EntryForm.tsx`, `app/admin/models/[id]/page.tsx`
+     (hex arbitrary values such as `accent-[#E6D3A3]`, `border-[#2a2a2e]`,
+     `text-[#0A0A0A]`)
+   - `app/admin/access/page.tsx`, `app/admin/blog/[id]/page.tsx`,
+     `app/admin/cms/page.tsx`, `app/admin/entries/page.tsx`,
+     `app/admin/entries/[id]/page.tsx`, `app/admin/operations/page.tsx`,
+     `app/admin/releases/new/page.tsx`, `app/admin/releases/[id]/page.tsx`,
+     `components/admin/BlogForm.tsx`, `components/admin/BlogTable.tsx`,
+     `components/admin/CollaborationPanel.tsx`,
+     `components/admin/ConfirmDialog.tsx`,
+     `components/admin/LocalizationPanel.tsx`,
+     `components/admin/PreflightPanel.tsx` (`text-amber-200`,
+     `text-violet-200`, `text-red-200`, `text-emerald-*`, `bg-zinc-*`,
+     `border-zinc-600` and similar)
+3. **Legacy alias utilities.** `@theme inline` also keeps older names
+   (`on-surface`, `on-surface-variant`, `surface-low`, `surface-container`,
+   `surface-high`, `outline`, `outline-variant`, `cms-gold`,
+   `content-violet`, `primary-container`, `secondary-container`,
+   `tertiary`). They resolve to tokens but are not the semantic names in
+   section 32. About 70 uses in 13 files: `app/admin/page.tsx`,
+   `app/admin/access/page.tsx`, `app/admin/blog/page.tsx`,
+   `app/admin/blog/new/page.tsx`, `app/admin/blog/[id]/page.tsx`,
+   `app/admin/profile/page.tsx`, `components/admin/BlockEditor.tsx`,
+   `components/admin/BlogForm.tsx`, `components/admin/BlogImport.tsx`,
+   `components/admin/BlogTable.tsx`, `components/admin/MediaUpload.tsx`,
+   `components/admin/MetricsTable.tsx`, `components/admin/ProtectedRoute.tsx`.
+   Replace them, then drop the aliases from `@theme inline`.
+4. **Opacity on semantic text.** `app/admin/access/page.tsx` and
+   `components/admin/ProtectedRoute.tsx` still use `text-primary/60`.
+
+Out of scope for this document: `components/experience/ExperienceRenderer.tsx`
+and `app/preview/[token]/page.tsx` render site content, not admin UI, and use
+raw palette and hex values (about 100 occurrences). Decide separately whether
+public rendering adopts these tokens.
 
 ---
 
