@@ -1,4 +1,4 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { activeAssetBytes } from "@/lib/media/mediaData";
 
 // Upload size and storage-quota policy shared by every upload path (direct, presigned and asset registry).
 
@@ -36,9 +36,7 @@ export function workspaceQuotaBytes(env: Record<string, string | undefined> = pr
 export async function checkWorkspaceQuota(workspaceId: string, incomingBytes: number): Promise<{ ok: true } | { ok: false; status: 413; error: string }> {
   const quota = workspaceQuotaBytes();
   if (quota === null) return { ok: true };
-  const { data, error } = await createServiceRoleClient().from("assets").select("size_bytes").eq("workspace_id", workspaceId).is("archived_at", null);
-  if (error) throw error;
-  const used = (data ?? []).reduce((sum: number, row: { size_bytes: number | string }) => sum + Number(row.size_bytes || 0), 0);
+  const used = await activeAssetBytes(workspaceId);
   if (used + incomingBytes > quota) {
     return { ok: false, status: 413, error: `Workspace storage quota exceeded (${Math.round(used / MB)} MB of ${Math.round(quota / MB)} MB used)` };
   }

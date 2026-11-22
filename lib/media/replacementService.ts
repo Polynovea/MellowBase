@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { findAsset, listAssetReplacements as listReplacementRows, replaceAssetFile } from "@/lib/media/mediaData";
 import { getStorageProvider } from "@/lib/media/storageProvider";
-import { AssetRow, AssetResult } from "@/lib/media/assetService";
+import type { AssetRow, AssetResult } from "@/lib/media/assetService";
 
 export interface AssetReplacementRow {
   id: string;
@@ -70,13 +69,7 @@ export async function replaceAsset(params: {
     return { ok: false, error: "Asset exceeds 20 MB limit", status: 413 };
   }
 
-  const db = createServiceRoleClient();
-  const { data: currentAsset } = await db
-    .from("assets")
-    .select("*")
-    .eq("workspace_id", params.workspaceId)
-    .eq("id", params.assetId)
-    .maybeSingle();
+  const currentAsset = await findAsset(params.workspaceId, params.assetId);
 
   if (!currentAsset) {
     return { ok: false, error: "Asset not found in workspace", status: 404 };
@@ -97,51 +90,31 @@ export async function replaceAsset(params: {
   });
   await provider.upload({ body, key: newStorageKey, contentType: params.file.type });
 
-  // 1 & 2: Execute atomic database transaction (record history + update asset) via RPC
-  const { data: rpcRes, error: rpcErr } = await db.rpc("cms_replace_asset_file", {
-    p_workspace_id: params.workspaceId,
-    p_actor_id: params.actorAdminUserId,
-    p_asset_id: currentAsset.id,
-    p_new_storage_provider: provider.key,
-    p_new_storage_key: newStorageKey,
-    p_new_checksum: newChecksum,
-    p_new_filename: params.file.name,
-    p_new_mime_type: params.file.type,
-    p_new_size_bytes: params.file.size,
-    p_new_width: dimensions.width,
-    p_new_height: dimensions.height,
-    p_reason: params.reason || "Asset replaced in media operations",
+  // 1 & 2: record history and update the asset atomically (cms_replace_asset_file).
+  const replaced = await replaceAssetFile({
+    workspaceId: params.workspaceId,
+    actorId: params.actorAdminUserId,
+    assetId: currentAsset.id,
+    storageProvider: provider.key,
+    storageKey: newStorageKey,
+    checksum: newChecksum,
+    filename: params.file.name,
+    mimeType: params.file.type,
+    sizeBytes: params.file.size,
+    width: dimensions.width,
+    height: dimensions.height,
+    reason: params.reason || "Asset replaced in media operations",
   });
 
-  if (rpcErr || !rpcRes) {
+  if (!replaced.ok) {
     // If DB transaction fails, clean up newly uploaded blob to avoid orphaned storage objects
     await provider.remove(newStorageKey).catch(() => undefined);
-    return { ok: false, error: rpcErr?.message || "Could not replace asset in database", status: 500 };
+    return { ok: false, error: replaced.error, status: 500 };
   }
 
-  const resultData = rpcRes as { asset: AssetRow; historyId: string };
-
-  const { data: replacementRow } = await db
-    .from("asset_replacement_history")
-    .select("*")
-    .eq("id", resultData.historyId)
-    .single();
-
-  return {
-    ok: true,
-    data: {
-      asset: resultData.asset,
-      replacement: replacementRow as AssetReplacementRow,
-    },
-  };
+  return { ok: true, data: { asset: replaced.asset, replacement: replaced.replacement } };
 }
 
 export async function listAssetReplacements(workspaceId: string, assetId: string): Promise<AssetReplacementRow[]> {
-  const { data } = await createServiceRoleClient()
-    .from("asset_replacement_history")
-    .select("*")
-    .eq("workspace_id", workspaceId)
-    .eq("asset_id", assetId)
-    .order("created_at", { ascending: false });
-  return (data as AssetReplacementRow[]) ?? [];
+  return listReplacementRows(workspaceId, assetId);
 }

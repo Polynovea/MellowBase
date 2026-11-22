@@ -6,12 +6,12 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createClient } from "@supabase/supabase-js";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
 import { allowsPrivateNetwork, assertSafeOutboundUrl } from "@/lib/infrastructure/networkSafety";
 import type { EnvironmentKind } from "@/lib/infrastructure/types";
 import { deleteObject, resolveObjectUrl, uploadObject, createPresignedUpload as createLegacyR2PresignedUpload } from "@/lib/r2Storage";
 import { guardedFetchFor, guardedS3RequestHandler } from "@/lib/infrastructure/guardedNetwork";
+import { activeStorageConnections, defaultEnvironment, environmentKind as environmentKindOf, exactStorageConnection, findEnvironment, type EnvironmentRow, type StorageConnectionRow } from "@/lib/media/mediaData";
 
 export interface StorageProvider {
   readonly key: string;
@@ -23,26 +23,6 @@ export interface StorageProvider {
   resolveReadUrl(key: string): Promise<string>;
   /** contentLength is signed into the URL, so the provider rejects a body of any other size. */
   createPresignedUpload?(key: string, contentType: string, contentLength: number): Promise<{ uploadUrl: string; readUrl: string }>;
-}
-
-interface StorageConnectionRow {
-  id: string;
-  workspace_id: string;
-  environment_id: string;
-  connector_type: string;
-  connector_family: string;
-  name: string;
-  status: string;
-  active: boolean;
-  config_json: Record<string, unknown>;
-}
-
-interface EnvironmentRow {
-  id: string;
-  storage_provider: string | null;
-  is_default: boolean;
-  status: string;
-  kind: EnvironmentKind;
 }
 
 function configText(config: Record<string, unknown>, key: string) {
@@ -192,10 +172,9 @@ async function supabaseStorageProvider(connection: StorageConnectionRow, credent
 async function providerFromConnection(workspaceId: string, connection: StorageConnectionRow): Promise<StorageProvider> {
   if (connection.workspace_id !== workspaceId || connection.connector_family !== "storage") throw new Error("Storage connection is outside the workspace boundary");
   if (!connection.active || connection.status !== "active") throw new Error(`${connection.name}: storage connection is not active; verify/reconnect it first`);
-  const { data: environment, error: environmentError } = await createServiceRoleClient().from("workspace_environments").select("kind").eq("workspace_id", workspaceId).eq("id", connection.environment_id).maybeSingle();
-  if (environmentError) throw new Error(environmentError.message);
-  if (!environment) throw new Error("Storage connection environment is unavailable");
-  const environmentKind = environment.kind as EnvironmentKind;
+  const kind = await environmentKindOf(workspaceId, connection.environment_id);
+  if (!kind) throw new Error("Storage connection environment is unavailable");
+  const environmentKind = kind as EnvironmentKind;
   const credentials = await resolveConnectionCredentials(workspaceId, connection.id);
   if (["storage.r2", "storage.s3", "storage.minio"].includes(connection.connector_type)) return s3Provider(connection, credentials, environmentKind);
   if (connection.connector_type === "storage.supabase") return supabaseStorageProvider(connection, credentials, environmentKind);
@@ -203,36 +182,20 @@ async function providerFromConnection(workspaceId: string, connection: StorageCo
 }
 
 async function exactConnection(workspaceId: string, id: string) {
-  const { data, error } = await createServiceRoleClient().from("workspace_connections").select("*")
-    .eq("workspace_id", workspaceId).eq("id", id).eq("connector_family", "storage").maybeSingle();
-  if (error) throw new Error(error.message);
-  return data as StorageConnectionRow | null;
+  return exactStorageConnection(workspaceId, id);
 }
 
 async function selectEnvironment(workspaceId: string, environmentId?: string | null): Promise<EnvironmentRow | null> {
-  const db = createServiceRoleClient();
   if (environmentId) {
-    const { data, error } = await db.from("workspace_environments").select("id,storage_provider,is_default,status,kind")
-      .eq("workspace_id", workspaceId).eq("id", environmentId).maybeSingle();
-    if (error) throw new Error(error.message);
-    if (!data) throw new Error("Storage environment was not found in the workspace");
-    return data as EnvironmentRow;
+    const environment = await findEnvironment(workspaceId, environmentId);
+    if (!environment) throw new Error("Storage environment was not found in the workspace");
+    return environment;
   }
-  const { data, error } = await db.from("workspace_environments").select("id,storage_provider,is_default,status,kind")
-    .eq("workspace_id", workspaceId).order("is_default", { ascending: false }).order("created_at", { ascending: true }).limit(1).maybeSingle();
-  if (error) throw new Error(error.message);
-  return data as EnvironmentRow | null;
+  return defaultEnvironment(workspaceId);
 }
 
 async function selectActiveStorageConnection(workspaceId: string, environment: EnvironmentRow | null) {
-  const db = createServiceRoleClient();
-  let query = db.from("workspace_connections").select("*")
-    .eq("workspace_id", workspaceId).eq("connector_family", "storage").eq("active", true).eq("status", "active")
-    .order("last_success_at", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false });
-  if (environment?.id) query = query.eq("environment_id", environment.id);
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
-  const rows = (data ?? []) as StorageConnectionRow[];
+  const rows = await activeStorageConnections(workspaceId, environment?.id ?? null);
   if (!rows.length) return null;
   const preferred = environment?.storage_provider?.trim();
   if (!preferred) return rows[0];
