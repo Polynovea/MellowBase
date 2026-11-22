@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Content entries and versions can run on the direct PostgreSQL path (`content=postgres`). Validation, uniqueness and relation rules are shared by both paths. On the direct path, every version read requires the entry's workspace, the uniqueness check sees every entry of the model (no 1000-row cap), and database errors from the entry SQL functions no longer reach the browser.
 - Admin user profiles (`/api/admin/users`, `/api/admin/me`) can run on the direct PostgreSQL path (`admin=postgres`): creating or updating a member writes the profile and its default workspace membership in one transaction. `/api/admin/me` no longer returns raw database error text.
 - Developer schema-delivery and import runs can run on the direct PostgreSQL path (`developer=postgres`). The developer area's audit events now follow the area's own backend switch, and import-run updates are scoped by workspace on both paths.
 - Agent and extension governance can run on the direct PostgreSQL path (`developer=postgres`). On the direct path, binding an API token to an agent re-checks both under a row lock (a token revoked a moment earlier cannot be bound), and installing an extension writes the installation, every permission grant and the audit event in one transaction (the Supabase path ignored failed grant writes).
