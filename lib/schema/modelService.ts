@@ -1,6 +1,14 @@
+// Schema area: types, the shared validate → diff → apply rules, and the backend dispatcher.
+//
+// The database primitives run on Supabase (modelService.supabase.ts) or directly on PostgreSQL
+// (modelService.postgres.ts), chosen per call by the `schema` switch in POLYNOVEA_DATA_BACKEND.
+// Everything that decides what is allowed (canonical schema validation, apiKey immutability, diff
+// classification, the acknowledge-unsafe gate) stays here, so both paths enforce identical rules.
 import { createHash } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { usesDirectPostgres } from "@/lib/db/backend";
+import { logPlatformEventFor } from "@/lib/platform/audit";
+import * as postgres from "@/lib/schema/modelService.postgres";
+import * as supabase from "@/lib/schema/modelService.supabase";
 import { validateCanonicalSchema } from "@/lib/schema/canonicalSchema";
 import { computeSchemaDiff, type SchemaDiff } from "@/lib/schema/diff";
 import { resolveModelCapability, type CanonicalSchema, type ModelCapability } from "@/lib/schema/fields/types";
@@ -58,38 +66,20 @@ export async function createModel(params: {
   }
   const schema = validation.schema;
 
-  const db = createServiceRoleClient();
-  const hash = computeSchemaHash(schema);
-  const capability = resolveModelCapability(schema);
-
-  const { data: rpcRes, error: rpcError } = await db.rpc("cms_create_content_model", {
-    p_workspace_id: params.workspaceId,
-    p_actor_id: params.createdBy,
-    p_name: schema.name,
-    p_api_key: schema.apiKey,
-    p_description: params.description ?? null,
-    p_icon: params.icon ?? null,
-    p_schema_json: schema,
-    p_schema_hash: hash,
-    p_capability: capability,
+  return impl().createModelRecord({
+    workspaceId: params.workspaceId,
+    actorId: params.createdBy,
+    schema,
+    description: params.description ?? null,
+    icon: params.icon ?? null,
+    hash: computeSchemaHash(schema),
+    capability: resolveModelCapability(schema),
   });
-
-  if (rpcError || !rpcRes) {
-    const isConflict = rpcError?.code === "23505" || rpcError?.message?.includes("already exists");
-    return { ok: false, error: rpcError?.message ?? "Failed to create content model", status: isConflict ? 409 : 500 };
-  }
-
-  const result = rpcRes as { model: ContentModelRow; version: ContentModelVersionRow };
-  return { ok: true, data: result };
 }
 
-export async function rebuildContentFields(contentModelId: string, schema: CanonicalSchema): Promise<void> {
-  const db = createServiceRoleClient();
-  const { error: delError } = await db.from("content_fields").delete().eq("content_model_id", contentModelId);
-  if (delError) throw new Error(`Failed to clear content_fields: ${delError.message}`);
-  if (schema.fields.length === 0) return;
-
-  const rows = schema.fields.map((field, index) => ({
+/** The content_fields rows a canonical schema projects to (shared by both paths). */
+export function contentFieldRows(contentModelId: string, schema: CanonicalSchema) {
+  return schema.fields.map((field, index) => ({
     content_model_id: contentModelId,
     field_key: field.key,
     label: field.label,
@@ -108,59 +98,18 @@ export async function rebuildContentFields(contentModelId: string, schema: Canon
       uiHints: field.uiHints ?? {},
     },
   }));
-
-  const { error: insError } = await db.from("content_fields").insert(rows);
-  if (insError) throw new Error(`Failed to insert content_fields: ${insError.message}`);
 }
 
-export async function getModel(workspaceId: string, modelId: string): Promise<ContentModelRow | null> {
-  const db = createServiceRoleClient();
-  const { data } = await db.from("content_models").select("*").eq("workspace_id", workspaceId).eq("id", modelId).maybeSingle();
-  return data ?? null;
-}
+// Compile-time check that the direct implementation matches the Supabase one exactly.
+const direct: typeof supabase = postgres;
+const impl = (): typeof supabase => (usesDirectPostgres("schema") ? direct : supabase);
 
-export async function listModels(workspaceId: string): Promise<ContentModelRow[]> {
-  const db = createServiceRoleClient();
-  const { data: models } = await db.from("content_models").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending: false });
-  if (!models || models.length === 0) return [];
-
-  const modelIds = models.map((m) => m.id);
-  const { data: versions } = await db
-    .from("content_model_versions")
-    .select("content_model_id, version_number, schema_json")
-    .in("content_model_id", modelIds);
-
-  const versionMap = new Map<string, CanonicalSchema>();
-  for (const v of versions || []) {
-    versionMap.set(`${v.content_model_id}:${v.version_number}`, v.schema_json as CanonicalSchema);
-  }
-
-  return models.map((m) => ({
-    ...m,
-    current_schema: versionMap.get(`${m.id}:${m.current_schema_version}`) ?? null,
-  }));
-}
-
-export async function listVersions(modelId: string): Promise<ContentModelVersionRow[]> {
-  const db = createServiceRoleClient();
-  const { data } = await db
-    .from("content_model_versions")
-    .select("*")
-    .eq("content_model_id", modelId)
-    .order("version_number", { ascending: false });
-  return data ?? [];
-}
-
-export async function getVersion(modelId: string, versionNumber: number): Promise<ContentModelVersionRow | null> {
-  const db = createServiceRoleClient();
-  const { data } = await db
-    .from("content_model_versions")
-    .select("*")
-    .eq("content_model_id", modelId)
-    .eq("version_number", versionNumber)
-    .maybeSingle();
-  return data ?? null;
-}
+export const rebuildContentFields: typeof supabase.rebuildContentFields = (...args) => impl().rebuildContentFields(...args);
+export const getModel: typeof supabase.getModel = (...args) => impl().getModel(...args);
+export const listModels: typeof supabase.listModels = (...args) => impl().listModels(...args);
+export const listVersions: typeof supabase.listVersions = (...args) => impl().listVersions(...args);
+export const getVersion: typeof supabase.getVersion = (...args) => impl().getVersion(...args);
+export const updateModelMetadata: typeof supabase.updateModelMetadata = (...args) => impl().updateModelMetadata(...args);
 
 export async function diffVersions(
   modelId: string,
@@ -245,7 +194,7 @@ export async function applyChange(params: {
     };
   }
 
-  await logPlatformEvent({
+  await logPlatformEventFor("schema", {
     workspaceId: params.model.workspace_id,
     actorAdminUserId: params.actorAdminUserId,
     action: "schema.migration.started",
@@ -254,33 +203,26 @@ export async function applyChange(params: {
     metadata: { fromVersion: currentVersion.version_number, toVersion: currentVersion.version_number + 1 },
   });
 
-  const db = createServiceRoleClient();
-  const hash = computeSchemaHash(proposedSchema);
-  const capability = resolveModelCapability(proposedSchema);
-  const nextVersionNumber = params.model.current_schema_version + 1;
-
-  const { data: rpcRes, error: rpcError } = await db.rpc("cms_apply_model_schema_version", {
-    p_workspace_id: params.model.workspace_id,
-    p_actor_id: params.actorAdminUserId,
-    p_model_id: params.model.id,
-    p_schema_json: proposedSchema,
-    p_schema_hash: hash,
-    p_change_summary: params.changeSummary ?? null,
-    p_capability: capability,
+  const applied = await impl().applySchemaVersion({
+    model: params.model,
+    actorId: params.actorAdminUserId,
+    schema: proposedSchema,
+    hash: computeSchemaHash(proposedSchema),
+    changeSummary: params.changeSummary ?? null,
+    capability: resolveModelCapability(proposedSchema),
   });
 
-  if (rpcError || !rpcRes) {
-    await logPlatformEvent({
+  if (!applied.ok) {
+    await logPlatformEventFor("schema", {
       workspaceId: params.model.workspace_id,
       actorAdminUserId: params.actorAdminUserId,
       action: "schema.migration.failed",
       entityType: "content_model",
       entityId: params.model.id,
-      metadata: { error: rpcError?.message },
+      metadata: { error: applied.error },
     });
-    return { ok: false, error: rpcError?.message ?? "Failed to apply schema version", status: 500 };
+    return { ok: false, error: applied.error, status: 500 };
   }
 
-  const version = (rpcRes as { version: ContentModelVersionRow }).version;
-  return { ok: true, data: { applied: true, diff, version } };
+  return { ok: true, data: { applied: true, diff, version: applied.version } };
 }
