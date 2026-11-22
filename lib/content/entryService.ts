@@ -1,5 +1,8 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { logPlatformEvent } from "@/lib/platform/audit";
+// Content area: entries and versions. The rules (schema validation, uniqueness, relation integrity,
+// lifecycle checks) live here and are shared by both data paths; the queries and SQL function calls
+// are primitives in entryData.ts, chosen by the `content` switch in POLYNOVEA_DATA_BACKEND.
+import { logPlatformEventFor } from "@/lib/platform/audit";
+import * as entryData from "@/lib/content/entryData";
 import { extractAssetReferences, extractEntryRelations, extractInternalPathReferences, validateEntryData } from "@/lib/content/entryValidation";
 import { getModel, getVersion, type ContentModelRow, type ContentModelVersionRow } from "@/lib/schema/modelService";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
@@ -20,20 +23,11 @@ async function currentSchema(model: ContentModelRow): Promise<EntryResult<{ vers
 async function verifyUniqueValues(params: { workspaceId: string; modelId: string; schema: CanonicalSchema; data: Record<string, unknown>; exceptEntryId?: string }): Promise<EntryResult<void>> {
   const fields = params.schema.fields.filter((field) => field.unique && params.data[field.key] !== undefined && params.data[field.key] !== null && params.data[field.key] !== "");
   if (!fields.length) return { ok: true, data: undefined };
-  const db = createServiceRoleClient();
-  // Do not use a nested PostgREST relation projection here. content_entries
-  // has several version foreign keys (draft/published plus the version's
-  // entry_id), which makes an unqualified embedded relation ambiguous in
-  // Supabase. Resolve current version ids explicitly instead.
-  const { data: entries, error } = await db.from("content_entries").select("id, current_draft_version_id, published_version_id").eq("workspace_id", params.workspaceId).eq("content_model_id", params.modelId);
-  if (error) return { ok: false, error: "Could not verify unique fields", status: 500 };
-  const versionIds = [...new Set((entries ?? []).flatMap((entry: { current_draft_version_id: string | null; published_version_id: string | null }) => [entry.current_draft_version_id, entry.published_version_id].filter((id): id is string => Boolean(id))))];
-  if (versionIds.length === 0) return { ok: true, data: undefined };
-  const { data: versions, error: versionError } = await db.from("content_entry_versions").select("entry_id, data_jsonb").in("id", versionIds);
-  if (versionError) return { ok: false, error: "Could not verify unique fields", status: 500 };
+  const versions = await entryData.currentVersionsOfModel(params.workspaceId, params.modelId);
+  if (versions === null) return { ok: false, error: "Could not verify unique fields", status: 500 };
   for (const field of fields) {
     const value = params.data[field.key];
-    const conflict = (versions ?? []).some((version: { entry_id: string; data_jsonb: Record<string, unknown> }) => version.entry_id !== params.exceptEntryId && version.data_jsonb?.[field.key] === value);
+    const conflict = versions.some((version: { entry_id: string; data_jsonb: Record<string, unknown> }) => version.entry_id !== params.exceptEntryId && version.data_jsonb?.[field.key] === value);
     if (conflict) return { ok: false, error: `"${field.label}" must be unique for this content model`, status: 409 };
   }
   return { ok: true, data: undefined };
@@ -43,15 +37,12 @@ async function verifyRelations(workspaceId: string, sourceEntryId: string, schem
   const relations = extractEntryRelations(schema, data);
   if (relations.some((relation) => relation.targetEntryId === sourceEntryId)) return { ok: false, error: "An entry cannot reference itself", status: 400 };
   if (relations.length === 0) return { ok: true, data: undefined };
-  const db = createServiceRoleClient();
   const targetIds = [...new Set(relations.map((relation) => relation.targetEntryId))];
-  const { data: targets, error } = await db.from("content_entries").select("id, workspace_id, content_model_id").in("id", targetIds).eq("workspace_id", workspaceId);
-  if (error || (targets ?? []).length !== targetIds.length) return { ok: false, error: "One or more related entries do not exist in this workspace", status: 400 };
-  const modelIds = [...new Set((targets ?? []).map((target: { content_model_id: string }) => target.content_model_id))];
-  const { data: targetModels } = await db.from("content_models").select("id, api_key").in("id", modelIds).eq("workspace_id", workspaceId);
-  const apiKeyByModel = new Map((targetModels ?? []).map((target: { id: string; api_key: string }) => [target.id, target.api_key]));
+  const targets = await entryData.entriesWithModelKeys(workspaceId, targetIds);
+  if (targets === null || targets.length !== targetIds.length) return { ok: false, error: "One or more related entries do not exist in this workspace", status: 400 };
+  const apiKeyByModel = new Map(targets.map((target) => [target.content_model_id, target.api_key]));
   for (const relation of relations) {
-    const target = (targets ?? []).find((candidate: { id: string }) => candidate.id === relation.targetEntryId) as { content_model_id: string } | undefined;
+    const target = targets.find((candidate) => candidate.id === relation.targetEntryId);
     const field = schema.fields.find((candidate) => candidate.key === relation.fieldKey);
     if (!target || !field?.relation || apiKeyByModel.get(target.content_model_id) !== field.relation.targetModelApiKey) return { ok: false, error: `Relation "${relation.fieldKey}" targets the wrong content model`, status: 400 };
   }
@@ -71,12 +62,11 @@ async function buildGraphRelations(params: { workspaceId: string; schema: Canoni
   const rows: EntryGraphRelationPayload[] = extractEntryRelations(params.schema, params.data).map((relation) => ({
     fieldKey: relation.fieldKey, targetEntryId: relation.targetEntryId, targetEntityType: "entry", relationType: relation.relationType,
   }));
-  const db = createServiceRoleClient();
   const assetRefs = extractAssetReferences(params.schema, params.data);
   if (assetRefs.length) {
     const assetIds = [...new Set(assetRefs.map((item) => item.assetId))];
-    const { data: assets, error } = await db.from("assets").select("id, archived_at").eq("workspace_id", params.workspaceId).in("id", assetIds);
-    if (error || (assets ?? []).length !== assetIds.length || (assets ?? []).some((asset) => asset.archived_at)) {
+    const assets = await entryData.assetsById(params.workspaceId, assetIds);
+    if (assets === null || assets.length !== assetIds.length || assets.some((asset) => asset.archived_at)) {
       return { ok: false, error: "One or more media assets do not exist in this workspace or are archived", status: 400 };
     }
     for (const ref of assetRefs) rows.push({ fieldKey: ref.fieldKey, targetAssetId: ref.assetId, targetEntityType: "asset", relationType: "media_asset" });
@@ -87,8 +77,7 @@ async function buildGraphRelations(params: { workspaceId: string; schema: Canoni
     .filter((ref) => ref.normalized.ok) as Array<{ fieldKey: string; path: string; normalized: { ok: true; path: string } }>;
   const paths = [...new Set(pathRefs.map((ref) => ref.normalized.path))];
   if (paths.length) {
-    const { data: routes } = await db.from("content_routes").select("id,path").eq("workspace_id", params.workspaceId).eq("locale", params.locale).neq("status", "archived").in("path", paths);
-    const routeByPath = new Map((routes ?? []).map((route) => [route.path, route.id]));
+    const routeByPath = await entryData.liveRouteIdsByPath(params.workspaceId, params.locale, paths);
     for (const ref of pathRefs) {
       const routeId = routeByPath.get(ref.normalized.path);
       if (routeId) rows.push({ fieldKey: ref.fieldKey, targetRouteId: routeId, targetEntityType: "route", relationType: "internal_link" });
@@ -104,36 +93,15 @@ async function buildGraphRelations(params: { workspaceId: string; schema: Canoni
 }
 
 export async function listEntries(workspaceId: string, modelId?: string): Promise<(ContentEntryRow & { data?: Record<string, unknown> })[]> {
-  const db = createServiceRoleClient();
-  let query = db.from("content_entries").select("*").eq("workspace_id", workspaceId).order("updated_at", { ascending: false });
-  if (modelId) query = query.eq("content_model_id", modelId);
-  const { data } = await query;
-  if (!data || data.length === 0) return [];
-
-  const versionIds = [...new Set(data.map((e: ContentEntryRow) => e.current_draft_version_id || e.published_version_id).filter(Boolean))] as string[];
-  if (versionIds.length > 0) {
-    const { data: versions } = await db
-      .from("content_entry_versions")
-      .select("id, entry_id, data_jsonb")
-      .in("id", versionIds);
-    const dataMap = new Map((versions || []).map((v: { id: string; data_jsonb: Record<string, unknown> }) => [v.id, v.data_jsonb]));
-    return data.map((e: ContentEntryRow) => ({
-      ...e,
-      data: (e.current_draft_version_id && dataMap.get(e.current_draft_version_id)) || (e.published_version_id && dataMap.get(e.published_version_id)) || {},
-    }));
-  }
-
-  return data;
+  return entryData.listEntries(workspaceId, modelId);
 }
 
 export async function getEntry(workspaceId: string, entryId: string): Promise<ContentEntryRow | null> {
-  const { data } = await createServiceRoleClient().from("content_entries").select("*").eq("workspace_id", workspaceId).eq("id", entryId).maybeSingle();
-  return data ?? null;
+  return entryData.getEntry(workspaceId, entryId);
 }
 
 export async function listEntryVersions(entryId: string): Promise<ContentEntryVersionRow[]> {
-  const { data } = await createServiceRoleClient().from("content_entry_versions").select("*").eq("entry_id", entryId).order("version_number", { ascending: false });
-  return data ?? [];
+  return entryData.listEntryVersions(entryId);
 }
 
 function extractUniqueReservations(schema: CanonicalSchema, data: Record<string, unknown>): Array<{ fieldKey: string; normalizedValue: string }> {
@@ -162,8 +130,7 @@ export async function createEntry(params: { workspaceId: string; modelId: string
   if (!graphRelations.ok) return graphRelations;
   const searchText = searchableText(params.data);
 
-  const db = createServiceRoleClient();
-  const { data: rpcRes, error: rpcError } = await db.rpc("cms_create_content_entry", {
+  const called = await entryData.callEntryFunction("cms_create_content_entry", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorAdminUserId,
     p_model_id: model.id,
@@ -175,16 +142,17 @@ export async function createEntry(params: { workspaceId: string; modelId: string
     p_search_text: searchText,
   });
 
-  if (rpcError || !rpcRes) {
-    const isConflict = rpcError?.code === "23505" || rpcError?.message?.includes("unique_values") || rpcError?.message?.includes("unique");
+  if (!called.ok) {
+    const rpcError = called;
+    const isConflict = rpcError.code === "23505" || rpcError.message?.includes("unique_values") || rpcError.message?.includes("unique");
     return {
       ok: false,
-      error: isConflict ? "One or more unique fields conflict with an existing entry in this content model" : (rpcError?.message ?? "Could not create entry"),
+      error: isConflict ? "One or more unique fields conflict with an existing entry in this content model" : (rpcError.message ?? "Could not create entry"),
       status: isConflict ? 409 : 500,
     };
   }
 
-  const { entry, version } = rpcRes as { entry: ContentEntryRow; version: ContentEntryVersionRow };
+  const { entry, version } = called.data as { entry: ContentEntryRow; version: ContentEntryVersionRow };
   return { ok: true, data: { entry, version } };
 }
 
@@ -213,8 +181,7 @@ export async function saveDraft(params: { workspaceId: string; entryId: string; 
   if (!graphRelations.ok) return graphRelations;
   const searchText = searchableText(params.data);
 
-  const db = createServiceRoleClient();
-  const { data: rpcRes, error: rpcError } = await db.rpc("cms_save_entry_draft", {
+  const called = await entryData.callEntryFunction("cms_save_entry_draft", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorAdminUserId,
     p_entry_id: entry.id,
@@ -227,8 +194,9 @@ export async function saveDraft(params: { workspaceId: string; entryId: string; 
     p_search_text: searchText,
   });
 
-  if (rpcError || !rpcRes) {
-    if (rpcError?.code === "P0002" || rpcError?.message?.includes("Version conflict")) {
+  if (!called.ok) {
+    const rpcError = called;
+    if (rpcError.code === "P0002" || rpcError.message?.includes("Version conflict")) {
       const latestList = await listEntryVersions(entry.id);
       return {
         ok: false,
@@ -237,15 +205,15 @@ export async function saveDraft(params: { workspaceId: string; entryId: string; 
         conflict: { currentVersion: latestList[0] },
       };
     }
-    const isConflict = rpcError?.code === "23505" || rpcError?.message?.includes("unique_values");
+    const isConflict = rpcError.code === "23505" || rpcError.message?.includes("unique_values");
     return {
       ok: false,
-      error: isConflict ? "One or more unique fields conflict with an existing entry in this content model" : (rpcError?.message ?? "Could not save draft"),
+      error: isConflict ? "One or more unique fields conflict with an existing entry in this content model" : (rpcError.message ?? "Could not save draft"),
       status: isConflict ? 409 : 500,
     };
   }
 
-  const { entry: updated, version } = rpcRes as { entry: ContentEntryRow; version: ContentEntryVersionRow };
+  const { entry: updated, version } = called.data as { entry: ContentEntryRow; version: ContentEntryVersionRow };
   return { ok: true, data: { entry: updated, version } };
 }
 
@@ -258,45 +226,45 @@ export async function publishEntry(params: { workspaceId: string; entryId: strin
     return { ok: false, error: `Cannot publish entry: model "${model.api_key}" has capability "data_only"`, status: 409 };
   }
 
-  const db = createServiceRoleClient();
-  const { data: rpcRes, error: rpcError } = await db.rpc("cms_publish_content_entry", {
+  const called = await entryData.callEntryFunction("cms_publish_content_entry", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorAdminUserId,
     p_entry_id: entry.id,
   });
 
-  if (rpcError || !rpcRes) {
-    const isConflict = rpcError?.message?.includes("approved") || rpcError?.code === "P0003" || rpcError?.message?.includes("data_only");
-    return { ok: false, error: rpcError?.message ?? "Could not publish entry", status: isConflict ? 409 : 500 };
+  if (!called.ok) {
+    const rpcError = called;
+    const isConflict = rpcError.message?.includes("approved") || rpcError.code === "P0003" || rpcError.message?.includes("data_only");
+    return { ok: false, error: rpcError.message ?? "Could not publish entry", status: isConflict ? 409 : 500 };
   }
 
-  const updated = rpcRes as ContentEntryRow;
+  const updated = called.data as ContentEntryRow;
   return { ok: true, data: updated };
 }
 
 /** Restoring never mutates history: it creates a fresh draft from the selected version. */
 export async function restoreEntryVersion(params: { workspaceId: string; entryId: string; versionId: string; actorAdminUserId: string }): Promise<EntryResult<{ entry: ContentEntryRow; version: ContentEntryVersionRow }>> {
   const entry = await getEntry(params.workspaceId, params.entryId); if (!entry) return { ok: false, error: "Entry not found", status: 404 };
-  const { data: sourceVersion } = await createServiceRoleClient().from("content_entry_versions").select("*").eq("id", params.versionId).eq("entry_id", entry.id).maybeSingle();
+  const sourceVersion = await entryData.findEntryVersion(entry.id, params.versionId);
   if (!sourceVersion) return { ok: false, error: "Version not found for this entry", status: 404 };
   const result = await saveDraft({ workspaceId: params.workspaceId, entryId: entry.id, data: sourceVersion.data_jsonb, locale: sourceVersion.locale, actorAdminUserId: params.actorAdminUserId, changeSummary: `Restored from version ${sourceVersion.version_number}` });
-  if (result.ok) await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorAdminUserId, action: "content.entry.version_restored", entityType: "content_entry", entityId: entry.id, metadata: { sourceVersionId: params.versionId, sourceVersionNumber: sourceVersion.version_number, restoredVersionNumber: result.data.version.version_number } });
+  if (result.ok) await logPlatformEventFor("content", { workspaceId: params.workspaceId, actorAdminUserId: params.actorAdminUserId, action: "content.entry.version_restored", entityType: "content_entry", entityId: entry.id, metadata: { sourceVersionId: params.versionId, sourceVersionNumber: sourceVersion.version_number, restoredVersionNumber: result.data.version.version_number } });
   return result;
 }
 
 export async function archiveEntry(params: { workspaceId: string; entryId: string; actorAdminUserId: string }): Promise<EntryResult<ContentEntryRow>> {
   const entry = await getEntry(params.workspaceId, params.entryId); if (!entry) return { ok: false, error: "Entry not found", status: 404 };
   if (entry.status === "archived") return { ok: false, error: "Entry is already archived", status: 409 };
-  const db = createServiceRoleClient();
-  const { data: rpcRes, error: rpcError } = await db.rpc("cms_archive_content_entry", {
+  const called = await entryData.callEntryFunction("cms_archive_content_entry", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorAdminUserId,
     p_entry_id: entry.id,
   });
-  if (rpcError || !rpcRes) {
-    return { ok: false, error: rpcError?.message ?? "Could not archive entry", status: 500 };
+  if (!called.ok) {
+    const rpcError = called;
+    return { ok: false, error: rpcError.message ?? "Could not archive entry", status: 500 };
   }
-  return { ok: true, data: rpcRes as ContentEntryRow };
+  return { ok: true, data: called.data as ContentEntryRow };
 }
 
 /**
@@ -306,16 +274,16 @@ export async function archiveEntry(params: { workspaceId: string; entryId: strin
 export async function unarchiveEntry(params: { workspaceId: string; entryId: string; actorAdminUserId: string }): Promise<EntryResult<ContentEntryRow>> {
   const entry = await getEntry(params.workspaceId, params.entryId); if (!entry) return { ok: false, error: "Entry not found", status: 404 };
   if (entry.status !== "archived") return { ok: false, error: "Entry is not archived", status: 409 };
-  const db = createServiceRoleClient();
-  const { data: rpcRes, error: rpcError } = await db.rpc("cms_unarchive_content_entry", {
+  const called = await entryData.callEntryFunction("cms_unarchive_content_entry", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorAdminUserId,
     p_entry_id: entry.id,
   });
-  if (rpcError || !rpcRes) {
-    return { ok: false, error: rpcError?.message ?? "Could not restore entry from archive", status: 500 };
+  if (!called.ok) {
+    const rpcError = called;
+    return { ok: false, error: rpcError.message ?? "Could not restore entry from archive", status: 500 };
   }
-  return { ok: true, data: rpcRes as ContentEntryRow };
+  return { ok: true, data: called.data as ContentEntryRow };
 }
 
 export interface BulkOperationResult { id: string; ok: boolean; error?: string }
@@ -346,9 +314,7 @@ export async function exportEntries(workspaceId: string, modelId: string): Promi
   if (!model) return { ok: false, error: "Content model not found", status: 404 };
   const entries = await listEntries(workspaceId, modelId);
   const versionIds = entries.map((entry) => entry.published_version_id ?? entry.current_draft_version_id).filter((v): v is string => Boolean(v));
-  const db = createServiceRoleClient();
-  const { data: versions } = versionIds.length ? await db.from("content_entry_versions").select("id, data_jsonb").in("id", versionIds) : { data: [] as Array<{ id: string; data_jsonb: Record<string, unknown> }> };
-  const dataByVersionId = new Map((versions ?? []).map((v) => [v.id, v.data_jsonb]));
+  const dataByVersionId = await entryData.versionDataByIds(workspaceId, versionIds);
   const rows: EntryExportRow[] = entries.map((entry) => {
     const versionId = entry.published_version_id ?? entry.current_draft_version_id;
     return { id: entry.id, status: entry.status, updatedAt: entry.updated_at, data: (versionId && dataByVersionId.get(versionId)) || {} };
@@ -406,7 +372,7 @@ export async function importEntries(params: { workspaceId: string; modelId: stri
     results.push(created.ok ? { index, ok: true, errors: [], entryId: created.data.entry.id } : { index, ok: false, errors: [created.error] });
   }
 
-  await logPlatformEvent({
+  await logPlatformEventFor("content", {
     workspaceId: params.workspaceId,
     actorAdminUserId: params.actorAdminUserId,
     action: params.dryRun ? "content.entry.import_dry_run" : "content.entry.imported",
@@ -429,9 +395,7 @@ export async function listEntryOptions(workspaceId: string, modelId: string): Pr
   const labelField = schemaResult.data.schema.fields.find((f) => ["text", "slug", "email"].includes(f.type)) ?? schemaResult.data.schema.fields[0];
   const entries = await listEntries(workspaceId, modelId);
   const versionIds = entries.map((entry) => entry.published_version_id ?? entry.current_draft_version_id).filter((v): v is string => Boolean(v));
-  const db = createServiceRoleClient();
-  const { data: versions } = versionIds.length ? await db.from("content_entry_versions").select("id, data_jsonb").in("id", versionIds) : { data: [] as Array<{ id: string; data_jsonb: Record<string, unknown> }> };
-  const dataByVersionId = new Map((versions ?? []).map((v) => [v.id, v.data_jsonb]));
+  const dataByVersionId = await entryData.versionDataByIds(workspaceId, versionIds);
   return entries.map((entry) => {
     const versionId = entry.published_version_id ?? entry.current_draft_version_id;
     const data = versionId ? dataByVersionId.get(versionId) : undefined;

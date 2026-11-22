@@ -5,6 +5,7 @@ vi.mock("@/lib/admin/serviceRole", () => ({
 }));
 vi.mock("@/lib/platform/audit", () => ({
   logPlatformEvent: vi.fn(),
+  logPlatformEventFor: vi.fn(),
 }));
 vi.mock("@/lib/content/searchService", () => ({
   indexEntry: vi.fn(),

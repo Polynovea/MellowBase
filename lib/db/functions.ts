@@ -21,9 +21,12 @@ export type SqlFunctionResult<N extends SqlFunctionName> =
  * clientErrorMessage still hides any message that looks internal.
  */
 export class SqlFunctionError extends Error {
-  constructor(message: string) {
+  /** The SQLSTATE the function raised with (P0001 unless it chose its own, e.g. P0002 or 23505). */
+  readonly sqlState: string | null;
+  constructor(message: string, sqlState: string | null = null) {
     super(message);
     this.name = "SqlFunctionError";
+    this.sqlState = sqlState;
   }
 }
 
@@ -95,7 +98,7 @@ export async function callFunction<N extends SqlFunctionName>(
       }
     }
   } catch (error) {
-    if (isRaisedException(error)) throw new SqlFunctionError(error.message);
+    if (isRaisedException(error)) throw new SqlFunctionError(error.message, typeof (error as unknown as { code?: unknown }).code === "string" ? (error as unknown as { code: string }).code : null);
     throw error;
   }
 }
