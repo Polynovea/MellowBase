@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import pg from "pg";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 
 for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
   const match = raw.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
@@ -23,7 +24,7 @@ const schema = {
   fields: [{ key: "title", label: "Title", type: "short_text", required: true, localized: false, unique: false }],
 };
 const schemaHash = createHash("sha256").update(JSON.stringify(schema, Object.keys(schema).sort())).digest("hex");
-const client = new pg.Client({ connectionString, ssl: { rejectUnauthorized: false } });
+const client = new pg.Client(postgresConnectionConfig(connectionString));
 await client.connect();
 try {
   await client.query("BEGIN");

@@ -105,9 +105,7 @@ describe.each(sqlFiles())("%s is safely re-runnable", (filename) => {
       const nameMatch = stmt.match(/^create policy\s+"([^"]+)"/i);
       expect(nameMatch, `could not parse policy name from: ${firstLine(stmt)}`).not.toBeNull();
       const policyName = nameMatch![1];
-      const hasDrop = stmts.some((s) =>
-        new RegExp(`^drop policy if exists\\s+"${policyName}"`, "i").test(s),
-      );
+      const hasDrop = stmts.some((s) => s.match(/^drop policy if exists\s+"([^"]+)"/i)?.[1].toLowerCase() === policyName.toLowerCase());
       expect(hasDrop, `missing "drop policy if exists \\"${policyName}\\"" before its CREATE POLICY`).toBe(true);
     }
   });

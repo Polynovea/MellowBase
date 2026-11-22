@@ -29,6 +29,8 @@ CMS_CONFIG_ENCRYPTION_KEY
 
 Generate `CMS_CONFIG_ENCRYPTION_KEY` as a cryptographically random 32-byte value. Do not prefix server-only secrets with `NEXT_PUBLIC_`.
 
+Database connections always verify the server's TLS certificate. Supabase signs its database certificates with its own root CA, so download it from **Project Settings > Database > SSL Configuration** and set `DATABASE_CA_CERT_FILE` to its path, or paste it into `DATABASE_CA_CERT` with `\n` for line breaks (useful on Vercel). See [PostgreSQL TLS](../self-hosting/POSTGRESQL.md#postgresql-tls).
+
 ## 3. Apply and verify the database
 
 ```bash

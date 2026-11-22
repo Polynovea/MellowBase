@@ -8,7 +8,13 @@ const ALLOWED_TYPES = [
   "video/mp4", "video/webm", "video/quicktime",
 ];
 const ts=()=>new Date().toISOString();
-function safeSegment(value:string){return value.toLowerCase().replace(/[^a-z0-9._-]+/g,"-").replace(/^-+|-+$/g,"")||"file";}
+function safeSegment(value:string){
+  const cleaned=value.slice(0,200).toLowerCase().replace(/[^a-z0-9._-]+/g,"-");
+  let start=0,end=cleaned.length;
+  while(start<end&&cleaned[start]==="-")start++;
+  while(end>start&&cleaned[end-1]==="-")end--;
+  return cleaned.slice(start,end)||"file";
+}
 
 export async function POST(req: Request) {
   const auth=await requirePlatformAccess(req,{permission:"media.upload"});if(auth.error)return auth.error;

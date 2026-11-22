@@ -14,7 +14,7 @@ const routeSchema = z.object({
 const fieldSchema = z.object({
   key: identifier,
   type: identifier,
-  configSchema: z.record(z.unknown()),
+  configSchema: z.record(z.string(), z.unknown()),
 });
 
 const adminExtensionSchema = z.object({

@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 
 for (const line of readFileSync(path.resolve(".env.local"), "utf8").split("\n")) {
   const [key, ...rest] = line.trim().split("=");
@@ -9,7 +10,7 @@ for (const line of readFileSync(path.resolve(".env.local"), "utf8").split("\n"))
 }
 const connectionString = process.env.Database_URL || process.env.DATABASE_URL || process.env.database_url;
 if (!connectionString) throw new Error("Database_URL is required");
-const client = new pg.Client({ connectionString, ssl: { rejectUnauthorized: false } });
+const client = new pg.Client(postgresConnectionConfig(connectionString));
 await client.connect();
 try {
   const table = await client.query("select relrowsecurity from pg_class where oid = 'public.content_entry_saved_views'::regclass");

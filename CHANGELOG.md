@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking:** PostgreSQL connections now always verify TLS certificates. Set `DATABASE_CA_CERT` or `DATABASE_CA_CERT_FILE` for providers with their own CA (Supabase, AWS RDS), or `sslmode=disable` for a private network. See `docs/self-hosting/POSTGRESQL.md`.
+- Extension network requests now resolve the target host and refuse any private, loopback, link-local or metadata address.
+- Upgraded Next.js to 15.5.29 and zod to 4.6.6, and patched undici, sharp, source-map-js, vite, vitest and brace-expansion.
+- Removed slow-regex paths in upload naming and markdown link extraction, tightened schema.org context checks, pinned AES-GCM tag length and set read-only CI token permissions.
+
 ## 0.1.0-alpha.1 — 2026-09-21
 
 - Removed the identity-specific master-account runtime bypass; every administrator now requires an auditable profile, workspace membership and role assignment.

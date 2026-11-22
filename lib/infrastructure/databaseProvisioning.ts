@@ -4,6 +4,7 @@ import path from "node:path";
 import pg from "pg";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { redactCredentials, resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
+import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
 
 const { Client } = pg;
 const MIN_POSTGRES_MAJOR = 15;
@@ -39,9 +40,7 @@ async function migrationFiles() {
 }
 
 async function connect(connectionString: string) {
-  const url = new URL(connectionString);
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
-  const client = new Client({ connectionString, ssl: local ? undefined : { rejectUnauthorized: false }, connectionTimeoutMillis: 10_000 });
+  const client = new Client({ ...postgresConnectionConfig(connectionString), connectionTimeoutMillis: 10_000 });
   await client.connect();
   return client;
 }

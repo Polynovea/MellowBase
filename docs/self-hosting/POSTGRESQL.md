@@ -43,6 +43,25 @@ For a fresh database, `npm run db:migrate` applies all numbered migrations in or
 
 The worker uses a direct `DATABASE_URL`, `CMS_CONFIG_ENCRYPTION_KEY`, and credentials required by enabled publication, analytics or storage adapters. The Next.js application also requires the public Supabase URL/anon key plus the server-only service-role key.
 
+## PostgreSQL TLS
+
+The app, the delivery worker, migrations and every script share one TLS policy (`lib/infrastructure/postgresTls.mjs`). It also applies to customer databases connected through Data Studio and migration intelligence.
+
+| Database | Behaviour |
+| --- | --- |
+| `localhost`, `127.0.0.1` or `::1` with no `sslmode` | Connects without TLS. |
+| Any URL with `sslmode=disable` | Connects without TLS. Use only on a private network. |
+| Everything else | TLS with full certificate and hostname verification. `prefer`, `require` and `verify-ca` are treated as `verify-full`. |
+
+Providers that sign with their own CA, such as Supabase and AWS RDS, need that CA added to the trusted roots:
+
+- `DATABASE_CA_CERT`: the PEM text. Use `\n` for line breaks when the platform only accepts single-line values.
+- `DATABASE_CA_CERT_FILE`: a path to the PEM file. Several certificates can be concatenated in one file.
+
+`NODE_EXTRA_CA_CERTS` also works when neither is set. SSL parameters inside a connection string (`sslrootcert`, `sslcert`, `sslkey` and similar) are ignored, so a connection URL entered by a workspace user cannot make the server read local files.
+
+If a connection fails with `self-signed certificate in certificate chain` or `unable to get local issuer certificate`, the provider's CA is missing.
+
 ## Authentication and permissions
 
 GoTrue authenticates identities. Polynovea CMS then maps the authenticated email to an active `admin_users` profile and resolves workspace membership, roles and permission keys server-side.

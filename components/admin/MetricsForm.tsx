@@ -120,7 +120,7 @@ export default function MetricsForm({ metrics, onSuccess }: MetricsFormProps) {
       if (!result.success) {
         hasError = true;
         const rowErrors: Record<string, string> = {};
-        result.error.errors.forEach((err) => { rowErrors[err.path[0] as string] = err.message; });
+        result.error.issues.forEach((err) => { rowErrors[err.path[0] as string] = err.message; });
         allErrors[i] = rowErrors;
       }
     });

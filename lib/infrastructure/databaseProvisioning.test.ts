@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
 
 const baseConnectionString = process.env.Database_URL || process.env.DATABASE_URL || process.env.database_url;
 const describeWithDatabase = baseConnectionString ? describe : describe.skip;
@@ -38,7 +39,7 @@ function urlForDatabase(name: string) {
 
 describeWithDatabase("Phase 12.5 database provisioning", () => {
   beforeAll(async () => {
-    root = new Client({ connectionString: baseConnectionString!, ssl: { rejectUnauthorized: false } });
+    root = new Client({ ...postgresConnectionConfig(baseConnectionString!) });
     await root.connect();
     if (!/^[a-z0-9_]+$/.test(databaseName)) throw new Error("Unsafe certification database name");
     await root.query(`create database "${databaseName}"`);
@@ -60,7 +61,7 @@ describeWithDatabase("Phase 12.5 database provisioning", () => {
     expect(initialized.migration.pending).toEqual([]);
     expect(initialized.migration.checksumMismatches).toEqual([]);
 
-    const target = new Client({ connectionString: targetConnectionString, ssl: { rejectUnauthorized: false } });
+    const target = new Client({ ...postgresConnectionConfig(targetConnectionString!) });
     await target.connect();
     const expectedFiles = readdirSync("supabase/migrations").filter(name => /^\d{4}_.+\.sql$/.test(name)).sort();
     const ledger = await target.query("select filename,checksum_sha256,migration_id from public.polynovea_migration_ledger order by filename");
@@ -76,7 +77,7 @@ describeWithDatabase("Phase 12.5 database provisioning", () => {
   }, 180_000);
 
   it("detects applied migration checksum drift and refuses to report the target ready", async () => {
-    const target = new Client({ connectionString: targetConnectionString, ssl: { rejectUnauthorized: false } });
+    const target = new Client({ ...postgresConnectionConfig(targetConnectionString!) });
     await target.connect();
     const first = await target.query("select filename from public.polynovea_migration_ledger order by filename limit 1");
     await target.query("update public.polynovea_migration_ledger set checksum_sha256=$2 where filename=$1", [first.rows[0].filename, "0".repeat(64)]);

@@ -1,5 +1,6 @@
 import pg from "pg";
 import { readFileSync } from "fs";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 
 for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
   const match = raw.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
@@ -13,10 +14,7 @@ const connectionString =
   process.env.DATABASE_URL ||
   process.env.database_url;
 
-const client = new pg.Client({
-  connectionString,
-  ssl: { rejectUnauthorized: false },
-});
+const client = new pg.Client(postgresConnectionConfig(connectionString));
 
 await client.connect();
 
@@ -29,7 +27,7 @@ const { rows: taxRows } = await client.query(`
      or slug like 'cert-tax-%'
      or slug like 'auth-tax-%'
 `);
-console.log(`Found ${taxRows.length} test taxonomies:`, taxRows);
+console.log("Found %d test taxonomies:", taxRows.length, taxRows);
 
 // 2. Inspect Routes
 const { rows: routeRows } = await client.query(`
@@ -38,7 +36,7 @@ const { rows: routeRows } = await client.query(`
      or path like '/roll-test-%'
      or title in ('Certification Section', 'Page One', 'Route A', 'Route B')
 `);
-console.log(`Found ${routeRows.length} test routes:`, routeRows);
+console.log("Found %d test routes:", routeRows.length, routeRows);
 
 // 3. Inspect Redirects
 const { rows: redirRows } = await client.query(`
@@ -49,7 +47,7 @@ const { rows: redirRows } = await client.query(`
      or target_path like '/new-landing-%'
      or target_path like '/cert-section-%'
 `);
-console.log(`Found ${redirRows.length} test redirects:`, redirRows);
+console.log("Found %d test redirects:", redirRows.length, redirRows);
 
 // 4. Inspect Navigation Menus
 const { rows: menuRows } = await client.query(`
@@ -58,7 +56,7 @@ const { rows: menuRows } = await client.query(`
      or key like 'auth_nav_%'
      or name in ('Certification Header Navigation', 'Auth Cert Menu')
 `);
-console.log(`Found ${menuRows.length} test navigation menus:`, menuRows);
+console.log("Found %d test navigation menus:", menuRows.length, menuRows);
 
 // 5. Inspect Media Collections
 const { rows: colRows } = await client.query(`
@@ -66,7 +64,7 @@ const { rows: colRows } = await client.query(`
   where slug like 'cert-col-%'
      or name = 'Certification Banners'
 `);
-console.log(`Found ${colRows.length} test media collections:`, colRows);
+console.log("Found %d test media collections:", colRows.length, colRows);
 
 // 6. Inspect Assets
 const { rows: assetRows } = await client.query(`
@@ -74,7 +72,7 @@ const { rows: assetRows } = await client.query(`
   where folder = 'cert'
      or filename like 'hero-banner-v%'
 `);
-console.log(`Found ${assetRows.length} test assets:`, assetRows);
+console.log("Found %d test assets:", assetRows.length, assetRows);
 
 // 7. Inspect Dummy Content Entries created by cert scripts
 const { rows: entryRows } = await client.query(`
@@ -83,7 +81,7 @@ const { rows: entryRows } = await client.query(`
   join content_entry_versions cev on cev.entry_id = ce.id
   where cev.data_jsonb->>'title' in ('Taxonomy Test Entry', 'Unified Edge Entry')
 `);
-console.log(`Found ${entryRows.length} test content entries:`, entryRows);
+console.log("Found %d test content entries:", entryRows.length, entryRows);
 
 console.log("\n--- EXECUTING POSITIVE TARGETED CLEANUP ---");
 

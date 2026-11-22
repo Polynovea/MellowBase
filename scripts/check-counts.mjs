@@ -1,5 +1,6 @@
 import pg from "pg";
 import { readFileSync } from "fs";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 
 for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
   const match = raw.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
@@ -8,10 +9,7 @@ for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
   }
 }
 
-const client = new pg.Client({
-  connectionString: process.env.Database_URL || process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+const client = new pg.Client(postgresConnectionConfig(process.env.Database_URL || process.env.DATABASE_URL));
 await client.connect();
 
 const routes = await client.query("select id, path, title from content_routes");

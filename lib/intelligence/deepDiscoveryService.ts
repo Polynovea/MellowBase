@@ -2,6 +2,7 @@ import pg from "pg";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { redactCredentials, resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
 import type { OperationalWorldEdgeSeed, OperationalWorldNodeSeed } from "@/lib/intelligence/operationalTypes";
+import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
 
 const { Client } = pg;
 
@@ -52,11 +53,8 @@ async function resolveDatabase(workspaceId: string, environmentId: string) {
 }
 
 async function connectReadOnly(connectionString: string) {
-  const url = new URL(connectionString);
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
   const client = new Client({
-    connectionString,
-    ssl: local ? undefined : { rejectUnauthorized: false },
+    ...postgresConnectionConfig(connectionString),
     connectionTimeoutMillis: 10_000,
     statement_timeout: 20_000,
     query_timeout: 20_000,
