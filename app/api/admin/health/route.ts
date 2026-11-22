@@ -3,6 +3,7 @@ import { hasSupabaseConfig, supabase, supabaseUrl } from "@/lib/supabase";
 import { S3Client, HeadBucketCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { getOverviewTotals } from "@/lib/admin/ga4";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
 
@@ -43,7 +44,7 @@ export async function GET(req: Request) {
         supabaseChecks["existing_tables"] = existingTables;
       }
     } catch (err: any) {
-      supabaseChecks["connection_error"] = err.message;
+      supabaseChecks["connection_error"] = clientErrorMessage(err, "Supabase connection failed");
     }
   }
 
@@ -69,11 +70,11 @@ export async function GET(req: Request) {
       if (error) {
         tableStatus[tbl] = {
           exists: false,
-          error: error.message,
+          error: clientErrorMessage(error),
           code: error.code,
           action: error.code === "PGRST205"
             ? "MISSING — run migration.sql in Supabase SQL Editor"
-            : `ERROR: ${error.message}`,
+            : `ERROR: ${clientErrorMessage(error, "check failed")}`,
         };
       } else {
         // Count all rows
@@ -91,7 +92,7 @@ export async function GET(req: Request) {
     } catch (err: any) {
       tableStatus[tbl] = {
         exists: false,
-        error: err.message,
+        error: clientErrorMessage(err),
         action: "MISSING — run migration.sql",
       };
     }
@@ -139,7 +140,7 @@ export async function GET(req: Request) {
     r2Result["sample_objects"] = (listing.Contents ?? []).slice(0, 5).map((o) => o.Key);
     r2Result["action"] = "OK";
   } catch (err: any) {
-    r2Result["error"] = err.message;
+    r2Result["error"] = clientErrorMessage(err, "R2 check failed");
     r2Result["action"] = "CONNECTION FAILED — check R2_* env vars";
   }
 
@@ -158,7 +159,7 @@ export async function GET(req: Request) {
     ga4Result["sample_active_users_7d"] = totals.activeUsers;
     ga4Result["action"] = "OK";
   } catch (err: any) {
-    ga4Result["error"] = err.message;
+    ga4Result["error"] = clientErrorMessage(err, "GA4 check failed");
     ga4Result["action"] = "CONNECTION FAILED — check GA4_* env vars";
   }
 

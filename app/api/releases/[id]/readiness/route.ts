@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getReleaseReadiness } from "@/lib/content/releaseService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -13,6 +14,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const result = await getReleaseReadiness(auth.data!.actor.workspaceId, id);
     return result.ok ? respond(true, result.data, null) : respond(false, null, result.error, result.status);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not evaluate release readiness", 500);
+    return respond(false, null, clientErrorMessage(error, "Could not evaluate release readiness"), 500);
   }
 }

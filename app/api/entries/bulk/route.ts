@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { bulkArchiveEntries, bulkUnarchiveEntries } from "@/lib/content/entryService";
 import { canActorOperateEntry } from "@/lib/schema/modelAccess";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const response = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -34,6 +35,6 @@ export async function POST(req: Request) {
 
     return response(true, { results, succeeded: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length }, null);
   } catch (error) {
-    return response(false, null, error instanceof Error ? error.message : "Invalid bulk request", 400);
+    return response(false, null, clientErrorMessage(error, "Invalid bulk request"), 400);
   }
 }

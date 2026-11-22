@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { deleteSavedSearch } from "@/lib/content/searchService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requirePlatformAccess(req, { permission: "content.entry.read" });
@@ -10,6 +11,6 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     const data = await deleteSavedSearch({ workspaceId: auth.data!.actor.workspaceId, ownerId: auth.data!.actor.adminUserId, id });
     return NextResponse.json({ success: true, data, error: null });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Could not delete saved search" }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Could not delete saved search") }, { status: 400 });
   }
 }

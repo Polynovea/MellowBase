@@ -4,6 +4,7 @@ import { ensureWorkspaceGa4Connector, getAnalyticsOverview, queueAnalyticsSync, 
 import { listModels } from "@/lib/schema/modelService";
 import { canActorOperateModel } from "@/lib/schema/modelAccess";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 async function allowedEntryIds(actor: NonNullable<Awaited<ReturnType<typeof requirePlatformAccess>>["data"]>["actor"]) {
   const models = await listModels(actor.workspaceId);
@@ -21,7 +22,7 @@ export async function GET(req: Request) {
     const allowed = await allowedEntryIds(auth.data!.actor);
     return NextResponse.json({ success: true, data: { ...overview, snapshots: overview.snapshots.filter((row) => allowed.has(row.entry_id)) }, error: null });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Could not load analytics intelligence" }, { status: 500 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Could not load analytics intelligence") }, { status: 500 });
   }
 }
 
@@ -45,6 +46,6 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ success: false, data: null, error: "Unsupported analytics operation" }, { status: 400 });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Analytics operation failed" }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Analytics operation failed") }, { status: 400 });
   }
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { updateRemediationTask } from "@/lib/content/healthService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requirePlatformAccess(req, { permission: ["content.entry.edit", "workspace.manage"] });
@@ -20,6 +21,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     });
     return NextResponse.json({ success: true, data, error: null });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Could not update remediation task" }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Could not update remediation task") }, { status: 400 });
   }
 }

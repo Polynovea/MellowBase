@@ -16,6 +16,7 @@ import type { OperationalDesiredState } from "@/lib/intelligence/operationalType
 import { refreshOperationalWorldModel } from "@/lib/intelligence/worldModelService";
 import { getModel, getVersion } from "@/lib/schema/modelService";
 import { resolveAgentToolForApiRequest } from "@/lib/developer/agentRouteMapping";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 export async function GET(req: Request) {
   const auth = await requireDeveloperApi(req, { scope: "operational_intelligence.read" });
@@ -27,7 +28,7 @@ export async function GET(req: Request) {
     const overview = environmentId ? await getOperationalIntelligenceOverview(auth.data!.workspaceId, environmentId) : null;
     return apiSuccess({ environments, environmentId, overview }, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
   } catch (error) {
-    return apiError("OPERATIONAL_INTELLIGENCE_READ_FAILED", error instanceof Error ? error.message : "Could not read operational intelligence", 500, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
+    return apiError("OPERATIONAL_INTELLIGENCE_READ_FAILED", clientErrorMessage(error, "Could not read operational intelligence"), 500, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
   }
 }
 
@@ -91,6 +92,6 @@ export async function POST(req: Request) {
     await logDeveloperApiMutation(auth.data!, `developer.operational_intelligence.${operation}`, "workspace_environment", environmentId, { operation, planId: body.planId || null, modelId: body.modelId || null, remediationKey: body.remediationKey || null, assessmentId: body.assessmentId || null, comparisonId: body.comparisonId || null });
     return apiSuccess(result, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
   } catch (error: any) {
-    return apiError("OPERATIONAL_INTELLIGENCE_OPERATION_FAILED", error instanceof Error ? error.message : "Operational intelligence operation failed", Number(error?.status) || 400, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
+    return apiError("OPERATIONAL_INTELLIGENCE_OPERATION_FAILED", clientErrorMessage(error, "Operational intelligence operation failed"), Number(error?.status) || 400, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
   }
 }

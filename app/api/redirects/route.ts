@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { listRedirects, createRedirect } from "@/lib/routing/redirectService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -16,7 +17,7 @@ export async function GET(req: Request) {
     const redirects = await listRedirects(auth.data!.actor.workspaceId, locale);
     return respond(true, redirects, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not list redirects", 500);
+    return respond(false, null, clientErrorMessage(err, "Could not list redirects"), 500);
   }
 }
 
@@ -43,6 +44,6 @@ export async function POST(req: Request) {
 
     return respond(true, redirect, null, 201);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not create redirect", 400);
+    return respond(false, null, clientErrorMessage(err, "Could not create redirect"), 400);
   }
 }

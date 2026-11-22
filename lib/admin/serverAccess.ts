@@ -2,6 +2,7 @@ import type { User } from "@supabase/supabase-js";
 import { hasModuleAccess, hasModuleWriteAccess, normalizeAdminUser, type AdminModule } from "@/lib/admin/access";
 import type { AdminUser } from "@/lib/admin/types";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { resolveAdminProfile, supabaseAdminProfileStore } from "@/lib/admin/profileResolution";
 import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
 
 function getBearerToken(req: Request): string | null {
@@ -53,18 +54,11 @@ export async function requireAdminRequest(
     };
   }
 
-  const email = user.email?.toLowerCase() || "";
   let profile: AdminUser | null = null;
 
   try {
-    const { data } = await serviceDb
-      .from("admin_users")
-      .select("*")
-      .eq("email", email)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    profile = data ? normalizeAdminUser(data as AdminUser) : null;
+    const resolved = await resolveAdminProfile(supabaseAdminProfileStore(serviceDb), user);
+    profile = resolved ? normalizeAdminUser(resolved) : null;
   } catch {
     profile = null;
   }

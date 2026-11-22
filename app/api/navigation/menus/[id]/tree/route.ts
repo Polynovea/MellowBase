@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getResolvedNavigationTree } from "@/lib/navigation/navigationService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -26,6 +27,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
     return respond(true, tree, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not resolve navigation tree", 500);
+    return respond(false, null, clientErrorMessage(err, "Could not resolve navigation tree"), 500);
   }
 }

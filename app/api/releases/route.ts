@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { createRelease, listReleases } from "@/lib/content/releaseService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -11,7 +12,7 @@ export async function GET(req: Request) {
   try {
     return respond(true, await listReleases(auth.data!.actor.workspaceId), null);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not load releases", 500);
+    return respond(false, null, clientErrorMessage(error, "Could not load releases"), 500);
   }
 }
 
@@ -30,6 +31,6 @@ export async function POST(req: Request) {
     });
     return result.ok ? respond(true, result.data, null, 201) : respond(false, null, result.error, result.status);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Invalid release request", 400);
+    return respond(false, null, clientErrorMessage(error, "Invalid release request"), 400);
   }
 }

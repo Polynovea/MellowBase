@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { listMenus, createMenu } from "@/lib/navigation/navigationService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -13,7 +14,7 @@ export async function GET(req: Request) {
     const menus = await listMenus(auth.data!.actor.workspaceId);
     return respond(true, menus, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not list menus", 500);
+    return respond(false, null, clientErrorMessage(err, "Could not list menus"), 500);
   }
 }
 
@@ -38,6 +39,6 @@ export async function POST(req: Request) {
 
     return respond(true, result, null, 201);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not create navigation menu", 400);
+    return respond(false, null, clientErrorMessage(err, "Could not create navigation menu"), 400);
   }
 }

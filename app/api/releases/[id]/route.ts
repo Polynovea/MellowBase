@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getRelease, replaceReleaseItems, setReleaseLocales } from "@/lib/content/releaseService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -13,7 +14,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const release = await getRelease(auth.data!.actor.workspaceId, id);
     return release ? respond(true, release, null) : respond(false, null, "Release not found", 404);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not load release", 500);
+    return respond(false, null, clientErrorMessage(error, "Could not load release"), 500);
   }
 }
 
@@ -43,6 +44,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }
     return respond(false, null, "operation must be replace_items or set_locales", 400);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not update release", 400);
+    return respond(false, null, clientErrorMessage(error, "Could not update release"), 400);
   }
 }

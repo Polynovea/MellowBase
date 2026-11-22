@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { listTaxonomies, createTaxonomy } from "@/lib/taxonomy/taxonomyService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -13,7 +14,7 @@ export async function GET(req: Request) {
     const taxonomies = await listTaxonomies(auth.data!.actor.workspaceId);
     return respond(true, taxonomies, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not list taxonomies", 500);
+    return respond(false, null, clientErrorMessage(err, "Could not list taxonomies"), 500);
   }
 }
 
@@ -39,6 +40,6 @@ export async function POST(req: Request) {
 
     return respond(true, taxonomy, null, 201);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not create taxonomy", 400);
+    return respond(false, null, clientErrorMessage(err, "Could not create taxonomy"), 400);
   }
 }

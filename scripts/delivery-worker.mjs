@@ -11,6 +11,7 @@ import { createDecipheriv, createHash, createHmac, randomUUID } from "node:crypt
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import pg from "pg";
+import { guardedFetch } from "../lib/infrastructure/guardedNetwork.mjs";
 import { BetaAnalyticsDataClient } from "@google-analytics/data";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
@@ -75,12 +76,17 @@ async function resolveWorkerConnectionCredentials(client, workspaceId, connectio
   return result;
 }
 
+// Every delivery goes through the SSRF guard; addresses are validated at connect time.
+function deliveryFetch(url, allowPrivate, init) {
+  return guardedFetch(url, init, { allowPrivate });
+}
+
 async function resolvePublicationTargetConfig(client, workspaceId, target) {
   if (!target.connection_id) {
     const config = decryptConfig(target.config_json_encrypted);
-    return { config, signingSecret: config.signingSecret || process.env.CMS_DELIVERY_SIGNING_SECRET || null, connectionBacked: false };
+    return { config, signingSecret: config.signingSecret || process.env.CMS_DELIVERY_SIGNING_SECRET || null, connectionBacked: false, allowPrivate: false };
   }
-  const { rows:[connection] } = await client.query(`select id,connector_type,connector_family,config_json,active,status from workspace_connections where id=$1 and workspace_id=$2`, [target.connection_id, workspaceId]);
+  const { rows:[connection] } = await client.query(`select wc.id,wc.connector_type,wc.connector_family,wc.config_json,wc.active,wc.status,we.kind as environment_kind from workspace_connections wc left join workspace_environments we on we.id=wc.environment_id and we.workspace_id=wc.workspace_id where wc.id=$1 and wc.workspace_id=$2`, [target.connection_id, workspaceId]);
   if (!connection || !connection.active || connection.status !== 'active') throw new Error('Connection-backed publication destination is unavailable or unverified');
   const credentials = await resolveWorkerConnectionCredentials(client, workspaceId, connection.id);
   const cfg = connection.config_json || {};
@@ -89,7 +95,8 @@ async function resolvePublicationTargetConfig(client, workspaceId, target) {
   const headers = {};
   if (credentials.bearer_token) headers.authorization = `Bearer ${credentials.bearer_token}`;
   if (credentials.api_key) headers[String(cfg.apiKeyHeader || 'x-api-key').toLowerCase()] = credentials.api_key;
-  return { config:{url,headers}, signingSecret:credentials.signing_secret || process.env.CMS_DELIVERY_SIGNING_SECRET || null, connectionBacked:true };
+  // Only destinations in a Local environment may resolve to private addresses (e.g. a dev site on localhost).
+  return { config:{url,headers}, signingSecret:credentials.signing_secret || process.env.CMS_DELIVERY_SIGNING_SECRET || null, connectionBacked:true, allowPrivate:connection.environment_kind === 'local' };
 }
 
 function elapsed(startedAt) {
@@ -130,7 +137,7 @@ async function dispatchWebsiteTest(client, job) {
     const resolved = await resolvePublicationTargetConfig(client, job.workspace_id, binding);
     const config = resolved.config;
     const payload = JSON.stringify({ event: "publication.test", bindingId, environmentId: binding.environment_id, correlationId: job.correlation_id, sentAt: new Date().toISOString() });
-    const response = await fetch(config.url, {
+    const response = await deliveryFetch(config.url, resolved.allowPrivate, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -185,7 +192,7 @@ async function dispatchPublish(client, job) {
       releaseId: legacy.release_id,
       correlationId: job.correlation_id,
     });
-    const response = await fetch(config.url, {
+    const response = await deliveryFetch(config.url, resolved.allowPrivate, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -270,7 +277,7 @@ async function dispatchWebhook(client, job) {
 
   try {
     const { secret } = decryptConfig(delivery.signing_secret_encrypted);
-    const response = await fetch(delivery.endpoint_url, {
+    const response = await deliveryFetch(delivery.endpoint_url, false, {
       method: "POST",
       headers: {
         "content-type": "application/json",

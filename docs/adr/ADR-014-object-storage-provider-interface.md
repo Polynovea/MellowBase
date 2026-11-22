@@ -1,8 +1,50 @@
 # ADR-014: Object Storage Provider Interface
 
-**Status:** Accepted (naming cleanup done; full adapter interface deferred)
+**Status:** Accepted; provider interface implemented (see status update 2026-11-22)
 **Date:** 2026-09-01
 **Phase:** 1 (pre-Milestone-B cleanup)
+
+## Status update — 2026-11-22
+
+The interface this ADR deferred now exists. The decision text below is kept as
+the historical record; this section describes the current code.
+
+- `lib/media/storageProvider.ts` defines `StorageProvider` (`upload`,
+  `remove`, `resolveReadUrl`, optional `createPresignedUpload`) and
+  `getStorageProvider()`, which resolves the provider for a workspace and
+  environment. The upload routes (`app/api/upload/route.ts`,
+  `app/api/upload/sas/route.ts`), `app/api/assets/route.ts`,
+  `app/api/v1/media/route.ts`, `lib/media/assetService.ts` and
+  `lib/media/replacementService.ts` go through it.
+- Adapters:
+  - Cloudflare R2, AWS S3 and MinIO (`storage.r2`, `storage.s3`,
+    `storage.minio` connections) share one adapter built on the AWS SDK
+    (`@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner`).
+  - Supabase Storage (`storage.supabase` connections) uses the Supabase
+    client. It does not implement `createPresignedUpload`; the direct-upload
+    route returns an error for it and clients use the authenticated upload
+    route instead.
+  - A legacy R2 provider wraps `lib/r2Storage.ts` and its `R2_*` environment
+    variables. It is used for assets recorded with provider key `r2`, when no
+    workspace is given, or when no active storage connection exists and the
+    `R2_*` credentials are set.
+- Connection-backed adapters are configured per workspace environment through
+  workspace connections (credentials resolved by
+  `lib/infrastructure/credentialProvider`), not through process environment
+  variables.
+- `createPresignedUpload(key, contentType, contentLength)` now takes the
+  declared size. Content type and content length are signed into the URL
+  (15-minute expiry), so storage rejects a body of a different size or type.
+- The asset record anticipated below exists: `assets`
+  (`supabase/migrations/0011_assets.sql`) stores `storage_provider`,
+  `storage_key`, `mime_type`, `size_bytes`, `checksum` and `metadata_json`,
+  not a public URL. Connection-backed assets record `connection:<id>` as the
+  provider key so reads and deletes resolve the same connection.
+- Not implemented: Azure Blob and local-filesystem adapters. Any other storage
+  connector type fails with "has no media data-plane adapter".
+
+The "Current deployment" consequence below (a single implicit
+`cloudflare_r2` provider) no longer holds.
 
 ## Context
 

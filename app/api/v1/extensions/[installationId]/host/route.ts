@@ -1,6 +1,7 @@
 import { apiError, apiSuccess } from "@/lib/developer/apiContract";
 import { requireDeveloperApi } from "@/lib/developer/apiAuth";
 import { authorizeExtensionRoute, emitExtensionEvent, extensionFetch, resolveExtensionConnection } from "@/lib/developer/extensionHostService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 type HostOperation = "route.authorize" | "network.fetch" | "connection.resolve" | "event.emit";
 
@@ -24,6 +25,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ install
           : await emitExtensionEvent({ ...common, actorId: auth.data!.actorAdminUserId!, eventType: String(body.eventType ?? ""), payload: body.payload && typeof body.payload === "object" && !Array.isArray(body.payload) ? body.payload as Record<string, unknown> : {} });
     return apiSuccess(result, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
   } catch (error: any) {
-    return apiError("EXTENSION_HOST_DENIED", error instanceof Error ? error.message : "Extension host operation denied", Number(error?.status) || 400, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
+    return apiError("EXTENSION_HOST_DENIED", clientErrorMessage(error, "Extension host operation denied"), Number(error?.status) || 400, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
   }
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { listWebhookDeliveries, listWebhookSubscriptions } from "@/lib/content/webhookService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 export async function GET(req: Request) {
   const auth = await requirePlatformAccess(req, { permission: "content.entry.read" });
@@ -13,6 +14,6 @@ export async function GET(req: Request) {
     ]);
     return NextResponse.json({ success: true, data: { subscriptions, deliveries }, error: null, timestamp: new Date().toISOString() });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Could not load webhook operations", timestamp: new Date().toISOString() }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Could not load webhook operations"), timestamp: new Date().toISOString() }, { status: 400 });
   }
 }

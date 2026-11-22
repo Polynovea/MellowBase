@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
 
@@ -16,7 +17,7 @@ export async function GET(req: Request) {
   if (forCategory === "ads") query = query.eq("is_active", true).eq("for_ads", true);
 
   const { data, error } = await query;
-  if (error) return NextResponse.json({ success: false, data: null, error: error.message, timestamp: ts() }, { status: 500 });
+  if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
   return NextResponse.json({ success: true, data, error: null, timestamp: ts() });
 }
 
@@ -52,7 +53,7 @@ export async function POST(req: Request) {
       .select()
       .single();
 
-    if (error) return NextResponse.json({ success: false, data: null, error: error.message, timestamp: ts() }, { status: 500 });
+    if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
 
     await logAdminActivity({
       actor: auth.data!.profile,
@@ -64,6 +65,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true, data, error: null, timestamp: ts() }, { status: 201 });
   } catch (err: any) {
-    return NextResponse.json({ success: false, data: null, error: err.message || err, timestamp: ts() }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(err), timestamp: ts() }, { status: 400 });
   }
 }

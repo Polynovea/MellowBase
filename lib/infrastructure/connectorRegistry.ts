@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { assertSafeOutboundUrl, safeFetch } from "@/lib/infrastructure/networkSafety";
+import { allowsPrivateNetwork, assertSafeOutboundUrl, safeFetch } from "@/lib/infrastructure/networkSafety";
 import { probePostgresUrl } from "@/lib/infrastructure/databaseProvisioning";
 import type { ConnectorFamily, EnvironmentKind } from "@/lib/infrastructure/types";
+import { guardedS3RequestHandler } from "@/lib/infrastructure/guardedNetwork";
 
 export interface ConnectorConfigField {
   key: string;
@@ -106,7 +107,7 @@ async function verifyS3Storage(input:{config:Record<string,unknown>;credentials:
   if(!bucket||!accessKeyId||!secret)throw new Error(`${kind.toUpperCase()} bucket and credentials are required`);
   if(endpoint)await assertSafeOutboundUrl(endpoint,input.environmentKind,{allowHttpLocal:true});
   const { S3Client, HeadBucketCommand, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
-  const client=new S3Client({region,endpoint,forcePathStyle,credentials:{accessKeyId,secretAccessKey:secret}});
+  const client=new S3Client({region,endpoint,forcePathStyle,credentials:{accessKeyId,secretAccessKey:secret},requestHandler:guardedS3RequestHandler({allowPrivate:allowsPrivateNetwork(input.environmentKind)})});
   await client.send(new HeadBucketCommand({Bucket:bucket}));
   const probeKey=`.polynovea-verification/${randomUUID()}.txt`,probeBody=`polynovea-storage-verification:${randomUUID()}`;
   try{

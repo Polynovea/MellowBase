@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getCollection, updateCollection, deleteCollection, listCollectionAssets, addAssetToCollection, removeAssetFromCollection } from "@/lib/media/collectionService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -56,7 +57,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     return respond(true, updated, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not update collection", 400);
+    return respond(false, null, clientErrorMessage(err, "Could not update collection"), 400);
   }
 }
 
@@ -73,6 +74,6 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     });
     return respond(true, { ok: true }, null);
   } catch (err) {
-    return respond(false, null, err instanceof Error ? err.message : "Could not delete collection", 400);
+    return respond(false, null, clientErrorMessage(err, "Could not delete collection"), 400);
   }
 }

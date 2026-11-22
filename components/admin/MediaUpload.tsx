@@ -50,7 +50,7 @@ export default function MediaUpload({
       const sasRes = await fetch("/api/upload/sas", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ folder, filename: file.name, contentType: file.type }),
+        body: JSON.stringify({ folder, filename: file.name, contentType: file.type, size: file.size }),
       });
       const sasJson = await sasRes.json();
       if (!sasJson.success) throw new Error(sasJson.error || "Failed to get upload URL");
@@ -66,7 +66,6 @@ export default function MediaUpload({
           xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`Upload failed: ${xhr.status}`));
         xhr.onerror = () => reject(new Error("Network error during upload"));
         xhr.open("PUT", uploadUrl);
-        xhr.setRequestHeader("x-ms-blob-type", "BlockBlob");
         xhr.setRequestHeader("Content-Type", file.type);
         xhr.send(file);
       });

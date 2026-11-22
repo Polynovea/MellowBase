@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { getDbItems } from "@/lib/dbAdapter";
+import { clientErrorMessage } from "@/lib/http/clientError";
 import {
   getOverviewTotals, getOverviewTrend, getTrafficSources, getDeviceBreakdown,
   getAllPages, getBlogPosts, type Ga4Range,
@@ -50,6 +51,6 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ success: false, data: null, error: "Unknown section", timestamp: ts() }, { status: 400 });
   } catch (err: any) {
-    return NextResponse.json({ success: false, data: null, error: err.message || String(err), timestamp: ts() }, { status: 500 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(err), timestamp: ts() }, { status: 500 });
   }
 }

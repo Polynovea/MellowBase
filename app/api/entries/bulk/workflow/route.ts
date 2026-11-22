@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { canActorOperateEntry } from "@/lib/schema/modelAccess";
 import { transitionWorkflow } from "@/lib/content/workflowService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -47,6 +48,6 @@ export async function POST(req: Request) {
       failed: results.filter((item) => !item.ok).length,
     }, null);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Bulk workflow action failed", 400);
+    return respond(false, null, clientErrorMessage(error, "Bulk workflow action failed"), 400);
   }
 }

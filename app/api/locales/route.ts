@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { configureLocale, listLocales, resolveLocaleFallback } from "@/lib/content/localizationService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -16,7 +17,7 @@ export async function GET(req: Request) {
     }
     return respond(true, await listLocales(auth.data!.actor.workspaceId), null);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not load locales", 500);
+    return respond(false, null, clientErrorMessage(error, "Could not load locales"), 500);
   }
 }
 
@@ -36,6 +37,6 @@ export async function POST(req: Request) {
     });
     return respond(true, data, null);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not configure locale", 400);
+    return respond(false, null, clientErrorMessage(error, "Could not configure locale"), 400);
   }
 }

@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { redactCredentials, resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
-import { assertSafeOutboundUrl, safeFetch } from "@/lib/infrastructure/networkSafety";
+import { allowsPrivateNetwork, assertSafeOutboundUrl, safeFetch } from "@/lib/infrastructure/networkSafety";
 import type { EnvironmentKind } from "@/lib/infrastructure/types";
 import type { OperationalCapabilityState, OperationalWorldEdgeSeed, OperationalWorldNodeSeed } from "@/lib/intelligence/operationalTypes";
+import { guardedS3RequestHandler } from "@/lib/infrastructure/guardedNetwork";
 
 export interface ProviderCapabilityDiscovery {
   nodes: OperationalWorldNodeSeed[];
@@ -82,7 +83,7 @@ async function discoverS3Like(connection: ConnectionRow, credentials: Record<str
     GetBucketCorsCommand,
   } = await import("@aws-sdk/client-s3");
   const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
-  const client = new S3Client({ region, endpoint, forcePathStyle, credentials: { accessKeyId, secretAccessKey } });
+  const client = new S3Client({ region, endpoint, forcePathStyle, credentials: { accessKeyId, secretAccessKey }, requestHandler: guardedS3RequestHandler({ allowPrivate: allowsPrivateNetwork(environmentKind) }) });
   await client.send(new HeadBucketCommand({ Bucket: bucket }));
 
   const probeKey = `.polynovea-capability/${randomUUID()}.txt`;

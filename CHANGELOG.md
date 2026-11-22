@@ -6,6 +6,13 @@
 - Extension network requests now resolve the target host and refuse any private, loopback, link-local or metadata address.
 - Upgraded Next.js to 15.5.29 and zod to 4.6.6, and patched undici, sharp, source-map-js, vite, vitest and brace-expansion.
 - Removed slow-regex paths in upload naming and markdown link extraction, tightened schema.org context checks, pinned AES-GCM tag length and set read-only CI token permissions.
+- `DELETE /api/upload` only removes unregistered objects under the caller's own workspace prefix; registered assets are retired through the asset API. Deletions are audited.
+- Outbound requests (webhooks, publication targets, connection verification, S3/R2/MinIO and Supabase Storage clients, extension network broker, delivery worker) validate destination addresses at connect time, closing the DNS-rebinding window. IPv4-mapped IPv6 and other reserved ranges are now blocked. The delivery worker previously had no destination check.
+- Admin sessions resolve the profile by the immutable auth user ID. Email links a legacy profile once, only when the identity's email is confirmed. Migration `0066` makes `admin_users.auth_user_id` unique.
+- **Breaking (API):** `POST /api/upload/sas` requires `size` in bytes. The size and content type are signed into the upload URL. Single files are capped at 10 MB (images) and 200 MB (video), and an optional `MEDIA_WORKSPACE_QUOTA_BYTES` caps each workspace.
+- API errors no longer expose database, driver, network or provider messages; they return the route's message with a reference ID that is logged server-side.
+- Schema-run history reports query failures instead of an empty list; website revalidation has a 5-second timeout and reports failures.
+- The shared modal is an accessible dialog (labelled, focus-trapped, restores focus); login fields have associated labels, autocomplete and announced errors.
 
 ## 0.1.0-alpha.1 — 2026-09-21
 

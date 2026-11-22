@@ -3,6 +3,7 @@ import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { decryptConfig, encryptConfig } from "@/lib/content/secureConfig";
 import { enqueueDeliveryJob } from "@/lib/operations/deliveryJobService";
 import { logPlatformEvent } from "@/lib/platform/audit";
+import { guardedFetch } from "@/lib/infrastructure/guardedNetwork";
 
 type TargetConfig = { url: string; headers?: Record<string, string>; signingSecret?: string };
 
@@ -156,7 +157,7 @@ export async function dispatchPublicationJob(workspaceId: string, jobId: string)
       versionId: job.version_id,
       releaseId: job.release_id,
     });
-    const response = await fetch(config.url, {
+    const response = await guardedFetch(config.url, {
       method: "POST",
       headers: {
         "content-type": "application/json",

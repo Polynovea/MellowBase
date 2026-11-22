@@ -1,6 +1,7 @@
 import { apiError, apiSuccess } from "@/lib/developer/apiContract";
 import { requireDeveloperApi } from "@/lib/developer/apiAuth";
 import { authorizeBoundAgentTool, recordAgentOperationProvenance } from "@/lib/developer/agentGovernanceService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 /**
  * MCP's control-plane endpoint. It deliberately performs no CMS mutation.
@@ -55,6 +56,6 @@ export async function POST(req: Request) {
     }
     return apiSuccess({ authorization: access, provenanceId: provenance.id }, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
   } catch (error) {
-    return apiError("AGENT_TOOL_CONTROL_FAILED", error instanceof Error ? error.message : "Could not authorize agent tool", 400, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
+    return apiError("AGENT_TOOL_CONTROL_FAILED", clientErrorMessage(error, "Could not authorize agent tool"), 400, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
   }
 }

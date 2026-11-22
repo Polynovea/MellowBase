@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { listSavedSearches, saveSearch } from "@/lib/content/searchService";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 export async function GET(req: Request) {
   const auth = await requirePlatformAccess(req, { permission: "content.entry.read" });
@@ -9,7 +10,7 @@ export async function GET(req: Request) {
     const data = await listSavedSearches(auth.data!.actor.workspaceId, auth.data!.actor.adminUserId);
     return NextResponse.json({ success: true, data, error: null });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Could not list saved searches" }, { status: 500 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Could not list saved searches") }, { status: 500 });
   }
 }
 
@@ -27,6 +28,6 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ success: true, data, error: null }, { status: 201 });
   } catch (error) {
-    return NextResponse.json({ success: false, data: null, error: error instanceof Error ? error.message : "Could not save search" }, { status: 400 });
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error, "Could not save search") }, { status: 400 });
   }
 }

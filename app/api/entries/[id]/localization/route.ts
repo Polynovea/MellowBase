@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getLocalizationStatus, reviewTranslation, setTranslation } from "@/lib/content/localizationService";
 import { canActorOperateEntry } from "@/lib/schema/modelAccess";
+import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
@@ -42,6 +43,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       markReviewed: body.markReviewed,
     }), null);
   } catch (error) {
-    return respond(false, null, error instanceof Error ? error.message : "Could not update translation lifecycle", 400);
+    return respond(false, null, clientErrorMessage(error, "Could not update translation lifecycle"), 400);
   }
 }
