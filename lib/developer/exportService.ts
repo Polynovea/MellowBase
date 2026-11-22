@@ -1,16 +1,4 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-
-async function rowsForWorkspace(table:string, workspaceId:string, select="*"){
-  const {data,error}=await createServiceRoleClient().from(table).select(select).eq("workspace_id",workspaceId);
-  if(error) throw new Error(`Export failed for ${table}: ${error.message}`);
-  return data??[];
-}
-async function rowsByIds(table:string,column:string,ids:string[],select="*"){
-  if(!ids.length)return [];
-  const {data,error}=await createServiceRoleClient().from(table).select(select).in(column,ids);
-  if(error) throw new Error(`Export failed for ${table}: ${error.message}`);
-  return data??[];
-}
+import { exportedWorkspace, rowsByIds, rowsForWorkspace } from "@/lib/developer/exportData";
 
 /**
  * Portable, non-secret workspace export.
@@ -22,7 +10,6 @@ async function rowsByIds(table:string,column:string,ids:string[],select="*"){
  * portable content and are handled by Phase 12.5 backup/secret-provider work.
  */
 export async function exportWorkspaceData(workspaceId:string){
-  const db=createServiceRoleClient();
   const [
     models,entries,assets,routes,redirects,taxonomies,menus,releases,workflowDefinitions,locales,quality,collections,translations,relations,
     uniqueValues,versionTerms,assignments,comments,watchers,savedViews,savedSearches,healthProfiles,healthFindings,remediationTasks,
@@ -111,8 +98,7 @@ export async function exportWorkspaceData(workspaceId:string){
     rowsByIds("workflow_stage_approvals","workflow_instance_id",workflowInstanceIds),
   ]);
 
-  const {data:workspace,error:workspaceError}=await db.from("workspaces").select("id,slug,name,created_at,updated_at").eq("id",workspaceId).maybeSingle();
-  if(workspaceError)throw new Error(workspaceError.message);
+  const workspace=await exportedWorkspace(workspaceId);
 
   return {
     format:"polynovea-cms-export",
