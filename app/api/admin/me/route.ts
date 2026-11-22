@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
+import { clientErrorMessage } from "@/lib/http/clientError";
 import { z } from "zod";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { normalizeAdminUser } from "@/lib/admin/access";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { updateOwnDisplayName } from "@/lib/admin/adminUserService";
 import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
 
 const ts = () => new Date().toISOString();
@@ -27,7 +28,6 @@ export async function PATCH(req: Request) {
 
   try {
     const parsed = updateProfileSchema.parse(await req.json());
-    const db = createServiceRoleClient();
     const identity = getSupabaseServerIdentityProvider();
     const profile = auth.data!.profile;
     const authUser = auth.data!.user;
@@ -35,19 +35,13 @@ export async function PATCH(req: Request) {
     let updatedProfile = profile;
 
     if (parsed.display_name !== undefined) {
-      const { data, error } = await db
-        .from("admin_users")
-        .update({
-          display_name: parsed.display_name,
-          updated_at: ts(),
-        })
-        .eq("id", profile.id)
-        .select("*")
-        .single();
-
-      if (error || !data) {
+      let data;
+      try {
+        data = await updateOwnDisplayName(profile.id, parsed.display_name);
+      } catch (error) {
+        // Phase 0 finding: this route used to return the raw database error message.
         return NextResponse.json(
-          { success: false, data: null, error: error?.message || "Could not update profile", timestamp: ts() },
+          { success: false, data: null, error: clientErrorMessage(error, "Could not update profile"), timestamp: ts() },
           { status: 500 },
         );
       }

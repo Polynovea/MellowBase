@@ -4,10 +4,9 @@ import { supabase } from "@/lib/supabase";
 import { ACCESS_MODULES, normalizeAdminUser, SURFACE_LABELS } from "@/lib/admin/access";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
-import { createServiceRoleClient, hasServiceRoleKey } from "@/lib/admin/serviceRole";
+import { hasServiceRoleKey } from "@/lib/admin/serviceRole";
 import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
-import { syncDefaultWorkspaceMembership } from "@/lib/admin/workspaceMembership";
-import type { AdminActivityLog } from "@/lib/admin/types";
+import { createAdminProfile, findProfileIdByAuthUserId, listAdminUsersWithActivity } from "@/lib/admin/adminUserService";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
@@ -28,23 +27,13 @@ export async function GET(req: Request) {
   const auth = await requireAdminRequest(req, { requireMaster: true, requiredModule: "cms.access" });
   if (auth.error) return auth.error;
 
-  const db = createServiceRoleClient();
-
-  const { data, error } = await db
-    .from("admin_users")
-    .select("*")
-    .order("role", { ascending: true })
-    .order("username", { ascending: true });
-
-  const { data: activityRows } = await db
-    .from("admin_activity_log")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(12);
-
-  if (error) {
+  let listed: Awaited<ReturnType<typeof listAdminUsersWithActivity>>;
+  try {
+    listed = await listAdminUsersWithActivity();
+  } catch (error) {
     return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
   }
+  const { users: data, activity: activityRows } = listed;
 
   return NextResponse.json({
     success: true,
@@ -53,7 +42,7 @@ export async function GET(req: Request) {
       modules: ACCESS_MODULES,
       surfaces: SURFACE_LABELS,
       canCreateAuthUsers: hasServiceRoleKey(),
-      activity: (activityRows ?? []) as AdminActivityLog[],
+      activity: activityRows,
     },
     error: null,
     timestamp: ts(),
@@ -72,7 +61,6 @@ export async function POST(req: Request) {
 
     const normalizedEmail = parsed.email.toLowerCase();
     const normalizedUsername = parsed.username.toLowerCase();
-    const serviceRoleSupabase = createServiceRoleClient();
     const identity = getSupabaseServerIdentityProvider();
 
     const allowedModules = new Set(ACCESS_MODULES.map((module) => module.key));
@@ -112,40 +100,16 @@ export async function POST(req: Request) {
       created_by: auth.data?.profile.email ?? "system",
     };
 
-    // The Auth trigger may already have provisioned this identity as a viewer.
-    const { data: provisioned, error: lookupError } = await serviceRoleSupabase
-      .from("admin_users")
-      .select("id")
-      .eq("auth_user_id", authUser.id)
-      .maybeSingle();
-    if (lookupError) {
-      await identity.deleteUser(authUser.id);
-      return NextResponse.json({ success: false, data: null, error: lookupError.message, timestamp: ts() }, { status: 500 });
-    }
-    const profileMutation = provisioned
-      ? serviceRoleSupabase.from("admin_users").update(payload).eq("id", provisioned.id)
-      : serviceRoleSupabase.from("admin_users").insert(payload);
-    const { data, error } = await profileMutation
-      .select("*")
-      .single();
-
-    if (error) {
-      if (provisioned) await serviceRoleSupabase.from("admin_users").delete().eq("id", provisioned.id);
-      await identity.deleteUser(authUser.id);
-      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
-    }
-
+    // The Auth trigger may already have provisioned this identity as a viewer. The profile and its
+    // workspace membership are written by the admin user service; if that fails, nothing of the
+    // profile is left and the auth user is removed again.
+    let data;
     try {
-      await syncDefaultWorkspaceMembership(data as any, serviceRoleSupabase);
-    } catch (membershipError: any) {
-      await serviceRoleSupabase.from("admin_users").delete().eq("id", data.id);
+      const provisionedId = await findProfileIdByAuthUserId(authUser.id);
+      data = await createAdminProfile({ payload, provisionedId });
+    } catch (profileError) {
       await identity.deleteUser(authUser.id);
-      return NextResponse.json({
-        success: false,
-        data: null,
-        error: membershipError?.message || "Failed to create workspace membership",
-        timestamp: ts(),
-      }, { status: 500 });
+      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(profileError, "Failed to create the member profile"), timestamp: ts() }, { status: 500 });
     }
 
     await logAdminActivity({
