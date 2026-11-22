@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { insertSchemaRun } from "@/lib/developer/runData";
 import { computeSchemaDiff, type ChangeClassification, type SchemaDiff } from "@/lib/schema/diff";
 import { validateCanonicalSchema } from "@/lib/schema/canonicalSchema";
 import { applyChange, computeSchemaHash, createModel, getVersion, listModels, type ContentModelRow } from "@/lib/schema/modelService";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
 import { logDeveloperApiMutation } from "@/lib/developer/developerAudit";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { logPlatformEventFor } from "@/lib/platform/audit";
 
 export interface SchemaDeliveryContext {
   workspaceId: string;
@@ -117,10 +117,7 @@ export async function planSchemaBundle(workspaceId: string, input: unknown) {
 }
 
 async function recordSchemaRun(params:{context:SchemaDeliveryContext;operation:"dry_run"|"push"|"promotion";status:string;bundleHash:string;plan:unknown;summary:unknown;sourceEnvironment?:string|null;targetEnvironment?:string|null;approvalNote?:string|null;completed?:boolean}) {
-  const db=createServiceRoleClient();
-  const {data,error}=await db.from("developer_schema_runs").insert({ workspace_id:params.context.workspaceId, api_token_id:params.context.tokenId??null, actor_admin_user_id:params.context.actorAdminUserId, operation:params.operation, status:params.status, source_environment:params.sourceEnvironment??null, target_environment:params.targetEnvironment??null, bundle_hash:params.bundleHash, plan_json:params.plan, summary_json:params.summary, approval_note:params.approvalNote??null, completed_at:params.completed?new Date().toISOString():null }).select().single();
-  if(error||!data) throw new Error(error?.message||"Could not record schema delivery run");
-  return data;
+  return insertSchemaRun({ workspace_id:params.context.workspaceId, api_token_id:params.context.tokenId??null, actor_admin_user_id:params.context.actorAdminUserId, operation:params.operation, status:params.status, source_environment:params.sourceEnvironment??null, target_environment:params.targetEnvironment??null, bundle_hash:params.bundleHash, plan_json:params.plan, summary_json:params.summary, approval_note:params.approvalNote??null, completed_at:params.completed?new Date().toISOString():null });
 }
 
 async function logSchemaDeliveryMutation(context:SchemaDeliveryContext,action:string,runId:string,metadata:Record<string,unknown>){
@@ -128,7 +125,7 @@ async function logSchemaDeliveryMutation(context:SchemaDeliveryContext,action:st
     return logDeveloperApiMutation(context as DeveloperApiContext,action,"developer_schema_run",runId,metadata);
   }
   if(!context.actorAdminUserId) throw new Error("An audited admin actor is required for schema delivery mutations");
-  return logPlatformEvent({workspaceId:context.workspaceId,actorAdminUserId:context.actorAdminUserId,action:action.replace(/^developer\./,"schema."),entityType:"developer_schema_run",entityId:runId,metadata:{...metadata,channel:"admin_ui"}});
+  return logPlatformEventFor("developer", {workspaceId:context.workspaceId,actorAdminUserId:context.actorAdminUserId,action:action.replace(/^developer\./,"schema."),entityType:"developer_schema_run",entityId:runId,metadata:{...metadata,channel:"admin_ui"}});
 }
 
 export async function dryRunSchemaPromotion(context: SchemaDeliveryContext, input: unknown, targetEnvironment?: string | null) {

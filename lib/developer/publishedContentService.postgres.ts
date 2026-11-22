@@ -17,6 +17,17 @@ async function resolveModel(workspaceId: string, apiKey: string) {
     .where("workspace_id", "=", workspaceId).where("api_key", "=", apiKey).where("status", "=", "active").execute());
 }
 
+/**
+ * Versions of the workspace's entries only. content_entry_versions has no workspace_id of its own,
+ * so the second check on this public API is the join to the entry's workspace.
+ */
+function versionsInWorkspace(workspaceId: string) {
+  return getDb().selectFrom("content_entry_versions as v")
+    .innerJoin("content_entries as e", "e.id", "v.entry_id")
+    .select(["v.id", "v.entry_id", "v.version_number", "v.data_jsonb", "v.locale", "v.created_at"])
+    .where("e.workspace_id", "=", workspaceId);
+}
+
 type VersionRow = { id: string; entry_id: string; version_number: number; data_jsonb: unknown; locale: string; created_at: string };
 
 function toRecord(model: { api_key: string }, entry: { id: string; updated_at: string }, version: VersionRow, route: { path: string; locale: string } | undefined): PublishedContentRecord {
@@ -54,9 +65,9 @@ export async function listPublishedContent(params: { workspaceId: string; modelA
     .orderBy("updated_at", "desc").orderBy("id", "desc").limit(limit).offset(offset).execute();
   const versionIds = entries.map((entry) => entry.published_version_id).filter((id): id is string => Boolean(id));
   if (!versionIds.length) return { model, records: [] as PublishedContentRecord[] };
-  let versionQuery = db.selectFrom("content_entry_versions").select(["id", "entry_id", "version_number", "data_jsonb", "locale", "created_at"])
-    .where("id", "in", versionIds);
-  if (params.locale) versionQuery = versionQuery.where("locale", "=", params.locale);
+  let versionQuery = versionsInWorkspace(params.workspaceId)
+    .where("v.id", "in", versionIds);
+  if (params.locale) versionQuery = versionQuery.where("v.locale", "=", params.locale);
   const [versions, routes] = await Promise.all([versionQuery.execute(), canonicalRoutes(params.workspaceId, entries.map((entry) => entry.id))]);
   const entryById = new Map(entries.map((entry) => [entry.id, entry]));
   const records = (versions as VersionRow[])
@@ -74,9 +85,9 @@ export async function getPublishedContent(params: { workspaceId: string; modelAp
     .where("workspace_id", "=", params.workspaceId).where("content_model_id", "=", model.id)
     .where("status", "=", "published").where("id", "=", params.entryId).where("published_version_id", "is not", null).execute());
   if (!entry?.published_version_id) return { model, record: null as PublishedContentRecord | null };
-  let versionQuery = db.selectFrom("content_entry_versions").select(["id", "entry_id", "version_number", "data_jsonb", "locale", "created_at"])
-    .where("id", "=", entry.published_version_id).where("entry_id", "=", entry.id);
-  if (params.locale) versionQuery = versionQuery.where("locale", "=", params.locale);
+  let versionQuery = versionsInWorkspace(params.workspaceId)
+    .where("v.id", "=", entry.published_version_id).where("v.entry_id", "=", entry.id);
+  if (params.locale) versionQuery = versionQuery.where("v.locale", "=", params.locale);
   const version = maybeOne(await versionQuery.execute()) as VersionRow | null;
   if (!version) return { model, record: null as PublishedContentRecord | null };
   const routes = await canonicalRoutes(params.workspaceId, [entry.id]);
