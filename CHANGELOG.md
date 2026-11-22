@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Database provisioning no longer emulates Supabase on a plain PostgreSQL target: it stops creating the `auth.jwt()` shim, an `auth` schema and the `pgcrypto` extension (nothing uses them), and creates the compatibility role names without `BYPASSRLS`. The `postgres.pgcrypto` preflight check is gone.
 - Migration `0067` adds the `polynovea_owner` and `polynovea_app` database roles: the app role gets row access through a row-level security policy on every table, executes every CMS SQL function (no longer executable by `PUBLIC`), and cannot run DDL. On a plain PostgreSQL database `db:migrate` first creates the NOLOGIN role names older migrations grant to (`anon`, `authenticated`, `service_role`, `postgres`), or says exactly what an administrator must run. Supabase installs keep every existing grant.
 - **Breaking:** PostgreSQL connections now always verify TLS certificates. Set `DATABASE_CA_CERT` or `DATABASE_CA_CERT_FILE` for providers with their own CA (Supabase, AWS RDS), or `sslmode=disable` for a private network. See `docs/self-hosting/POSTGRESQL.md`.
 - Extension network requests now resolve the target host and refuse any private, loopback, link-local or metadata address.
