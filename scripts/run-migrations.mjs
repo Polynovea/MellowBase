@@ -13,6 +13,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
+import { ensureCompatibilityRoles } from "../lib/db/roles.mjs";
 
 const { Client } = pg;
 const LEDGER_TABLE = "polynovea_migration_ledger";
@@ -95,6 +96,9 @@ async function ensureLedger() {
 async function main() {
   await client.connect();
   console.log("Connected.\n");
+  // Migrations 0003-0065 grant to Supabase's role names; a plain database needs them first.
+  const createdRoles = await ensureCompatibilityRoles(client);
+  if (createdRoles.length) console.log(`Created NOLOGIN compatibility role(s): ${createdRoles.join(", ")}\n`);
   await ensureLedger();
 
   for (const file of files) {
