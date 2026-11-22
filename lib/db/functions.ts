@@ -27,8 +27,19 @@ export class SqlFunctionError extends Error {
   }
 }
 
+/**
+ * True for an exception our own SQL raised on purpose. Plain `raise exception` uses SQLSTATE P0001,
+ * but many functions pick their own (`using errcode = 'P0002'`, '22023', '40300', ...), and
+ * PostgREST passed all of those messages to the caller. The server marks them in the error's
+ * context: the innermost line is "PL/pgSQL function ... at RAISE". Errors from a statement inside a
+ * function (constraint violations, bad input) end "at SQL statement" and stay hidden.
+ */
 function isRaisedException(error: unknown): error is { message: string } {
-  return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "P0001" && typeof (error as { message?: unknown }).message === "string");
+  if (!error || typeof error !== "object") return false;
+  const { code, message, where } = error as { code?: unknown; message?: unknown; where?: unknown };
+  if (typeof message !== "string") return false;
+  if (code === "P0001") return true;
+  return typeof where === "string" && /^PL\/pgSQL function [^\n]* at RAISE$/m.test(where.split("\n")[0] ?? "");
 }
 
 /**
