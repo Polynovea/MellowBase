@@ -1,4 +1,4 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { insertImportRun, updateImportRun } from "@/lib/developer/runData";
 import { createEntry } from "@/lib/content/entryService";
 import { validateEntryData } from "@/lib/content/entryValidation";
 import { getVersion, listModels } from "@/lib/schema/modelService";
@@ -38,15 +38,13 @@ export async function runGovernedImport(input:ImportInput){
   const validation=records.map((data,index)=>({index,data,errors:validateEntryData(version.schema_json,data)}));
   const invalid=validation.filter(r=>r.errors.length);
   const mode=input.commit?"commit":"dry_run";
-  const db=createServiceRoleClient();
-  const {data:run,error:runError}=await db.from("developer_import_runs").insert({workspace_id:context.workspaceId,api_token_id:context.tokenId,actor_admin_user_id:context.actorAdminUserId,content_model_id:model.id,format:input.format,mode,status:input.commit?"planned":"completed",source_name:input.sourceName??null,locale:input.locale??"en",total_rows:records.length,succeeded_rows:input.commit?0:records.length-invalid.length,failed_rows:invalid.length,errors_json:invalid.map(r=>({index:r.index,errors:r.errors})),result_json:{mapping:input.mapping??{},dryRun:!input.commit},completed_at:input.commit?null:new Date().toISOString()}).select().single();
-  if(runError||!run)throw new Error(runError?.message||"Could not record import run");
+  const run=await insertImportRun({workspace_id:context.workspaceId,api_token_id:context.tokenId,actor_admin_user_id:context.actorAdminUserId,content_model_id:model.id,format:input.format,mode,status:input.commit?"planned":"completed",source_name:input.sourceName??null,locale:input.locale??"en",total_rows:records.length,succeeded_rows:input.commit?0:records.length-invalid.length,failed_rows:invalid.length,errors_json:invalid.map(r=>({index:r.index,errors:r.errors})),result_json:{mapping:input.mapping??{},dryRun:!input.commit},completed_at:input.commit?null:new Date().toISOString()});
   if(!input.commit){await logDeveloperApiMutation(context,"developer.import.dry_run","developer_import_run",run.id,{format:input.format,model:input.modelApiKey,total:records.length,invalid:invalid.length});return {runId:run.id,mode,model:input.modelApiKey,total:records.length,valid:records.length-invalid.length,invalid:invalid.length,rows:validation.map(r=>({index:r.index,valid:r.errors.length===0,errors:r.errors,preview:r.data}))};}
-  if(invalid.length&&!input.continueOnError){await db.from("developer_import_runs").update({status:"failed",completed_at:new Date().toISOString(),result_json:{reason:"validation_failed_before_commit"}}).eq("id",run.id);return {runId:run.id,mode,committed:false,total:records.length,succeeded:0,failed:invalid.length,errors:invalid.map(r=>({index:r.index,errors:r.errors}))};}
+  if(invalid.length&&!input.continueOnError){await updateImportRun(context.workspaceId,run.id,{status:"failed",completed_at:new Date().toISOString(),result_json:{reason:"validation_failed_before_commit"}});return {runId:run.id,mode,committed:false,total:records.length,succeeded:0,failed:invalid.length,errors:invalid.map(r=>({index:r.index,errors:r.errors}))};}
   const results:Array<Record<string,unknown>>=[];let succeeded=0,failed=0;
   for(const row of validation){if(row.errors.length){failed++;results.push({index:row.index,status:"invalid",errors:row.errors});continue;}const created=await createEntry({workspaceId:context.workspaceId,modelId:model.id,data:row.data,locale:input.locale??"en",actorAdminUserId:context.actorAdminUserId!,changeSummary:`Imported via ${input.format}${input.sourceName?` from ${input.sourceName}`:""}`});if(created.ok){succeeded++;results.push({index:row.index,status:"created",entryId:created.data.entry.id,versionId:created.data.version.id});}else{failed++;results.push({index:row.index,status:"failed",error:created.error});if(!input.continueOnError)break;}}
   const status=failed?(succeeded?"partially_failed":"failed"):"completed";
-  await db.from("developer_import_runs").update({status,succeeded_rows:succeeded,failed_rows:failed,errors_json:results.filter(r=>r.status!=="created"),result_json:{results},completed_at:new Date().toISOString()}).eq("id",run.id);
+  await updateImportRun(context.workspaceId,run.id,{status,succeeded_rows:succeeded,failed_rows:failed,errors_json:results.filter(r=>r.status!=="created"),result_json:{results},completed_at:new Date().toISOString()});
   await logDeveloperApiMutation(context,"developer.import.committed","developer_import_run",run.id,{format:input.format,model:input.modelApiKey,total:records.length,succeeded,failed,status});
   return {runId:run.id,mode,committed:status!=="failed",status,total:records.length,succeeded,failed,results};
 }

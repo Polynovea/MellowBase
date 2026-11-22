@@ -26,9 +26,12 @@ export async function listDeveloperEntries(params: { workspaceId: string; modelA
   const versionIds = [...new Set(entries.flatMap((entry) => [entry.current_draft_version_id, entry.published_version_id].filter((id): id is string => Boolean(id))))];
   const entryIds = entries.map((entry) => entry.id);
   const versions = versionIds.length
-    ? await db.selectFrom("content_entry_versions")
-      .select(["id", "entry_id", "version_number", "data_jsonb", "locale", "state", "model_schema_version", "created_at", "change_summary"])
-      .where("id", "in", versionIds).where("entry_id", "in", entryIds).execute()
+    // content_entry_versions has no workspace_id; the join to the entry's workspace is the second check.
+    ? await db.selectFrom("content_entry_versions as v")
+      .innerJoin("content_entries as e", "e.id", "v.entry_id")
+      .select(["v.id", "v.entry_id", "v.version_number", "v.data_jsonb", "v.locale", "v.state", "v.model_schema_version", "v.created_at", "v.change_summary"])
+      .where("e.workspace_id", "=", params.workspaceId)
+      .where("v.id", "in", versionIds).where("v.entry_id", "in", entryIds).execute()
     : [];
   const versionById = new Map(versions.map((version) => [version.id, version]));
   const rows = entries

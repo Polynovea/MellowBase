@@ -80,9 +80,12 @@ function fixturesFor(backend: DataBackend, client: () => pg.Client): BackendFixt
 }
 
 /**
- * Registers `suite` once per backend for `area`. Inside, `backend.name` says which one is running.
+ * Registers `suite` once per backend for `area` (or several areas switched together). Inside, `backend.name` says which one is running.
  */
-export function describeBothBackends(area: DataArea, title: string, suite: (backend: BackendFixtures) => void): void {
+export function describeBothBackends(area: DataArea | DataArea[], title: string, suite: (backend: BackendFixtures) => void): void {
+  // Several areas switch together when one area's code reads another's data (for example schema
+  // delivery runs that point at schema models): they must come from the same database.
+  const areas = Array.isArray(area) ? area : [area];
   for (const backendName of DATA_BACKENDS) {
     describe(`${title} [${backendName}]`, () => {
       let client: pg.Client | null = null;
@@ -90,7 +93,7 @@ export function describeBothBackends(area: DataArea, title: string, suite: (back
 
       beforeAll(async () => {
         previous = process.env.POLYNOVEA_DATA_BACKEND;
-        process.env.POLYNOVEA_DATA_BACKEND = `supabase,${area}=${backendName}`;
+        process.env.POLYNOVEA_DATA_BACKEND = ["supabase", ...areas.map((name) => `${name}=${backendName}`)].join(",");
         client = new pg.Client({ connectionString: ownerUrlFor(backendName), ssl: false });
         await client.connect();
       });
