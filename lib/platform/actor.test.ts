@@ -68,8 +68,11 @@ function fakeDb({
       }),
     },
     member_roles: {
+      // .eq("workspace_member_id", …).eq("roles.workspace_id", …): only this workspace's roles.
       select: () => ({
-        eq: () => Promise.resolve({ data: roleRows, error: null }),
+        eq: () => ({
+          eq: () => Promise.resolve({ data: roleRows, error: null }),
+        }),
       }),
     },
     role_permissions: {
