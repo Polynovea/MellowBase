@@ -33,7 +33,7 @@ Every change lands small, behind a switch, and with the same checks, so `main` i
 1. **One area per pull request.** A pull request moves one code area (for example taxonomy), never a cross-cutting rewrite. Target under 800 changed lines.
 2. **Feature switch per area.** `POLYNOVEA_DATA_BACKEND` chooses `supabase` or `postgres` per area while phase 1 runs, so a moved area can be switched back in production without a deploy. The switch is deleted once every area passes.
 3. **Same tests on both paths.** Each area's tests run against the Supabase path and the direct path until the switch is removed. A test that passes on one and fails on the other blocks the merge.
-4. **Local CI before every pull request.** GitHub CI is switched off, so the local run is the gate: type-check, lint, unit tests, build, `npm audit`, secret scan, and Semgrep (`semgrep scan --config p/default --metrics off --exclude node_modules --exclude dist --exclude .next`). A pre-push hook runs it.
+4. **Local CI before every pull request.** PRs are tested locally, never on the organisation's GitHub Actions minutes: no workflow is added, enabled or triggered. The local run is the gate: type-check, lint, unit tests, build, `npm audit`, secret scan, and Semgrep (`semgrep scan --config p/default --metrics off --exclude node_modules --exclude dist --exclude .next`). A pre-push hook runs it.
 5. **Migrations are additive and reversible for one release.** No migration drops or renames something the previous release still reads.
 6. **Security review on four kinds of change:** auth, anything that accepts a host or URL, anything that runs DDL, anything that handles secrets. A second person reads these before merging.
 7. **Docs move with code.** Each phase updates the self-hosting guide, `.env.example`, the changelog and an ADR for each decision it settles.
@@ -327,7 +327,7 @@ This runs in parallel with phases 3 and 4 because it only depends on the wizard 
 
 - [ ] A container image with the Next.js standalone build, the worker and PostgreSQL 16 (used only by the "on this server" option), run as a non-root user. The base image needs Node 24.7 or later for the password hashing.
 - [ ] A VM image built from it for AWS (AMI) and Azure (managed image), with IMDSv2 required, automatic security updates and the data disk mounted at `/var/lib/polynovea`.
-- [ ] Images signed with cosign and published with an SBOM. Keyless signing needs GitHub Actions' identity: Actions minutes are free for public repositories, so the release workflow is re-enabled when the repository goes public. Until then, key-based signing from a release machine.
+- [ ] Images signed with cosign and published with an SBOM. Images are built and signed with a key from a local release machine by a script, not by GitHub Actions (owner's rule: no organisation Actions minutes). Keyless signing would need Actions' identity, so it is not used.
 
 **Templates (weeks 21–24)**
 
