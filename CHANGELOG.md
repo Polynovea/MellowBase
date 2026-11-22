@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Navigation can run on the direct PostgreSQL path (`POLYNOVEA_DATA_BACKEND=...,navigation=postgres`). Menu creation, draft saves, publishing and deletion are atomic with their dependency edges and audit events, and concurrent draft saves get consecutive version numbers. Menu rename and delete moved from the route into the navigation service. Fixed: "where used" for navigation always returned nothing on Supabase (ambiguous relationship).
 - The shared platform audit logger follows the `platform` switch in `POLYNOVEA_DATA_BACKEND`. On the direct path the audit row and its webhook deliveries are written in one transaction, and a failure is logged on the server instead of being dropped silently.
 - Database provisioning no longer emulates Supabase on a plain PostgreSQL target: it stops creating the `auth.jwt()` shim, an `auth` schema and the `pgcrypto` extension (nothing uses them), and creates the compatibility role names without `BYPASSRLS`. The `postgres.pgcrypto` preflight check is gone.
 - Migration `0067` adds the `polynovea_owner` and `polynovea_app` database roles: the app role gets row access through a row-level security policy on every table, executes every CMS SQL function (no longer executable by `PUBLIC`), and cannot run DDL. On a plain PostgreSQL database `db:migrate` first creates the NOLOGIN role names older migrations grant to (`anon`, `authenticated`, `service_role`, `postgres`), or says exactly what an administrator must run. Supabase installs keep every existing grant.

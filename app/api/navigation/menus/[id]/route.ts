@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
-import { getMenu, saveMenuDraft, listMenuVersions } from "@/lib/navigation/navigationService";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { deleteMenu, getMenu, listMenuVersions, saveMenuDraft, updateMenuDetails } from "@/lib/navigation/navigationService";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
@@ -35,14 +33,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     // If metadata update
     if (body.name || body.description !== undefined) {
-      await createServiceRoleClient()
-        .from("navigation_menus")
-        .update({
-          name: body.name ? body.name.trim() : menu.name,
-          description: body.description !== undefined ? body.description?.trim() || null : menu.description,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", menu.id);
+      await updateMenuDetails({ workspaceId: auth.data!.actor.workspaceId, menu, name: body.name, description: body.description });
     }
 
     // If draft items update
@@ -69,23 +60,11 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   if (auth.error) return auth.error;
 
   const { id } = await params;
-  const db = createServiceRoleClient();
-  const { error } = await db
-    .from("navigation_menus")
-    .delete()
-    .eq("workspace_id", auth.data!.actor.workspaceId)
-    .eq("id", id);
-
-  if (error) return respond(false, null, clientErrorMessage(error), 400);
-
-  await logPlatformEvent({
-    workspaceId: auth.data!.actor.workspaceId,
-    actorAdminUserId: auth.data!.actor.adminUserId,
-    action: "navigation.menu.deleted",
-    entityType: "navigation_menu",
-    entityId: id,
-    metadata: {},
-  });
+  try {
+    await deleteMenu({ workspaceId: auth.data!.actor.workspaceId, actorAdminUserId: auth.data!.actor.adminUserId, menuId: id });
+  } catch (err) {
+    return respond(false, null, clientErrorMessage(err, "Could not delete navigation menu"), 400);
+  }
 
   return respond(true, { ok: true }, null);
 }
