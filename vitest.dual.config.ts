@@ -13,6 +13,8 @@ export default defineConfig({
     environment: "node",
     include: ["**/*.dual.test.ts"],
     exclude: ["node_modules/**", ".next/**", ".worktrees/**", ".claude/**"],
+    // Once per run: both databases on the newest migration and PostgREST serving it.
+    globalSetup: ["./lib/db/testing/dualGlobalSetup.ts"],
     setupFiles: ["./lib/db/testing/dualSetup.ts"],
     testTimeout: 30_000,
     hookTimeout: 30_000,

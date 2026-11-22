@@ -78,32 +78,39 @@ export async function gatherCommandCenterData(workspaceId: string, actorId: stri
       .catch(() => 0),
   ]);
 
+  // Every list ends with an id tie-break: rows written in one statement share their timestamps, and
+  // without it their order (and which of them make the limit) was undefined.
   const [environmentResult, auditResult, jobsResult, findingsResult, releasesResult] = await Promise.all([
     db.from("workspace_environments")
       .select("id,key,name,kind,status,is_default,health_json,last_health_check_at,deployed_schema_revision")
       .eq("workspace_id", workspaceId)
       .order("is_default", { ascending: false })
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true }),
     db.from("platform_audit_events")
       .select("id,action,entity_type,entity_id,metadata_json,created_at")
       .eq("workspace_id", workspaceId)
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(10),
     db.from("delivery_jobs")
       .select("id,kind,status,queue_name,attempt_count,max_attempts,last_error_code,last_error_message,created_at,updated_at")
       .eq("workspace_id", workspaceId)
       .order("updated_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(6),
     db.from("content_health_findings")
       .select("id,severity,state,title,detail,entity_type,entity_id,last_detected_at")
       .eq("workspace_id", workspaceId)
       .in("state", ["open", "acknowledged"])
       .order("last_detected_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(6),
     db.from("releases")
       .select("id,name,status,scheduled_for,published_at,updated_at")
       .eq("workspace_id", workspaceId)
       .order("updated_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(6),
   ]);
 

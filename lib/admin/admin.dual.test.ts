@@ -61,7 +61,8 @@ describeBothBackends("admin", "admin area (activity log, profile resolution, com
     await backend.query("update content_entries set status = 'in_review' where workspace_id = $1", [workspaceId]);
     await backend.query("insert into workspace_environments (workspace_id, key, name, kind, status, is_default) values ($1, 'prod', 'Production', 'production', 'degraded', true)", [workspaceId]);
     await backend.query(
-      "insert into delivery_jobs (workspace_id, kind, idempotency_key, status, queue_name) values ($1, 'webhook', 'cc-1', 'dead_letter', 'default'), ($1, 'webhook', 'cc-2', 'queued', 'default')",
+      // Distinct times, so the expected "recent" order is meaningful; ties fall back to id (tested below).
+      "insert into delivery_jobs (workspace_id, kind, idempotency_key, status, queue_name, updated_at) values ($1, 'webhook', 'cc-1', 'dead_letter', 'default', now() - interval '1 minute'), ($1, 'webhook', 'cc-2', 'queued', 'default', now())",
       [workspaceId],
     );
 
@@ -72,6 +73,15 @@ describeBothBackends("admin", "admin area (activity log, profile resolution, com
     expect(snapshot.infrastructure.environments).toEqual({ total: 1, ready: 0, problem: 1 });
     expect(snapshot.attention.map((item) => item.key)).toEqual(["environment", "dead-letter", "reviews"]);
     expect(snapshot.infrastructure.defaultEnvironment).toMatchObject({ key: "prod", is_default: true });
+    expect(snapshot.delivery.recent.map((job: { status: string }) => job.status)).toEqual(["queued", "dead_letter"]);
+
+    // Rows with identical timestamps come back in id order on both paths, not in scan order.
+    await backend.query(
+      "insert into delivery_jobs (workspace_id, kind, idempotency_key, status, queue_name, updated_at) select $1, 'webhook', 'tie-' || g, 'queued', 'default', '2030-01-01T00:00:00Z' from generate_series(1, 4) g",
+      [workspaceId],
+    );
+    const tied = (await getCommandCenterSnapshot(workspaceId, adminUserId)).delivery.recent.slice(0, 4).map((job: { id: string }) => job.id);
+    expect(tied).toEqual([...tied].sort().reverse());
 
     const other = await backend.createWorkspace();
     const empty = await getCommandCenterSnapshot(other.workspaceId, other.adminUserId);
