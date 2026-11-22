@@ -1,4 +1,24 @@
-import type { Session, User } from "@supabase/supabase-js";
+/**
+ * Identity types owned by the CMS, so the auth library behind this interface (Supabase GoTrue today,
+ * Better Auth next) can change without touching the rest of the code.
+ */
+export interface User {
+  /** Stable identity ID; admin_users.auth_user_id points at it. */
+  id: string;
+  email: string | null;
+  /** ISO timestamp of email confirmation, or null when the address is unconfirmed. */
+  emailConfirmedAt: string | null;
+  /** Self-service profile data (display name and the like). Never used for authorization. */
+  metadata: Record<string, unknown>;
+}
+
+export interface Session {
+  /** Bearer token the admin UI sends to the API. */
+  accessToken: string;
+  /** Expiry as Unix seconds, or null when the provider does not say. */
+  expiresAt: number | null;
+  user: User;
+}
 
 /**
  * Provider boundary for identity. CMS authorization deliberately remains

@@ -1,4 +1,4 @@
-import type { User } from "@supabase/supabase-js";
+import type { User } from "@/lib/auth/provider";
 import type { AdminUser } from "@/lib/admin/types";
 
 // Resolves the admin profile for an authenticated identity.
@@ -16,12 +16,12 @@ export interface AdminProfileStore {
   linkAuthUser(profileId: string, authUserId: string): Promise<AdminUser | null>;
 }
 
-export async function resolveAdminProfile(store: AdminProfileStore, user: Pick<User, "id" | "email" | "email_confirmed_at">): Promise<AdminUser | null> {
+export async function resolveAdminProfile(store: AdminProfileStore, user: Pick<User, "id" | "email" | "emailConfirmedAt">): Promise<AdminUser | null> {
   const bound = await store.findActiveByAuthUserId(user.id);
   if (bound) return bound;
 
   const email = user.email?.trim().toLowerCase();
-  if (!email || !user.email_confirmed_at) return null;
+  if (!email || !user.emailConfirmedAt) return null;
   const legacy = await store.findActiveUnlinkedByEmail(email);
   if (!legacy) return null;
   return store.linkAuthUser(legacy.id, user.id);

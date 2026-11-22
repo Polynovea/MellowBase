@@ -1,4 +1,4 @@
-import type { User } from "@supabase/supabase-js";
+import type { User } from "@/lib/auth/provider";
 import { hasModuleAccess, hasModuleWriteAccess, normalizeAdminUser, type AdminModule } from "@/lib/admin/access";
 import type { AdminUser } from "@/lib/admin/types";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";

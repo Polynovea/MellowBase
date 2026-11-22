@@ -425,7 +425,7 @@ export default function AccessPage() {
   }, [users]);
 
   const loadUsers = async () => {
-    const accessToken = await resolveAccessToken(session?.access_token);
+    const accessToken = await resolveAccessToken(session?.accessToken);
     if (!accessToken) {
       setLoading(false);
       return;
@@ -455,13 +455,13 @@ export default function AccessPage() {
   };
 
   useEffect(() => {
-    if (checked && session?.access_token) {
+    if (checked && session?.accessToken) {
       loadUsers();
     }
-  }, [checked, session?.access_token]);
+  }, [checked, session?.accessToken]);
 
   const handleCreate = async () => {
-    const accessToken = await resolveAccessToken(session?.access_token);
+    const accessToken = await resolveAccessToken(session?.accessToken);
     if (!accessToken) {
       showToast("Session expired. Please sign in again.", "error");
       return;
@@ -489,7 +489,7 @@ export default function AccessPage() {
 
   const handleEdit = async () => {
     if (!selectedUser) return;
-    const accessToken = await resolveAccessToken(session?.access_token);
+    const accessToken = await resolveAccessToken(session?.accessToken);
     if (!accessToken) {
       showToast("Session expired. Please sign in again.", "error");
       return;
@@ -517,7 +517,7 @@ export default function AccessPage() {
 
   const handleDelete = async () => {
     if (!selectedUser) return;
-    const accessToken = await resolveAccessToken(session?.access_token);
+    const accessToken = await resolveAccessToken(session?.accessToken);
     if (!accessToken) {
       showToast("Session expired. Please sign in again.", "error");
       return;

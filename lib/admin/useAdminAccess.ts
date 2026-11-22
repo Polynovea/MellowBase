@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { Session } from "@supabase/supabase-js";
+import type { Session } from "@/lib/auth/provider";
 import { getSupabaseBrowserIdentityProvider } from "@/lib/auth/supabaseProvider";
 import type { AdminUser } from "@/lib/admin/types";
 
@@ -31,7 +31,7 @@ export function useAdminAccess() {
       try {
         const res = await fetch("/api/admin/me", {
           headers: {
-            Authorization: `Bearer ${nextSession.access_token}`,
+            Authorization: `Bearer ${nextSession.accessToken}`,
             "Content-Type": "application/json",
           },
         });
