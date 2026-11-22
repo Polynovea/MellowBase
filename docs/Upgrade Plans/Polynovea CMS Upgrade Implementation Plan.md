@@ -147,7 +147,11 @@ Taxonomy (24 calls) moved in phase 0. The delivery worker already uses `pg` dire
 | Shared audit logger dispatches to the direct path | #20 | Follow-up: the Supabase path still skips failed audit inserts silently; a check that moved areas use `recordPlatformEvent` |
 | Wave 1 areas: navigation, routing (routes and redirects), schema, platform | #21, #22, #24, #26, #28 | #28 also fixes roles from another workspace leaking into a member's role keys on the Supabase path; follow-up adds a database constraint on `member_roles` |
 
-All merged at `cb5aece`. On the stack tip: the type-check and lint pass, 802 unit tests and 133 dual-backend tests pass, and the build passes. `npm audit` and Semgrep are clean. Next: the review fix-up PR (migration 0068), then operations, which closes wave 1, then wave 2.
+| Review fix-up: migration 0068 (role setup with a non-superuser admin, SCRAM password verifiers, default and Supabase `EXECUTE` revokes, a trigger refusing cross-workspace `member_roles` after archiving any bad rows), Supabase-path errors surfaced, a guard test for `recordPlatformEvent` | #30 | Dev setup now installs through a non-superuser admin, like RDS and Azure |
+| Wave 1 complete: operations (delivery jobs) | #31 | |
+| Wave 2: admin part 1 (activity log, profile resolution, Command Center) | #32 | |
+
+All merged at `cb5aece`. On the stack tip: the type-check and lint pass, 802 unit tests and 133 dual-backend tests pass, and the build passes. `npm audit` and Semgrep are clean. Then #30 to #32 merged at `41a8e39`: 819 unit tests and 164 dual-backend tests pass. One dual test failed once, right after a database reset, and passed on rerun; making it deterministic is queued. Next: admin part 2, media, developer.
 
 The shared audit logger goes first because every area writes through it. Phase 0 found that it still uses Supabase, so on a database without Supabase the audit events of moved areas are silently dropped. No area counts as moved until its audit events land. The direct-path logger now exists (`lib/platform/audit.postgres.ts`, merged in PR #17: audit row, webhook deliveries and delivery jobs in the caller's transaction) and taxonomy uses it; wave 1 makes every other area call it.
 
