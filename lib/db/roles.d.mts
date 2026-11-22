@@ -9,3 +9,5 @@ export function bootstrapInstallRoles(
   client: ClientBase,
   options: { database: string; ownerPassword: string; appPassword: string },
 ): Promise<void>;
+export function scramSha256Verifier(password: string, options?: { iterations?: number; salt?: Buffer }): string;
+export function assertNoBypassAttributes(client: ClientBase): Promise<void>;

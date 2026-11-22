@@ -943,6 +943,15 @@ export interface MemberRoles {
   workspace_member_id: string;
 }
 
+export interface MemberRolesCrossWorkspaceArchive {
+  archived_at: Generated<string>;
+  assigned_at: string | null;
+  member_workspace_id: string | null;
+  role_id: string;
+  role_workspace_id: string | null;
+  workspace_member_id: string;
+}
+
 export interface NavigationItemLocalizations {
   created_at: Generated<string>;
   id: Generated<string>;
@@ -2138,6 +2147,7 @@ export interface DB {
   media_collection_assets: MediaCollectionAssets;
   media_collections: MediaCollections;
   member_roles: MemberRoles;
+  member_roles_cross_workspace_archive: MemberRolesCrossWorkspaceArchive;
   navigation_item_localizations: NavigationItemLocalizations;
   navigation_items: NavigationItems;
   navigation_menu_versions: NavigationMenuVersions;

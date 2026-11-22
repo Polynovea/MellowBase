@@ -44,6 +44,7 @@ const env = {
   POLYNOVEA_DEV_ADMIN_PASSWORD: existing.POLYNOVEA_DEV_ADMIN_PASSWORD || secret(),
   POLYNOVEA_DEV_OWNER_PASSWORD: existing.POLYNOVEA_DEV_OWNER_PASSWORD || secret(),
   POLYNOVEA_DEV_APP_PASSWORD: existing.POLYNOVEA_DEV_APP_PASSWORD || secret(),
+  POLYNOVEA_DEV_INSTALLER_PASSWORD: existing.POLYNOVEA_DEV_INSTALLER_PASSWORD || secret(),
   POLYNOVEA_DEV_SUPABASE_DB_PASSWORD: existing.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD || secret(),
   POLYNOVEA_DEV_JWT_SECRET: existing.POLYNOVEA_DEV_JWT_SECRET || randomBytes(32).toString("hex"),
 };
@@ -52,6 +53,8 @@ const serviceRoleKey = signJwt({ role: "service_role", iss: "supabase-dev", iat:
 const anonKey = signJwt({ role: "anon", iss: "supabase-dev", iat: now, exp: now + 10 * 365 * 24 * 3600 }, env.POLYNOVEA_DEV_JWT_SECRET);
 
 const adminUrl = `postgresql://polynovea_admin:${env.POLYNOVEA_DEV_ADMIN_PASSWORD}@127.0.0.1:25432/polynovea`;
+// Stand-in for the RDS master user / Azure administrator: CREATEROLE and CREATEDB, not a superuser.
+const installerUrl = `postgresql://polynovea_installer:${env.POLYNOVEA_DEV_INSTALLER_PASSWORD}@127.0.0.1:25432/polynovea`;
 const ownerUrl = `postgresql://polynovea_owner:${env.POLYNOVEA_DEV_OWNER_PASSWORD}@127.0.0.1:25432/polynovea`;
 const appUrl = `postgresql://polynovea_app:${env.POLYNOVEA_DEV_APP_PASSWORD}@127.0.0.1:25432/polynovea`;
 const supabaseDbUrl = `postgresql://postgres:${env.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD}@127.0.0.1:25433/postgres`;
@@ -103,11 +106,33 @@ async function withClient(url, fn) {
   }
 }
 
-// Plain PostgreSQL, as the one-time admin login: create polynovea_owner (not a superuser; owns
-// schema public, runs migrations) and polynovea_app (rows and functions only), plus the Supabase role
-// names the historical migrations grant to. Migration 0067 then gives polynovea_app its grants and a
+// Plain PostgreSQL. The image's superuser only creates polynovea_installer, a non-superuser with
+// CREATEROLE and CREATEDB that owns the database: exactly what RDS and Azure hand an installer. The
+// installer then runs the real install step, so these tests fail if it needs a superuser anywhere.
+await withClient(adminUrl, async (client) => {
+  const password = client.escapeLiteral(env.POLYNOVEA_DEV_INSTALLER_PASSWORD);
+  await client.query(`do $$ begin
+    if not exists (select 1 from pg_roles where rolname = 'polynovea_installer') then
+      create role polynovea_installer login nosuperuser createrole createdb;
+    end if;
+  end $$`);
+  await client.query(`alter role polynovea_installer with login nosuperuser createrole createdb nobypassrls password ${password}`);
+  await client.query("alter database polynovea owner to polynovea_installer");
+  // Databases created before the installer existed have roles it did not create; give it the admin
+  // option a creator would have had (a fresh --reset database never needs this).
+  // PostgreSQL 15's CREATEROLE manages every non-superuser role, so only 16+ needs this.
+  const { rows: [{ version }] } = await client.query("select current_setting('server_version_num')::int as version");
+  for (const role of version >= 160000 ? ["polynovea_owner", "polynovea_app", "anon", "authenticated", "service_role", "postgres"] : []) {
+    const { rows } = await client.query("select 1 from pg_roles where rolname = $1", [role]);
+    if (rows.length) await client.query(`grant ${role} to polynovea_installer with admin true, inherit false, set false`);
+  }
+});
+
+// Plain PostgreSQL, as the installer: create polynovea_owner (not a superuser; owns schema public,
+// runs migrations) and polynovea_app (rows and functions only), plus the Supabase role names the
+// historical migrations grant to. Migration 0067 then gives polynovea_app its grants and a
 // row-level security policy on every table, so tests hit the same rules as RDS or Azure.
-await withClient(adminUrl, (client) => bootstrapInstallRoles(client, {
+await withClient(installerUrl, (client) => bootstrapInstallRoles(client, {
   database: "polynovea",
   ownerPassword: env.POLYNOVEA_DEV_OWNER_PASSWORD,
   appPassword: env.POLYNOVEA_DEV_APP_PASSWORD,
