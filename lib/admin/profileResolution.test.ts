@@ -23,29 +23,29 @@ const confirmed = "2026-01-01T00:00:00Z";
 describe("resolveAdminProfile", () => {
   it("resolves by the immutable auth user ID", async () => {
     const store = memoryStore([{ id: "p1", email: "owner@example.com", auth_user_id: "auth-1", is_active: true }]);
-    expect((await resolveAdminProfile(store, { id: "auth-1", email: "renamed@example.com", email_confirmed_at: confirmed }))?.id).toBe("p1");
+    expect((await resolveAdminProfile(store, { id: "auth-1", email: "renamed@example.com", emailConfirmedAt: confirmed }))?.id).toBe("p1");
   });
 
   it("does not let a different identity with the same email take over a bound profile", async () => {
     const store = memoryStore([{ id: "p1", email: "owner@example.com", auth_user_id: "auth-1", is_active: true }]);
-    expect(await resolveAdminProfile(store, { id: "attacker", email: "owner@example.com", email_confirmed_at: confirmed })).toBeNull();
+    expect(await resolveAdminProfile(store, { id: "attacker", email: "owner@example.com", emailConfirmedAt: confirmed })).toBeNull();
   });
 
   it("links a legacy profile once, from a confirmed email", async () => {
     const store = memoryStore([{ id: "p1", email: "owner@example.com", auth_user_id: null, is_active: true }]);
-    expect((await resolveAdminProfile(store, { id: "auth-1", email: "Owner@Example.com", email_confirmed_at: confirmed }))?.id).toBe("p1");
+    expect((await resolveAdminProfile(store, { id: "auth-1", email: "Owner@Example.com", emailConfirmedAt: confirmed }))?.id).toBe("p1");
     expect(store.rows[0].auth_user_id).toBe("auth-1");
-    expect(await resolveAdminProfile(store, { id: "auth-2", email: "owner@example.com", email_confirmed_at: confirmed })).toBeNull();
+    expect(await resolveAdminProfile(store, { id: "auth-2", email: "owner@example.com", emailConfirmedAt: confirmed })).toBeNull();
   });
 
   it("never links from an unconfirmed email", async () => {
     const store = memoryStore([{ id: "p1", email: "owner@example.com", auth_user_id: null, is_active: true }]);
-    expect(await resolveAdminProfile(store, { id: "auth-1", email: "owner@example.com", email_confirmed_at: undefined })).toBeNull();
+    expect(await resolveAdminProfile(store, { id: "auth-1", email: "owner@example.com", emailConfirmedAt: null })).toBeNull();
     expect(store.rows[0].auth_user_id).toBeNull();
   });
 
   it("ignores inactive profiles", async () => {
     const store = memoryStore([{ id: "p1", email: "owner@example.com", auth_user_id: "auth-1", is_active: false }]);
-    expect(await resolveAdminProfile(store, { id: "auth-1", email: "owner@example.com", email_confirmed_at: confirmed })).toBeNull();
+    expect(await resolveAdminProfile(store, { id: "auth-1", email: "owner@example.com", emailConfirmedAt: confirmed })).toBeNull();
   });
 });

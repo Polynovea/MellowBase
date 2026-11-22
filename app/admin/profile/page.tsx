@@ -10,7 +10,7 @@ import { getSupabaseBrowserIdentityProvider } from "@/lib/auth/supabaseProvider"
 async function getAccessToken(fallback?: string | null) {
   if (fallback) return fallback;
   const { session } = await getSupabaseBrowserIdentityProvider().getSession();
-  return session?.access_token ?? null;
+  return session?.accessToken ?? null;
 }
 
 export default function ProfilePage() {
@@ -38,7 +38,7 @@ export default function ProfilePage() {
   }, [profile?.display_name, profile?.username]);
 
   const updateMe = async (payload: Record<string, string>) => {
-    const token = await getAccessToken(session?.access_token);
+    const token = await getAccessToken(session?.accessToken);
     if (!token) throw new Error("Session expired. Please sign in again.");
 
     const response = await fetch("/api/admin/me", {

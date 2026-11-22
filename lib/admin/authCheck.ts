@@ -24,13 +24,13 @@ export async function getAccessToken(): Promise<string | null> {
   const { session, error } = await identity.getSession();
   if (error || !session) return null;
 
-  const expiresAt = (session.expires_at ?? 0) * 1000;
+  const expiresAt = (session.expiresAt ?? 0) * 1000;
   if (expiresAt < Date.now() + 30_000) {
     const { session: refreshedSession } = await identity.refreshSession();
-    return refreshedSession?.access_token ?? null;
+    return refreshedSession?.accessToken ?? null;
   }
 
-  return session.access_token ?? null;
+  return session.accessToken ?? null;
 }
 
 export async function getAuthHeaders(): Promise<Record<string, string>> {

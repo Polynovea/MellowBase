@@ -107,8 +107,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
       if (!isCmsApi || headers.has("authorization")) return nativeFetch(input, init);
       const { session } = await getSupabaseBrowserIdentityProvider().getSession();
-      if (!session?.access_token) return nativeFetch(input, init);
-      headers.set("Authorization", `Bearer ${session.access_token}`);
+      if (!session?.accessToken) return nativeFetch(input, init);
+      headers.set("Authorization", `Bearer ${session.accessToken}`);
       return nativeFetch(input, { ...init, headers });
     };
     return () => { window.fetch = nativeFetch; };

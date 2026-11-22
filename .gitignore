@@ -18,3 +18,7 @@ BACKEND_SPEC.md
 
 .vercel
 .env*
+
+# Playwright output
+test-results/
+playwright-report/

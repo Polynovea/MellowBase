@@ -54,9 +54,7 @@ export async function PATCH(req: Request) {
 
       updatedProfile = normalizeAdminUser(data as any);
 
-      const currentMetadata = authUser.user_metadata && typeof authUser.user_metadata === "object"
-        ? authUser.user_metadata
-        : {};
+      const currentMetadata = authUser.metadata;
 
       const { error: metadataError } = await identity.updateUser(authUser.id, {
         metadata: {
