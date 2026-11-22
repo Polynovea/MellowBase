@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import pg from "pg";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 for (const line of readFileSync(".env.local", "utf8").split("\n")) { const match = line.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/); if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, ""); }
 const connectionString = process.env.Database_URL || process.env.DATABASE_URL || process.env.database_url;
 if (!connectionString) throw new Error("Missing database connection string");
-const client = new pg.Client({ connectionString, ssl: { rejectUnauthorized: false } });
+const client = new pg.Client(postgresConnectionConfig(connectionString));
 await client.connect();
 const tables = ["workflow_definitions", "workflow_instances", "workflow_actions", "releases", "release_items", "content_search_documents", "content_assignments", "content_comments", "content_comment_mentions", "content_entry_watchers", "editorial_notifications", "editorial_calendar_events"];
 const indexes = ["workflow_active_entry_idx", "releases_workspace_status_idx", "content_search_documents_workspace_idx", "content_assignments_assignee_queue_idx", "content_assignments_entry_idx", "content_comments_entry_thread_idx", "content_comment_mentions_recipient_idx", "editorial_notifications_inbox_idx", "editorial_calendar_events_workspace_range_idx", "editorial_calendar_events_entry_idx"];

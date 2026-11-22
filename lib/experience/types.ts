@@ -57,7 +57,7 @@ export const ExperienceBlockZ = z.object({
   id: z.string().min(1),
   blockType: z.string().min(1),
   variant: z.string().optional(),
-  data: z.record(z.unknown()),
+  data: z.record(z.string(), z.unknown()),
   hidden: z.boolean().optional(),
 });
 

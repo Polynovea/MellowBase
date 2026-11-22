@@ -38,6 +38,7 @@ try {
   const manifest = await registerExtensionManifest({ workspaceId, actorId: actor.adminUserId, input: manifestInput });
   let installation = await installExtension({ workspaceId, actorId: actor.adminUserId, manifestId: manifest.id, grantedPermissions: ["content.read"], grantedNetwork: ["https://api.example.com"], grantedConnections: [{ connectorFamily: "database", connectorType: "database.postgres", scopes: ["connection.read"] }] });
   const common = { workspaceId, installationId: installation.id };
+  const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
 
   const allowedRoute = await authorizeExtensionRoute({ ...common, method: "GET", path: "/extensions/cert.host/panel" });
   assert(allowedRoute.extensionKey === "cert.host", "Declared extension route should be allowed");
@@ -46,20 +47,20 @@ try {
   await denied(() => authorizeExtensionRoute({ ...common, method: "GET", path: "/extensions/cert.host/%2e%2e/admin" }), "Encoded traversal must be denied");
   pass("Declared routes are namespace-, declaration-, and method-constrained.");
 
-  globalThis.fetch = async (input, init) => String(input).startsWith("https://api.example.com")
+  globalThis.fetch = async (input, init) => new URL(String(input)).origin === "https://api.example.com"
     ? new Response("brokered", { status: 200, headers: { "content-type": "text/plain" } })
     : originalFetch(input, init);
-  const network = await extensionFetch({ ...common, actorId: actor.adminUserId, url: "https://api.example.com/v1/records", method: "GET" });
+  const network = await extensionFetch({ ...common, lookup: publicLookup, actorId: actor.adminUserId, url: "https://api.example.com/v1/records", method: "GET" });
   assert(network.status === 200 && network.body === "brokered", "Exact declared HTTPS network request should be brokered");
-  await denied(() => extensionFetch({ ...common, actorId: actor.adminUserId, url: "https://other.example.com", method: "GET" }), "Undeclared origin must be denied");
-  await denied(() => extensionFetch({ ...common, actorId: actor.adminUserId, url: "https://api.example.com", method: "POST" }), "Wrong network method must be denied");
-  await denied(() => extensionFetch({ ...common, actorId: actor.adminUserId, url: "https://user:pass@api.example.com", method: "GET" }), "Credential URL must be denied");
-  await denied(() => extensionFetch({ ...common, actorId: actor.adminUserId, url: "http://169.254.169.254/latest/meta-data", method: "GET" }), "Metadata endpoint must be denied");
-  await denied(() => extensionFetch({ ...common, actorId: actor.adminUserId, url: "https://[::1]/", method: "GET" }), "IPv6 loopback must be denied");
-  globalThis.fetch = async (input, init) => String(input).startsWith("https://api.example.com")
+  await denied(() => extensionFetch({ ...common, lookup: publicLookup, actorId: actor.adminUserId, url: "https://other.example.com", method: "GET" }), "Undeclared origin must be denied");
+  await denied(() => extensionFetch({ ...common, lookup: publicLookup, actorId: actor.adminUserId, url: "https://api.example.com", method: "POST" }), "Wrong network method must be denied");
+  await denied(() => extensionFetch({ ...common, lookup: publicLookup, actorId: actor.adminUserId, url: "https://user:pass@api.example.com", method: "GET" }), "Credential URL must be denied");
+  await denied(() => extensionFetch({ ...common, lookup: publicLookup, actorId: actor.adminUserId, url: "http://169.254.169.254/latest/meta-data", method: "GET" }), "Metadata endpoint must be denied");
+  await denied(() => extensionFetch({ ...common, lookup: publicLookup, actorId: actor.adminUserId, url: "https://[::1]/", method: "GET" }), "IPv6 loopback must be denied");
+  globalThis.fetch = async (input, init) => new URL(String(input)).origin === "https://api.example.com"
     ? new Response(null, { status: 302, headers: { location: "https://evil.example.com" } })
     : originalFetch(input, init);
-  await denied(() => extensionFetch({ ...common, actorId: actor.adminUserId, url: "https://api.example.com/redirect", method: "GET" }), "Redirect response must be denied");
+  await denied(() => extensionFetch({ ...common, lookup: publicLookup, actorId: actor.adminUserId, url: "https://api.example.com/redirect", method: "GET" }), "Redirect response must be denied");
   globalThis.fetch = originalFetch;
   pass("Network broker enforces exact grant, HTTPS, SSRF, credential, method, and redirect controls.");
 

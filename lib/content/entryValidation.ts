@@ -82,7 +82,8 @@ export function extractInternalPathReferences(schema: CanonicalSchema, data: Rec
     const value = data[field.key];
     if (field.type === "url" && typeof value === "string") add(field.key, value);
     if (field.type === "markdown" && typeof value === "string") {
-      for (const match of value.matchAll(/\]\((\/[^)\s?#]+(?:[?#][^)]*)?)\)/g)) add(field.key, match[1]);
+      // Bounded quantifiers keep this linear on hostile input such as many unclosed "](/" runs.
+      for (const match of value.matchAll(/\]\((\/[^)\s?#]{1,2048}(?:[?#][^)]{0,2048})?)\)/g)) add(field.key, match[1]);
     }
     if (field.type === "component" || field.type === "repeater" || field.type === "json") {
       walkInternalLinks(value, field.key, add);

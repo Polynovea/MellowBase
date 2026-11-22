@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 
 const { Client } = pg;
 const LEDGER_TABLE = "polynovea_migration_ledger";
@@ -67,9 +68,7 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const url = new URL(connectionString);
-const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
-const client = new Client({ connectionString, ssl: local ? undefined : { rejectUnauthorized: false } });
+const client = new Client(postgresConnectionConfig(connectionString));
 
 async function ensureLedger() {
   const { rows: [state] } = await client.query(`

@@ -10,6 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import pg from "pg";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 
 // Load environment variables from .env.local
 for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
@@ -36,10 +37,7 @@ export async function createPgClient() {
     process.env.DATABASE_URL ||
     process.env.database_url;
   if (!connectionString) throw new Error("Missing database connection string");
-  const client = new pg.Client({
-    connectionString,
-    ssl: { rejectUnauthorized: false },
-  });
+  const client = new pg.Client(postgresConnectionConfig(connectionString));
   await client.connect();
   return client;
 }

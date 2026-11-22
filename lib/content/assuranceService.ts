@@ -28,6 +28,8 @@ const result = (rule_id:string, category:string, status:"pass"|"warning"|"fail"|
 const pass=(id:string,cat:string,msg:string,evidence?:Record<string,unknown>)=>result(id,cat,"pass",msg,{evidence});
 const warn=(id:string,cat:string,msg:string,field?:string,action?:string,evidence?:Record<string,unknown>)=>result(id,cat,"warning",msg,{field,recommended_action:action,evidence});
 const fail=(id:string,cat:string,msg:string,field?:string,action?:string,evidence?:Record<string,unknown>)=>result(id,cat,"fail",msg,{field,recommended_action:action,evidence});
+// @context may be a string or an array (stringified with commas); accept it when any entry is schema.org.
+const isSchemaOrgContext=(context:string)=>context.split(",").some((entry)=>{try{const url=new URL(entry.trim());return (url.protocol==="https:"||url.protocol==="http:")&&url.hostname==="schema.org";}catch{return false;}});
 const present=(v:unknown)=>v!==undefined&&v!==null&&v!==""&&(!Array.isArray(v)||v.length>0);
 
 function semantic(field:FieldDefinition): string {
@@ -135,7 +137,7 @@ export async function evaluateDestinationAssurance(params:{workspaceId:string;en
   if(policy.require_schema_org&&!schemaValue)findings.push(fail("schema_org.missing","Structured Data","Schema.org structured data is required by workspace policy.",schemaField?.key,"Add a JSON-LD object with @context and @type."));
   else if(schemaValue){
     const context=String(schemaValue["@context"]??""); const type=schemaValue["@type"];
-    if(!context.includes("schema.org")||!present(type))findings.push(fail("schema_org.invalid","Structured Data","Structured data must declare a schema.org @context and @type.",schemaField?.key,"Correct the JSON-LD semantic metadata."));
+    if(!isSchemaOrgContext(context)||!present(type))findings.push(fail("schema_org.invalid","Structured Data","Structured data must declare a schema.org @context and @type.",schemaField?.key,"Correct the JSON-LD semantic metadata."));
     else findings.push(pass("schema_org.valid","Structured Data","Schema.org JSON-LD has @context and @type.",{type}));
   }
 

@@ -1,6 +1,7 @@
 import type { FieldDefinition, FieldTypeDefinition } from "@/lib/schema/fields/types";
 import { isRichTextDocument } from "@/lib/content/richText";
 import { isExperienceDocument, validateExperienceDocument } from "@/lib/experience/blockRegistry";
+import { compileFieldPattern, MAX_PATTERN_INPUT_LENGTH } from "@/lib/schema/fields/safePattern";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -27,8 +28,11 @@ function textLike(label: string) {
     if (v?.maxLength !== undefined && value.length > v.maxLength) {
       errors.push(`"${field.key}" must be at most ${v.maxLength} characters`);
     }
-    if (v?.pattern && !new RegExp(v.pattern).test(value)) {
-      errors.push(`"${field.key}" does not match the required pattern`);
+    if (v?.pattern) {
+      const pattern = compileFieldPattern(v.pattern);
+      if (!pattern) errors.push(`"${field.key}" has an invalid validation pattern`);
+      else if (value.length > MAX_PATTERN_INPUT_LENGTH) errors.push(`"${field.key}" is too long to check against its pattern`);
+      else if (!pattern.test(value)) errors.push(`"${field.key}" does not match the required pattern`);
     }
     return errors;
   };

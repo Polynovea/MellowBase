@@ -131,7 +131,7 @@ export default function BlogForm({ post, onSave, onSuccess, onCancel }: BlogForm
     const result = blogSchema.safeParse(form);
     if (!result.success) {
       const fieldErrors: Partial<Record<keyof BlogFormData, string>> = {};
-      result.error.errors.forEach((err) => {
+      result.error.issues.forEach((err) => {
         const key = err.path[0] as keyof BlogFormData;
         fieldErrors[key] = err.message;
       });

@@ -1,6 +1,7 @@
 /** Read-only database evidence for Phase 2's Customer → Project fixture. */
 import { readFileSync } from "node:fs";
 import pg from "pg";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 
 for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
   const match = raw.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
@@ -8,7 +9,7 @@ for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
 }
 const connectionString = process.env.Database_URL || process.env.DATABASE_URL || process.env.database_url;
 if (!connectionString) throw new Error("Missing database connection string");
-const client = new pg.Client({ connectionString, ssl: { rejectUnauthorized: false } });
+const client = new pg.Client(postgresConnectionConfig(connectionString));
 await client.connect();
 try {
   const { rows: models } = await client.query(`select m.api_key, m.current_schema_version, v.schema_json

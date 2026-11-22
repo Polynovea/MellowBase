@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { FIELD_TYPES, MODEL_CAPABILITIES, MODEL_OPERATIONS } from "@/lib/schema/fields/types";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
+import { fieldPatternProblem } from "@/lib/schema/fields/safePattern";
 
 const API_KEY_RE = /^[a-z][a-z0-9_]*$/;
 const FIELD_KEY_RE = /^[a-z][a-z0-9_]*$/;
@@ -13,7 +14,10 @@ const FieldValidationConfigZ = z
     maxLength: z.number().int().nonnegative().optional(),
     min: z.number().optional(),
     max: z.number().optional(),
-    pattern: z.string().optional(),
+    pattern: z.string().superRefine((pattern, ctx) => {
+      const problem = fieldPatternProblem(pattern);
+      if (problem) ctx.addIssue({ code: "custom", message: problem });
+    }).optional(),
     options: z.array(z.string()).optional(),
   })
   .strict();

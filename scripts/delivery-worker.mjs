@@ -13,6 +13,7 @@ import os from "node:os";
 import pg from "pg";
 import { BetaAnalyticsDataClient } from "@google-analytics/data";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 
 if (existsSync(".env.local")) {
   for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
@@ -49,7 +50,7 @@ function encryptionKey() {
 
 function decryptConfig(value) {
   const buffer = Buffer.from(value, "base64");
-  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), buffer.subarray(0, 12));
+  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), buffer.subarray(0, 12), { authTagLength: 16 });
   decipher.setAuthTag(buffer.subarray(12, 28));
   return JSON.parse(Buffer.concat([decipher.update(buffer.subarray(28)), decipher.final()]).toString("utf8"));
 }
@@ -482,12 +483,7 @@ async function dispatchAnalyticsSync(client,job){
   }
 }
 
-const databaseHost = new URL(DATABASE_URL).hostname.toLowerCase();
-const localDatabase = databaseHost === "localhost" || databaseHost === "127.0.0.1" || databaseHost === "db";
-const client = new pg.Client({
-  connectionString: DATABASE_URL,
-  ssl: localDatabase ? undefined : { rejectUnauthorized: false },
-});
+const client = new pg.Client(postgresConnectionConfig(DATABASE_URL));
 await client.connect();
 console.log(`[delivery-worker] started ${workerId}; adapters=${SUPPORTED_KINDS.join(",")}; queues=${SUPPORTED_QUEUES.join(",")}`);
 let lastMaintenanceSeed = 0;

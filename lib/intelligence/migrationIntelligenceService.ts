@@ -9,6 +9,7 @@ import type { FieldDefinition } from "@/lib/schema/fields/types";
 import type { FieldDiffEntry, SchemaDiff } from "@/lib/schema/diff";
 import type { OperationalDeterministicClassification } from "@/lib/intelligence/operationalTypes";
 import { logPlatformEvent } from "@/lib/platform/audit";
+import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
 
 const { Client } = pg;
 
@@ -69,9 +70,7 @@ async function findDatabaseConnection(workspaceId: string, environmentId: string
 }
 
 async function connect(connectionString: string) {
-  const url = new URL(connectionString);
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
-  const client = new Client({ connectionString, ssl: local ? undefined : { rejectUnauthorized: false }, connectionTimeoutMillis: 10_000, statement_timeout: 20_000, query_timeout: 20_000 });
+  const client = new Client({ ...postgresConnectionConfig(connectionString), connectionTimeoutMillis: 10_000, statement_timeout: 20_000, query_timeout: 20_000 });
   await client.connect();
   await client.query("set default_transaction_read_only = on");
   return client;

@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
 import pg from "pg";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 
 const env = Object.fromEntries(readFileSync(".env.local", "utf8").split(/\r?\n/).filter((line) => line.includes("=") && !line.trim().startsWith("#")).map((line) => { const index = line.indexOf("="); return [line.slice(0, index).trim(), line.slice(index + 1).trim().replace(/^['\"]|['\"]$/g, "")]; }));
 const connectionString = env.Database_URL || env.DATABASE_URL;
 if (!connectionString) throw new Error("Database_URL/DATABASE_URL missing");
-const client = new pg.Client({ connectionString, ssl: { rejectUnauthorized: false } });
+const client = new pg.Client(postgresConnectionConfig(connectionString));
 await client.connect();
 const { rows } = await client.query(`
   with counts as (
