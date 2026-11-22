@@ -64,6 +64,47 @@ function catalogChecks(label: string, url: () => string | undefined) {
       expect(rows.filter((row) => row.public_execute).map((row) => row.signature)).toEqual([]);
     });
 
+    it("anon and authenticated (Supabase's API roles) execute no CMS SQL function", async () => {
+      const { rows } = await db.query(`
+        select r.rolname || ' ' || p.oid::regprocedure::text as grant
+        from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        cross join pg_roles r
+        where n.nspname = 'public' and r.rolname in ('anon', 'authenticated')
+          and not ${EXTENSION_FUNCTION}
+          and has_function_privilege(r.oid, p.oid, 'execute')`);
+      expect(rows.map((row) => row.grant)).toEqual([]);
+    });
+
+    it("functions created later are not executable by PUBLIC, anon or authenticated by default", async () => {
+      const { rows } = await db.query(`
+        select coalesce(nullif(a.grantee, 0)::regrole::text, 'PUBLIC') as grantee
+        from pg_default_acl d, aclexplode(d.defaclacl) a
+        where d.defaclrole = (select oid from pg_roles where rolname = current_user)
+          and d.defaclobjtype = 'f' and a.privilege_type = 'EXECUTE'
+          and d.defaclnamespace in (0, 'public'::regnamespace)`);
+      const grantees = rows.map((row) => row.grantee);
+      expect(grantees).toContain("polynovea_app");
+      expect(grantees.filter((name) => ["PUBLIC", "anon", "authenticated"].includes(name))).toEqual([]);
+      // A global entry must exist, or the built-in default (PUBLIC may execute) still applies.
+      const { rows: global } = await db.query(`
+        select 1 from pg_default_acl
+        where defaclrole = (select oid from pg_roles where rolname = current_user) and defaclobjtype = 'f' and defaclnamespace = 0`);
+      expect(global).toHaveLength(1);
+    });
+
+    it("refuses to give a member a role of another workspace", async () => {
+      const suffix = Math.random().toString(36).slice(2, 10);
+      const { rows: [a] } = await db.query("insert into workspaces (name, slug) values ($1, $1) returning id", [`ra-${suffix}`]);
+      const { rows: [b] } = await db.query("insert into workspaces (name, slug) values ($1, $1) returning id", [`rb-${suffix}`]);
+      const { rows: [user] } = await db.query("insert into admin_users (username, email) values ($1, $2) returning id", [`r-${suffix}`, `r-${suffix}@example.test`]);
+      const { rows: [member] } = await db.query("insert into workspace_members (workspace_id, admin_user_id) values ($1, $2) returning id", [a.id, user.id]);
+      const { rows: [own] } = await db.query("insert into roles (workspace_id, key, name) values ($1, 'own', 'Own') returning id", [a.id]);
+      const { rows: [foreign] } = await db.query("insert into roles (workspace_id, key, name) values ($1, 'foreign', 'Foreign') returning id", [b.id]);
+      await db.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2)", [member.id, own.id]);
+      await expect(db.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2)", [member.id, foreign.id])).rejects.toMatchObject({ code: "23514" });
+      await expect(db.query("update member_roles set role_id = $2 where workspace_member_id = $1", [member.id, foreign.id])).rejects.toMatchObject({ code: "23514" });
+    });
+
     it("every SECURITY DEFINER function pins its search_path", async () => {
       const { rows } = await db.query(`
         select p.oid::regprocedure::text as signature
@@ -112,6 +153,8 @@ describe("database roles on plain PostgreSQL, as the roles themselves", () => {
   beforeAll(async () => {
     owner = await connect(process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL);
     app = await connect(process.env.POLYNOVEA_TEST_POSTGRES_URL);
+    // The probe below must hit a real schema the app role does not own, not a missing one.
+    await owner.query("create schema if not exists polynovea_auth");
   });
   afterAll(async () => {
     await owner?.end();
@@ -146,7 +189,31 @@ describe("database roles on plain PostgreSQL, as the roles themselves", () => {
     ["write the migration ledger", "insert into public.polynovea_migration_ledger (filename, checksum_sha256, migration_id) values ('x', 'x', 'x')"],
     ["run the access helper", "select public.polynovea_apply_app_access()"],
   ])("polynovea_app cannot %s", async (_label, statement) => {
-    await expect(app.query(statement)).rejects.toMatchObject({ code: expect.stringMatching(/^(42501|3F000)$/) });
+    await expect(app.query(statement)).rejects.toMatchObject({ code: "42501" });
+  });
+
+  it("nobody but the owner may create temporary tables", async () => {
+    await expect(app.query("create temporary table polynovea_temp_probe (id int)")).rejects.toMatchObject({ code: "42501" });
+    const { rows: [row] } = await owner.query(`
+      select exists (
+        select 1 from pg_database d, aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a
+        where d.datname = current_database() and a.grantee = 0 and a.privilege_type = 'TEMPORARY'
+      ) as public_temp`);
+    expect(row.public_temp).toBe(false);
+  });
+
+  it("the install roles hold no bypass attributes and the installer is not a superuser", async () => {
+    const { rows } = await owner.query(`
+      select rolname, rolsuper, rolcreaterole, rolcreatedb, rolbypassrls from pg_roles
+      where rolname in ('polynovea_owner', 'polynovea_app', 'polynovea_installer') order by rolname`);
+    expect(rows).toEqual([
+      { rolname: "polynovea_app", rolsuper: false, rolcreaterole: false, rolcreatedb: false, rolbypassrls: false },
+      { rolname: "polynovea_installer", rolsuper: false, rolcreaterole: true, rolcreatedb: true, rolbypassrls: false },
+      { rolname: "polynovea_owner", rolsuper: false, rolcreaterole: false, rolcreatedb: false, rolbypassrls: false },
+    ]);
+    // The installer's temporary membership in polynovea_owner was revoked.
+    const { rows: [member] } = await owner.query("select pg_has_role('polynovea_installer', 'polynovea_owner', 'USAGE') as usage");
+    expect(member.usage).toBe(false);
   });
 
   it("a GRANT from polynovea_app gives nothing away", async () => {

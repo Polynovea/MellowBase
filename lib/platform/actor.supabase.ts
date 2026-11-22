@@ -3,6 +3,15 @@ import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import type { AdminUser } from "@/lib/admin/types";
 import type { CmsActor, Workspace } from "@/lib/platform/types";
 
+// Query errors throw, as on the direct path: a database failure fails the request instead of reading
+// as "no workspace", "no roles" or "no permissions". Malformed IDs are answered before the query
+// (PostgREST would report them as an error) the same way the direct path answers them.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: string) => UUID.test(value);
+function check(error: { message: string } | null, what: string): void {
+  if (error) throw Object.assign(new Error(`Could not read ${what}`), { cause: error });
+}
+
 /**
  * Phase 1 is single-workspace. This resolves the one seeded "polynovea"
  * workspace by slug rather than hardcoding its id anywhere. Multi-workspace
@@ -25,12 +34,14 @@ export async function getDefaultWorkspace(): Promise<Workspace> {
 }
 
 export async function getWorkspaceById(workspaceId: string): Promise<Workspace | null> {
+  if (!isUuid(workspaceId)) return null;
   const db = createServiceRoleClient();
-  const { data } = await db
+  const { data, error } = await db
     .from("workspaces")
     .select("*")
     .eq("id", workspaceId)
     .maybeSingle();
+  check(error, "workspace");
 
   return (data as Workspace) ?? null;
 }
@@ -49,6 +60,7 @@ export async function resolveActor(
   adminUser: Pick<AdminUser, "id" | "email">,
   workspace: Workspace,
 ): Promise<CmsActor | null> {
+  if (!isUuid(adminUser.id) || !isUuid(workspace.id)) return null;
   const db = createServiceRoleClient();
 
   const { data: member, error: memberError } = await db
@@ -58,17 +70,19 @@ export async function resolveActor(
     .eq("admin_user_id", adminUser.id)
     .maybeSingle();
 
-  if (memberError || !member || member.status !== "active") {
+  check(memberError, "workspace membership");
+  if (!member || member.status !== "active") {
     return null;
   }
 
   // Only roles of this workspace count: member_roles.role_id is not tied to a workspace, so a row
   // pointing at another workspace's role must grant nothing.
-  const { data: roleRows } = await db
+  const { data: roleRows, error: roleError } = await db
     .from("member_roles")
     .select("role_id, roles!inner(key, workspace_id)")
     .eq("workspace_member_id", member.id)
     .eq("roles.workspace_id", workspace.id);
+  check(roleError, "member roles");
 
   const roleIds = (roleRows ?? []).map((row: { role_id: string }) => row.role_id);
   const roleKeys = (roleRows ?? [])
@@ -88,10 +102,11 @@ export async function resolveActor(
     };
   }
 
-  const { data: permissionRows } = await db
+  const { data: permissionRows, error: permissionError } = await db
     .from("role_permissions")
     .select("permission_key")
     .in("role_id", roleIds);
+  check(permissionError, "role permissions");
 
   const permissions = new Set(
     (permissionRows ?? []).map((row: { permission_key: string }) => row.permission_key),
@@ -121,18 +136,22 @@ export interface WorkspaceRole {
  * what `resolveActor` actually grants.
  */
 export async function listWorkspaceRoles(workspaceId: string): Promise<WorkspaceRole[]> {
+  if (!isUuid(workspaceId)) return [];
   const db = createServiceRoleClient();
-  const { data } = await db
+  const { data, error } = await db
     .from("roles")
     .select("key, name, description")
     .eq("workspace_id", workspaceId)
     .order("name", { ascending: true });
+  check(error, "workspace roles");
   return data ?? [];
 }
 
 export interface WorkspaceCollaborator { id: string; displayName: string; email: string; }
 export async function listWorkspaceCollaborators(workspaceId: string): Promise<WorkspaceCollaborator[]> {
-  const { data } = await createServiceRoleClient().from("workspace_members").select("admin_user_id, admin_users(id, display_name, email)").eq("workspace_id", workspaceId).eq("status", "active");
+  if (!isUuid(workspaceId)) return [];
+  const { data, error } = await createServiceRoleClient().from("workspace_members").select("admin_user_id, admin_users(id, display_name, email)").eq("workspace_id", workspaceId).eq("status", "active");
+  check(error, "workspace collaborators");
   return (data ?? []).flatMap((row: { admin_users: { id: string; display_name: string | null; email: string } | { id: string; display_name: string | null; email: string }[] | null }) => {
     const user = Array.isArray(row.admin_users) ? row.admin_users[0] : row.admin_users;
     return user ? [{ id: user.id, displayName: user.display_name || user.email, email: user.email }] : [];

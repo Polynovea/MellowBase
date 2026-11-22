@@ -80,18 +80,27 @@ describeBothBackends("platform", "shared platform audit logger", (backend) => {
     expect(new Set(jobs.map((job) => job.kind))).toEqual(new Set(["webhook"]));
   });
 
-  it("never throws, even when the event cannot be stored", async () => {
+  it("never throws when the event cannot be stored, logs it, and sends no webhook", async () => {
+    const { workspaceId } = await backend.createWorkspace();
+    await subscribe(workspaceId, []);
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       await expect(logPlatformEvent({
-        workspaceId: "00000000-0000-0000-0000-000000000000", // no such workspace: foreign key fails
-        actorAdminUserId: "00000000-0000-0000-0000-000000000000",
+        workspaceId,
+        actorAdminUserId: "00000000-0000-0000-0000-000000000000", // no such admin user: foreign key fails
         action: "probe.failure",
         entityType: "probe",
       })).resolves.toBeUndefined();
+      expect(error).toHaveBeenCalledWith("platform audit event was not recorded", expect.objectContaining({ action: "probe.failure", workspaceId }));
     } finally {
       error.mockRestore();
     }
+    expect(await backend.query("select 1 from platform_audit_events where workspace_id = $1", [workspaceId])).toEqual([]);
+    const deliveries = await backend.query(
+      "select 1 from webhook_deliveries d join webhook_subscriptions s on s.id = d.subscription_id where s.workspace_id = $1",
+      [workspaceId],
+    );
+    expect(deliveries).toEqual([]);
   });
 });
 

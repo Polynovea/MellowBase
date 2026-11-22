@@ -66,15 +66,53 @@ describeBothBackends("platform", "platform actor resolver", (backend) => {
     expect(await resolveActor({ id: "not-a-uuid", email: "z@example.test" }, workspace)).toBeNull();
   });
 
+  // Migration 0068 refuses new cross-workspace assignments, so these tests build the legacy shape by
+  // assigning a role of the member's own workspace and then moving the role to another workspace.
+  async function legacyForeignRole(memberId: string, ownWorkspaceId: string, foreignWorkspaceId: string, key: string, permissionKeys: string[]) {
+    const roleId = await role(backend, ownWorkspaceId, key, permissionKeys);
+    await backend.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2)", [memberId, roleId]);
+    await backend.query("update roles set workspace_id = $2 where id = $1", [roleId, foreignWorkspaceId]);
+    return roleId;
+  }
+
   it("never grants a role that belongs to another workspace", async () => {
     const { workspaceId, adminUserId, permissions, workspace } = await setup();
     const elsewhere = await backend.createWorkspace();
     const memberId = await member(backend, workspaceId, adminUserId);
-    const foreignRole = await role(backend, elsewhere.workspaceId, "owner", permissions);
-    await backend.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2)", [memberId, foreignRole]);
+    await legacyForeignRole(memberId, workspaceId, elsewhere.workspaceId, "owner", permissions);
     const actor = await resolveActor({ id: adminUserId, email: "x@example.test" }, workspace);
     expect(actor?.roleKeys).toEqual([]);
     expect(actor?.permissions.size).toBe(0);
+  });
+
+  it("keeps the member's own role and drops only the foreign one", async () => {
+    const { workspaceId, adminUserId, permissions, workspace } = await setup();
+    const elsewhere = await backend.createWorkspace();
+    const memberId = await member(backend, workspaceId, adminUserId);
+    const own = await role(backend, workspaceId, "editor", [permissions[0]]);
+    await backend.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2)", [memberId, own]);
+    await legacyForeignRole(memberId, workspaceId, elsewhere.workspaceId, "owner", [permissions[1], permissions[2]]);
+    const actor = await resolveActor({ id: adminUserId, email: "x@example.test" }, workspace);
+    expect(actor?.roleKeys).toEqual(["editor"]);
+    expect([...actor!.permissions]).toEqual([permissions[0]]);
+  });
+
+  it("gives a member of two workspaces only the roles of the workspace being resolved", async () => {
+    const { workspaceId, adminUserId, permissions, workspace } = await setup();
+    const b = await backend.createWorkspace();
+    const memberA = await member(backend, workspaceId, adminUserId);
+    const memberB = await member(backend, b.workspaceId, adminUserId);
+    const roleA = await role(backend, workspaceId, "author", [permissions[0]]);
+    const roleB = await role(backend, b.workspaceId, "admin", [permissions[1], permissions[2]]);
+    await backend.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2)", [memberA, roleA]);
+    await backend.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2)", [memberB, roleB]);
+
+    const inA = await resolveActor({ id: adminUserId, email: "x@example.test" }, workspace);
+    expect(inA).toMatchObject({ workspaceId, workspaceMemberId: memberA, roleKeys: ["author"] });
+    expect([...inA!.permissions]).toEqual([permissions[0]]);
+    const inB = await resolveActor({ id: adminUserId, email: "x@example.test" }, (await getWorkspaceById(b.workspaceId)) as Workspace);
+    expect(inB).toMatchObject({ workspaceId: b.workspaceId, workspaceMemberId: memberB, roleKeys: ["admin"] });
+    expect([...inB!.permissions].sort()).toEqual([permissions[1], permissions[2]].sort());
   });
 
   it("lists roles and active collaborators of one workspace only", async () => {
