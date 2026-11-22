@@ -5,6 +5,7 @@ import pg from "pg";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { redactCredentials, resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
 import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
+import { ensureCompatibilityRoles } from "@/lib/db/roles.mjs";
 
 const { Client } = pg;
 const MIN_POSTGRES_MAJOR = 15;
@@ -68,16 +69,11 @@ async function findDatabaseConnection(workspaceId: string, environmentId: string
   return { connection, connectionString: credentials.connection_url ?? null, credentials };
 }
 
+// Before the first migration: the Supabase role names migrations 0003-0065 grant to must exist (as
+// NOLOGIN roles with no attributes). No Supabase objects are emulated: nothing needs the old auth.jwt()
+// shim, an auth schema or pgcrypto (gen_random_uuid is built into PostgreSQL 13+).
 async function bootstrapCompatibility(client: pg.Client) {
-  await client.query(`create extension if not exists pgcrypto`);
-  await client.query(`do $$ begin
-    if not exists(select 1 from pg_roles where rolname='anon') then create role anon nologin; end if;
-    if not exists(select 1 from pg_roles where rolname='authenticated') then create role authenticated nologin; end if;
-    if not exists(select 1 from pg_roles where rolname='service_role') then create role service_role nologin bypassrls; end if;
-    if not exists(select 1 from pg_roles where rolname='postgres') then create role postgres nologin; end if;
-  end $$`);
-  await client.query(`create schema if not exists auth`);
-  await client.query(`create or replace function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims',true),''),'{}')::jsonb $$`);
+  await ensureCompatibilityRoles(client);
   await client.query(`create table if not exists public.${LEDGER_TABLE}(
     filename text primary key,
     checksum_sha256 text not null,
@@ -93,9 +89,8 @@ async function inspectTarget(client: pg.Client, files: Awaited<ReturnType<typeof
   checks.push({ key:"postgres.version", status: major >= MIN_POSTGRES_MAJOR ? "passed" : "failed", message:`PostgreSQL ${version.version} detected; Polynovea requires ${MIN_POSTGRES_MAJOR}+.`, evidence:{major,database:version.database} });
   const { rows:[ssl] } = await client.query("select coalesce((select ssl from pg_stat_ssl where pid=pg_backend_pid()),false) as ssl");
   checks.push({ key:"postgres.tls", status: ssl?.ssl ? "passed" : "warning", message: ssl?.ssl ? "Database connection is using TLS." : "Database session is not using TLS; this is acceptable only for a trusted local/private runtime." });
-  const { rows:[cap] } = await client.query("select has_schema_privilege(current_user,'public','CREATE') as can_create,exists(select 1 from pg_extension where extname='pgcrypto') as pgcrypto");
+  const { rows:[cap] } = await client.query("select has_schema_privilege(current_user,'public','CREATE') as can_create");
   checks.push({ key:"postgres.create", status: cap?.can_create ? "passed" : "failed", message: cap?.can_create ? "Database user can create CMS schema objects." : "Database user lacks CREATE privilege in public schema." });
-  checks.push({ key:"postgres.pgcrypto", status: cap?.pgcrypto ? "passed" : "warning", message: cap?.pgcrypto ? "pgcrypto capability is present." : "pgcrypto is missing; Initialize/Upgrade will attempt to install it." });
   const { rows:[ledgerExists] } = await client.query("select to_regclass('public.polynovea_migration_ledger') is not null as exists");
   let applied: Array<{filename:string;checksum_sha256:string;migration_id:string}> = [];
   if (ledgerExists?.exists) ({ rows: applied } = await client.query(`select filename,checksum_sha256,migration_id from public.${LEDGER_TABLE} order by filename`));

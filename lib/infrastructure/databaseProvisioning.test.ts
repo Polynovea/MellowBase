@@ -68,6 +68,11 @@ describeWithDatabase("Phase 12.5 database provisioning", () => {
     expect(ledger.rows.map(row => row.filename)).toEqual(expectedFiles);
     const core = await target.query("select to_regclass('public.workspaces') as workspaces,to_regclass('public.content_models') as models,to_regclass('public.delivery_jobs') as jobs,to_regclass('public.workspace_environments') as environments");
     expect(core.rows[0]).toMatchObject({ workspaces: "workspaces", models: "content_models", jobs: "delivery_jobs", environments: "workspace_environments" });
+    // No Supabase emulation: no auth.jwt() shim, and the compatibility roles carry no attributes.
+    const shim = await target.query("select to_regnamespace('auth') is null as no_auth_schema");
+    expect(shim.rows[0].no_auth_schema).toBe(true);
+    const roles = await target.query("select rolname from pg_roles where rolname in ('anon','authenticated','service_role','postgres') and (rolbypassrls or rolsuper or rolcanlogin) and rolname <> current_user");
+    expect(roles.rows).toEqual([]);
     await target.end();
 
     const second = await runDatabaseProvisioning({ workspaceId: randomUUID(), environmentId: randomUUID(), operation: "upgrade" });
