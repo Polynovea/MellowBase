@@ -1,10 +1,28 @@
-# Polynovea CMS
+# MellowBase
 
-Polynovea CMS is an open-source, workspace-scoped content and data operations platform for structured content, visual schema modelling, editorial workflow, releases, delivery operations, discoverability and content health. It includes a browser admin, scoped developer API, TypeScript SDK, CLI, MCP transport and governed extensions.
+MellowBase is an open-source, self-hosted backend and headless CMS by [Polynovea](https://github.com/Polynovea). It is workspace-scoped and covers:
+- structured content and visual schema modelling;
+- editorial workflow and releases;
+- delivery operations;
+- discoverability and content health.
 
-## Supported OSS V1 runtime
+It ships with a browser admin, a scoped developer API, a TypeScript SDK, a CLI, an MCP transport and governed extensions.
 
-The supported OSS V1 application profile is:
+> MellowBase was previously published as **Polynovea CMS** (repository `Polynovea/OSS1`; old links redirect here). Package names, environment variables (`POLYNOVEA_*`, `CMS_*`) and CLI commands keep their current names for now, so existing installs and scripts keep working.
+
+## Where MellowBase is going
+
+MellowBase is becoming a backend that you deploy into your own AWS or Azure account, set up entirely from the browser:
+
+- **Your own tables.** Each content model gets a real PostgreSQL table with typed columns, plus a generated API and a typed SDK for your schema.
+- **Built-in auth.** No external auth service. The owner account, MFA and sessions are created in a first-run setup wizard, protected by a one-time setup code.
+- **Your choice of database.** PostgreSQL on the server's own disk with automatic backups, an existing managed database (Amazon RDS or Azure Database for PostgreSQL), or one created for you by a one-click template in your own cloud account.
+
+The work is in phases; see the [implementation plan](docs/Upgrade%20Plans/Polynovea%20CMS%20Upgrade%20Implementation%20Plan.md) and the [design](docs/Upgrade%20Plans/Polynovea%20CMS%20Self-Hosted%20Platform%20Upgrade%20Design.md). Phase 0 is merged: a direct PostgreSQL data layer behind the `POLYNOVEA_DATA_BACKEND` switch, with tests that run on both Supabase and plain PostgreSQL. Until the later phases land, the supported runtime is the one below.
+
+## Supported V1 runtime
+
+The supported V1 application profile is:
 
 - Node.js 22+
 - PostgreSQL 15+
@@ -15,7 +33,7 @@ The supported OSS V1 application profile is:
 
 The application service and browser-authentication layers currently use Supabase/PostgREST semantics. A bare PostgreSQL server by itself is therefore **not** a supported application runtime yet. Vercel + Supabase is the reference deployment profile, but any Node host can run the Next.js application when connected to a supported Supabase-compatible backend.
 
-> **Alpha release note:** Polynovea does not currently operate an official hosted OSS demo. This repository is a self-hosted release; use a disposable Supabase project for evaluation and follow the quickstart below.
+> **Alpha release note:** there is no official hosted MellowBase demo. This repository is a self-hosted release; use a disposable Supabase project for evaluation and follow the quickstart below.
 
 See [PostgreSQL and self-hosting](docs/self-hosting/POSTGRESQL.md) for the exact portability boundary.
 
@@ -154,14 +172,14 @@ The configured PostgreSQL role must be allowed to create and drop the disposable
 
 ## Current limitations
 
-- non-Supabase authentication is future portability work;
-- a direct generic-PostgreSQL application adapter is not certified for V1;
+- built-in authentication (replacing Supabase Auth) is in progress in phase 1 of the upgrade plan;
+- the direct PostgreSQL data path is in progress area by area and is not yet certified; keep `POLYNOVEA_DATA_BACKEND=supabase` in production;
 - the R2 adapter is the first-class supplied media adapter; other S3-compatible providers may require configuration/adapter work;
 - operators must provide a managed or independently operated Supabase-compatible backend and an external worker process.
 
 ## Headless delivery
 
-Polynovea is a headless CMS and content-operations control plane. It does not impose a public-site theme. Published content is consumed through scoped `/api/v1/content/*` endpoints or the TypeScript SDK. A minimal Next.js consumer is included in [`examples/nextjs-site`](examples/nextjs-site).
+MellowBase is a headless CMS and content-operations control plane. It does not impose a public-site theme. Published content is consumed through scoped `/api/v1/content/*` endpoints or the TypeScript SDK. A minimal Next.js consumer is included in [`examples/nextjs-site`](examples/nextjs-site).
 
 ## Project documentation
 
