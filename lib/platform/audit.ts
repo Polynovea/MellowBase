@@ -1,5 +1,6 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { queueWebhookEvent } from "@/lib/content/webhookService";
+import { usesDirectPostgres } from "@/lib/db/backend";
+import { logPlatformEventDirect } from "@/lib/platform/audit.postgres";
+import { logPlatformEvent as logPlatformEventViaSupabase } from "@/lib/platform/audit.supabase";
 
 export interface PlatformAuditPayload {
   workspaceId: string;
@@ -18,23 +19,18 @@ export interface PlatformAuditPayload {
  * Deliberately separate from lib/admin/audit.ts's admin_activity_log,
  * which keeps logging the existing CMS/Content Tracking actions unchanged
  * — not merged in Phase 1 to avoid touching working code unnecessarily.
+ *
+ * Shared by every area, so it moves first (phase 1, wave 1): the `platform` switch in
+ * POLYNOVEA_DATA_BACKEND picks Supabase or direct PostgreSQL. Never throws, on either path. Areas
+ * already on the direct path should call recordPlatformEvent (lib/platform/audit.postgres.ts) inside
+ * their own transaction instead, so the change and its audit trail commit together.
  */
 export async function logPlatformEvent(payload: PlatformAuditPayload): Promise<void> {
+  let direct: boolean;
   try {
-    const db = createServiceRoleClient();
-    await db.from("platform_audit_events").insert({
-      workspace_id: payload.workspaceId,
-      actor_admin_user_id: payload.actorAdminUserId,
-      action: payload.action,
-      entity_type: payload.entityType,
-      entity_id: payload.entityId ?? null,
-      before_json: payload.beforeJson ?? null,
-      after_json: payload.afterJson ?? null,
-      metadata_json: payload.metadata ?? {},
-    });
-    await queueWebhookEvent({ workspaceId: payload.workspaceId, eventType: payload.action, eventId: crypto.randomUUID(), payload: { entityType: payload.entityType, entityId: payload.entityId ?? null, metadata: payload.metadata ?? {} } });
+    direct = usesDirectPostgres("platform");
   } catch {
-    // Audit logging must never break the primary action — same convention
-    // as lib/admin/audit.ts's logAdminActivity.
+    return; // Malformed POLYNOVEA_DATA_BACKEND: already logged, and the server refuses to start with it.
   }
+  return direct ? logPlatformEventDirect(payload) : logPlatformEventViaSupabase(payload);
 }

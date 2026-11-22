@@ -8,7 +8,7 @@
  * no webhook.
  */
 import { randomUUID } from "node:crypto";
-import { callFunction, type DbExecutor } from "@/lib/db/index";
+import { callFunction, withTransaction, type DbExecutor } from "@/lib/db/index";
 import type { PlatformAuditPayload } from "@/lib/platform/audit";
 
 export async function recordPlatformEvent(executor: DbExecutor, payload: PlatformAuditPayload): Promise<void> {
@@ -33,6 +33,25 @@ export async function recordPlatformEvent(executor: DbExecutor, payload: Platfor
     eventId: randomUUID(),
     payload: { entityType: payload.entityType, entityId: payload.entityId ?? null, metadata },
   });
+}
+
+/**
+ * Stand-alone form for callers that are not in a transaction (logPlatformEvent on the direct path).
+ * The audit row and its webhook deliveries commit together. Like the Supabase path it never throws,
+ * so an audit failure cannot undo a change that already committed, but unlike that path the failure
+ * reaches the server log instead of vanishing.
+ */
+export async function logPlatformEventDirect(payload: PlatformAuditPayload): Promise<void> {
+  try {
+    await withTransaction((trx) => recordPlatformEvent(trx, payload));
+  } catch (error) {
+    console.error("platform audit event was not recorded", {
+      action: payload.action,
+      entityType: payload.entityType,
+      workspaceId: payload.workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /** Same rules as queueWebhookEvent in lib/content/webhookService.ts: one delivery per matching active subscription. */
