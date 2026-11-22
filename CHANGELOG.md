@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Agent and extension governance can run on the direct PostgreSQL path (`developer=postgres`). On the direct path, binding an API token to an agent re-checks both under a row lock (a token revoked a moment earlier cannot be bound), and installing an extension writes the installation, every permission grant and the audit event in one transaction (the Supabase path ignored failed grant writes).
 - The developer delivery API (`/api/v1/content`, `/api/v1/entries`) and the workspace export can run on the direct PostgreSQL path (`developer=postgres`). On the direct path an export includes every row; over Supabase each table stops at 1000 rows, so large workspaces got incomplete exports. Published content is now returned newest first on both paths (the Supabase path's order was undefined), and a malformed entry ID is a 404.
 - Developer API tokens and API request authentication can run on the direct PostgreSQL path (`developer=postgres`). Fixed: an API token's `last_used_at` was never recorded (the update was built but never sent). Creating and revoking a token now commit with their audit events on the direct path.
 - Asset upload, file replacement, the workspace upload quota and storage-connection resolution can run on the direct PostgreSQL path (`media=postgres`). On the direct path an upload writes its asset row and audit event together, a replacement reads back its history row in the same transaction, and the quota is summed in the database (the Supabase path could undercount a workspace with more than 1000 assets).

@@ -1,5 +1,4 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { bindTokenToAgent, findBoundAgent, insertAgentIdentity, insertAgentProvenance, listAgentIdentities as listAgentIdentityRows } from "@/lib/developer/governanceData";
 import { sha256Canonical } from "@/lib/intelligence/operationalCanonical";
 import { evaluateAgentToolAccess, getAgentToolDefinition, type AgentOperationClass } from "@/lib/developer/agentToolRegistry";
 
@@ -20,13 +19,7 @@ export interface AgentIdentityRecord {
 }
 
 export async function listAgentIdentities(workspaceId: string) {
-  const { data, error } = await createServiceRoleClient()
-    .from("agent_identities")
-    .select("id,workspace_id,agent_key,name,status,default_mode,provider,model,metadata_json,created_by,updated_by,created_at,updated_at")
-    .eq("workspace_id", workspaceId)
-    .order("created_at", { ascending: false });
-  if (error) throw new Error(error.message);
-  return (data ?? []) as AgentIdentityRecord[];
+  return listAgentIdentityRows(workspaceId);
 }
 
 export async function createAgentIdentity(params: {
@@ -44,8 +37,7 @@ export async function createAgentIdentity(params: {
   if (!/^[a-z0-9][a-z0-9._-]{1,127}$/.test(agentKey)) throw new Error("Agent key is invalid");
   if (!name) throw new Error("Agent name is required");
 
-  const db = createServiceRoleClient();
-  const { data, error } = await db.from("agent_identities").insert({
+  return insertAgentIdentity({
     workspace_id: params.workspaceId,
     agent_key: agentKey,
     name,
@@ -56,18 +48,14 @@ export async function createAgentIdentity(params: {
     metadata_json: params.metadata ?? {},
     created_by: params.actorId,
     updated_by: params.actorId,
-  }).select("id,workspace_id,agent_key,name,status,default_mode,provider,model,metadata_json,created_by,updated_by,created_at,updated_at").single();
-  if (error || !data) throw new Error(error?.message || "Could not create agent identity");
-
-  await logPlatformEvent({
+  }, (data) => ({
     workspaceId: params.workspaceId,
     actorAdminUserId: params.actorId,
     action: "agent.identity.created",
     entityType: "agent_identity",
     entityId: data.id,
     metadata: { agentKey, defaultMode: data.default_mode, provider: data.provider, model: data.model },
-  });
-  return data as AgentIdentityRecord;
+  }));
 }
 
 export async function bindDeveloperTokenToAgent(params: {
@@ -76,54 +64,11 @@ export async function bindDeveloperTokenToAgent(params: {
   tokenId: string;
   agentIdentityId: string;
 }) {
-  const db = createServiceRoleClient();
-  const [{ data: token, error: tokenError }, { data: agent, error: agentError }] = await Promise.all([
-    db.from("developer_api_tokens").select("id,workspace_id,agent_identity_id,revoked_at").eq("workspace_id", params.workspaceId).eq("id", params.tokenId).maybeSingle(),
-    db.from("agent_identities").select("id,workspace_id,status,agent_key").eq("workspace_id", params.workspaceId).eq("id", params.agentIdentityId).maybeSingle(),
-  ]);
-  if (tokenError || agentError) throw new Error(tokenError?.message || agentError?.message || "Could not validate agent binding");
-  if (!token) throw new Error("Developer API token not found in workspace");
-  if (!agent) throw new Error("Agent identity not found in workspace");
-  if (token.revoked_at) throw new Error("Cannot bind a revoked developer API token");
-  if (agent.status !== "active") throw new Error("Cannot bind a non-active agent identity");
-
-  const { data, error } = await db.from("developer_api_tokens")
-    .update({ agent_identity_id: params.agentIdentityId, updated_at: new Date().toISOString() })
-    .eq("workspace_id", params.workspaceId)
-    .eq("id", params.tokenId)
-    .select("id,workspace_id,agent_identity_id")
-    .single();
-  if (error || !data) throw new Error(error?.message || "Could not bind developer API token to agent");
-
-  await logPlatformEvent({
-    workspaceId: params.workspaceId,
-    actorAdminUserId: params.actorId,
-    action: "agent.token.bound",
-    entityType: "agent_identity",
-    entityId: params.agentIdentityId,
-    metadata: { tokenId: params.tokenId, agentKey: agent.agent_key },
-  });
-  return data;
+  return bindTokenToAgent(params);
 }
 
 export async function resolveBoundAgent(params: { workspaceId: string; tokenId: string }) {
-  const db = createServiceRoleClient();
-  const { data: token, error } = await db.from("developer_api_tokens")
-    .select("id,workspace_id,agent_identity_id,scopes,revoked_at")
-    .eq("workspace_id", params.workspaceId)
-    .eq("id", params.tokenId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!token || token.revoked_at || !token.agent_identity_id) return null;
-
-  const { data: agent, error: agentError } = await db.from("agent_identities")
-    .select("id,workspace_id,agent_key,name,status,default_mode,provider,model,metadata_json")
-    .eq("workspace_id", params.workspaceId)
-    .eq("id", token.agent_identity_id)
-    .maybeSingle();
-  if (agentError) throw new Error(agentError.message);
-  if (!agent || agent.status !== "active") return null;
-  return { token, agent };
+  return findBoundAgent(params);
 }
 
 export async function authorizeBoundAgentTool(params: {
@@ -171,7 +116,7 @@ export async function recordAgentOperationProvenance(params: {
   if (!operationClass) throw new Error(`Unknown agent tool provenance class: ${params.toolName}`);
   if (operationClass !== "read" && !params.initiatingAdminUserId) throw new Error("Agent mutations require an initiating admin user");
 
-  const { data, error } = await createServiceRoleClient().from("agent_operation_provenance").insert({
+  return insertAgentProvenance({
     workspace_id: params.workspaceId,
     agent_identity_id: params.agentIdentityId,
     developer_api_token_id: params.developerApiTokenId ?? null,
@@ -193,9 +138,7 @@ export async function recordAgentOperationProvenance(params: {
     simulation_run_id: params.simulationRunId ?? null,
     evidence_package_id: params.evidencePackageId ?? null,
     metadata_json: params.metadata ?? {},
-  }).select("*").single();
-  if (error || !data) throw new Error(error?.message || "Could not record agent provenance");
-  return data;
+  });
 }
 
 export async function recordBoundAgentMutation(params: { context: { agentIdentityId: string | null; tokenId: string; workspaceId: string; actorAdminUserId: string | null; requestId: string; agentToolName: string | null }; toolName: string; changedFields?: string[]; beforeJson?: unknown; afterJson?: unknown; safeInputSummary?: unknown; operationalPlanId?: string | null; simulationRunId?: string | null; evidencePackageId?: string | null }) {
