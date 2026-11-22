@@ -1,6 +1,10 @@
+// Developer API tokens: scopes, token generation and validation (shared), and the backend
+// dispatcher (the `developer` switch in POLYNOVEA_DATA_BACKEND). Tokens are random 256-bit values
+// with a `pnv_` prefix; only their SHA-256 hash is stored, and lookups are by that hash.
 import { createHash, randomBytes } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { usesDirectPostgres } from "@/lib/db/backend";
+import * as postgres from "@/lib/developer/apiTokenService.postgres";
+import * as supabase from "@/lib/developer/apiTokenService.supabase";
 
 export const DEVELOPER_API_SCOPES = [
   "content.read",
@@ -42,15 +46,27 @@ function validateScopes(scopes: string[]): DeveloperApiScope[] {
   return unique as DeveloperApiScope[];
 }
 
-export async function listDeveloperApiTokens(workspaceId: string) {
-  const { data, error } = await createServiceRoleClient()
-    .from("developer_api_tokens")
-    .select("id, name, token_prefix, scopes, allowed_models, rate_limit_per_minute, expires_at, last_used_at, revoked_at, created_by, created_at, updated_at")
-    .eq("workspace_id", workspaceId)
-    .order("created_at", { ascending: false });
-  if (error) throw new Error(error.message);
-  return data ?? [];
+export interface PreparedDeveloperApiToken {
+  name: string;
+  scopes: DeveloperApiScope[];
+  allowedModels: string[];
+  rateLimit: number;
+  expiresAt: string | null;
+  /** Never the raw token: persistence sees only its prefix and SHA-256 hash. */
+  tokenPrefix: string;
+  tokenHash: string;
 }
+
+export interface RateLimitResult { allowed: boolean; limit: number; remaining: number; resetAt: string }
+
+// Compile-time check that the direct implementation matches the Supabase one exactly.
+const direct: typeof supabase = postgres;
+const impl = (): typeof supabase => (usesDirectPostgres("developer") ? direct : supabase);
+
+export const listDeveloperApiTokens: typeof supabase.listDeveloperApiTokens = (...args) => impl().listDeveloperApiTokens(...args);
+export const revokeDeveloperApiToken: typeof supabase.revokeDeveloperApiToken = (...args) => impl().revokeDeveloperApiToken(...args);
+export const consumeDeveloperApiRateLimit: typeof supabase.consumeDeveloperApiRateLimit = (...args) => impl().consumeDeveloperApiRateLimit(...args);
+export const touchDeveloperApiToken: typeof supabase.touchDeveloperApiToken = (...args) => impl().touchDeveloperApiToken(...args);
 
 export async function createDeveloperApiToken(params: {
   workspaceId: string;
@@ -72,71 +88,11 @@ export async function createDeveloperApiToken(params: {
 
   const rawToken = `pnv_${randomBytes(32).toString("base64url")}`;
   const tokenPrefix = rawToken.slice(0, 12);
-  const db = createServiceRoleClient();
-  const { data, error } = await db
-    .from("developer_api_tokens")
-    .insert({
-      workspace_id: params.workspaceId,
-      name,
-      token_prefix: tokenPrefix,
-      token_hash: digest(rawToken),
-      scopes,
-      allowed_models: allowedModels,
-      rate_limit_per_minute: rateLimit,
-      expires_at: params.expiresAt ?? null,
-      created_by: params.actorId,
-    })
-    .select("id, name, token_prefix, scopes, allowed_models, rate_limit_per_minute, expires_at, created_at")
-    .single();
-  if (error || !data) throw new Error(error?.message || "Could not create API token");
-
-  await logPlatformEvent({
-    workspaceId: params.workspaceId,
-    actorAdminUserId: params.actorId,
-    action: "developer.api_token.created",
-    entityType: "developer_api_token",
-    entityId: data.id,
-    metadata: { name, scopes, allowedModels, rateLimitPerMinute: rateLimit, expiresAt: params.expiresAt ?? null },
-  });
+  const prepared: PreparedDeveloperApiToken = { name, scopes, allowedModels, rateLimit, expiresAt: params.expiresAt ?? null, tokenPrefix, tokenHash: digest(rawToken) };
+  const data = await impl().insertDeveloperApiToken({ workspaceId: params.workspaceId, actorId: params.actorId, token: prepared });
   return { token: data, secret: rawToken };
 }
 
-export async function revokeDeveloperApiToken(params: { workspaceId: string; actorId: string; tokenId: string }) {
-  const db = createServiceRoleClient();
-  const { data: existing } = await db
-    .from("developer_api_tokens")
-    .select("id, name, revoked_at")
-    .eq("workspace_id", params.workspaceId)
-    .eq("id", params.tokenId)
-    .maybeSingle();
-  if (!existing) throw new Error("API token not found");
-  if (existing.revoked_at) return existing;
-  const { data, error } = await db
-    .from("developer_api_tokens")
-    .update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq("workspace_id", params.workspaceId)
-    .eq("id", params.tokenId)
-    .select("id, name, revoked_at")
-    .single();
-  if (error || !data) throw new Error(error?.message || "Could not revoke API token");
-  await logPlatformEvent({
-    workspaceId: params.workspaceId,
-    actorAdminUserId: params.actorId,
-    action: "developer.api_token.revoked",
-    entityType: "developer_api_token",
-    entityId: params.tokenId,
-    metadata: { name: existing.name },
-  });
-  return data;
-}
-
 export async function resolveDeveloperApiToken(rawToken: string) {
-  const db = createServiceRoleClient();
-  const { data, error } = await db
-    .from("developer_api_tokens")
-    .select("id, workspace_id, name, token_prefix, scopes, allowed_models, rate_limit_per_minute, expires_at, last_used_at, revoked_at, created_by, agent_identity_id")
-    .eq("token_hash", digest(rawToken))
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  return data;
+  return impl().findDeveloperApiTokenByHash(digest(rawToken));
 }

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Developer API tokens and API request authentication can run on the direct PostgreSQL path (`developer=postgres`). Fixed: an API token's `last_used_at` was never recorded (the update was built but never sent). Creating and revoking a token now commit with their audit events on the direct path.
 - Asset upload, file replacement, the workspace upload quota and storage-connection resolution can run on the direct PostgreSQL path (`media=postgres`). On the direct path an upload writes its asset row and audit event together, a replacement reads back its history row in the same transaction, and the quota is summed in the database (the Supabase path could undercount a workspace with more than 1000 assets).
 - Media collections can run on the direct PostgreSQL path (`media=postgres`): changes commit with their audit events, and asset counts are counted in the database instead of from a list capped at 1000 rows.
 - The Command Center's recent jobs, findings, releases, environments and audit events have a stable order when rows share a timestamp (both data paths). Local test databases are now one stack per checkout (`node scripts/dev-db/setup.mjs`; `--down` removes it), and `npm run test:dual` refuses to start until both databases and PostgREST are on the newest migration.

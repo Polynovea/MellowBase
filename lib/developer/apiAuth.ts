@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { apiError, type ApiMeta } from "@/lib/developer/apiContract";
-import { resolveDeveloperApiToken, type DeveloperApiScope } from "@/lib/developer/apiTokenService";
+import { consumeDeveloperApiRateLimit, resolveDeveloperApiToken, touchDeveloperApiToken, type DeveloperApiScope } from "@/lib/developer/apiTokenService";
 import { authorizeBoundAgentTool } from "@/lib/developer/agentGovernanceService";
 import { resolveAgentToolForApiRequest } from "@/lib/developer/agentRouteMapping";
 
@@ -37,13 +36,10 @@ export async function requireDeveloperApi(
   if (token.revoked_at) return { error: apiError("TOKEN_REVOKED", "API token has been revoked", 401, { requestId }) };
   if (token.expires_at && new Date(token.expires_at).getTime() <= Date.now()) return { error: apiError("TOKEN_EXPIRED", "API token has expired", 401, { requestId }) };
 
-  const db = createServiceRoleClient();
-  const { data: rateRaw, error: rateError } = await db.rpc("cms_consume_developer_api_rate_limit", {
-    p_token_id: token.id,
-    p_limit: token.rate_limit_per_minute,
-  });
-  if (rateError || !rateRaw) return { error: apiError("RATE_LIMIT_UNAVAILABLE", "API rate limiting is temporarily unavailable", 503, { requestId }) };
-  const rate = rateRaw as { allowed: boolean; limit: number; remaining: number; resetAt: string };
+  let rate;
+  try { rate = await consumeDeveloperApiRateLimit(token.id, token.rate_limit_per_minute); }
+  catch { rate = null; }
+  if (!rate) return { error: apiError("RATE_LIMIT_UNAVAILABLE", "API rate limiting is temporarily unavailable", 503, { requestId }) };
   const rateLimit = { limit: Number(rate.limit), remaining: Number(rate.remaining), resetAt: String(rate.resetAt) };
   if (!rate.allowed) return { error: apiError("RATE_LIMITED", "API rate limit exceeded", 429, { requestId, rateLimit }) };
 
@@ -67,7 +63,7 @@ export async function requireDeveloperApi(
     agentIdentityId = agentAccess.bound.agent.id;
   }
 
-  void db.from("developer_api_tokens").update({ last_used_at: new Date().toISOString() }).eq("id", token.id);
+  touchDeveloperApiToken(token.id);
   return { data: {
     requestId,
     workspaceId: token.workspace_id,
