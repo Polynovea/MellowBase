@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
-import { updateRoutePath, deleteRoute } from "@/lib/routing/routeService";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { deleteRoute, getRoute, updateRoutePath } from "@/lib/routing/routeService";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 const respond = (success: boolean, data: unknown, error: string | null, status = 200) =>
@@ -12,12 +11,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (auth.error) return auth.error;
 
   const { id } = await params;
-  const { data } = await createServiceRoleClient()
-    .from("content_routes")
-    .select("*")
-    .eq("workspace_id", auth.data!.actor.workspaceId)
-    .eq("id", id)
-    .maybeSingle();
+  const data = await getRoute(auth.data!.actor.workspaceId, id);
 
   if (!data) return respond(false, null, "Route not found", 404);
   return respond(true, data, null);

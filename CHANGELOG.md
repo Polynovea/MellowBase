@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Routes (the routing area's route service) can run on the direct PostgreSQL path (`routing=postgres`). Registering a route is atomic: a failed registration no longer clears the entry's canonical route. Path changes and deletions commit with their dependency edges and audit events. The single-route lookup moved from the route handler into the service.
 - Navigation can run on the direct PostgreSQL path (`POLYNOVEA_DATA_BACKEND=...,navigation=postgres`). Menu creation, draft saves, publishing and deletion are atomic with their dependency edges and audit events, and concurrent draft saves get consecutive version numbers. Menu rename and delete moved from the route into the navigation service. Fixed: "where used" for navigation always returned nothing on Supabase (ambiguous relationship).
 - The shared platform audit logger follows the `platform` switch in `POLYNOVEA_DATA_BACKEND`. On the direct path the audit row and its webhook deliveries are written in one transaction, and a failure is logged on the server instead of being dropped silently.
 - Database provisioning no longer emulates Supabase on a plain PostgreSQL target: it stops creating the `auth.jwt()` shim, an `auth` schema and the `pgcrypto` extension (nothing uses them), and creates the compatibility role names without `BYPASSRLS`. The `postgres.pgcrypto` preflight check is gone.
