@@ -11,6 +11,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
+import { bootstrapInstallRoles } from "../../lib/db/roles.mjs";
 
 const root = process.cwd();
 const envFile = path.join(root, ".env.test.local");
@@ -102,58 +103,16 @@ async function withClient(url, fn) {
   }
 }
 
-// Plain PostgreSQL, as the one-time admin login: the Supabase role names the migrations grant to
-// (anon, authenticated, service_role and postgres) must exist until phase 1's migration 0067
-// replaces them. polynovea_owner is not a superuser: it owns schema public and may create schemas,
-// so migrations and tests hit the same privilege errors they would on RDS or Azure.
-// The runtime role gets rows and functions only.
-await withClient(adminUrl, async (client) => {
-  await client.query(`
-    do $$ begin
-      if not exists (select 1 from pg_roles where rolname = 'polynovea_owner') then create role polynovea_owner login nosuperuser nocreatedb nocreaterole; end if;
-      if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon nologin; end if;
-      if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if;
-      if not exists (select 1 from pg_roles where rolname = 'service_role') then create role service_role nologin; end if;
-      if not exists (select 1 from pg_roles where rolname = 'postgres') then create role postgres nologin; end if;
-      if not exists (select 1 from pg_roles where rolname = 'polynovea_app') then create role polynovea_app login; end if;
-    end $$;
-  `);
-  await client.query(`alter role polynovea_owner with login nosuperuser password '${env.POLYNOVEA_DEV_OWNER_PASSWORD.replace(/'/g, "''")}'`);
-  await client.query(`alter role polynovea_app with login password '${env.POLYNOVEA_DEV_APP_PASSWORD.replace(/'/g, "''")}'`);
-  await client.query("grant connect, create on database polynovea to polynovea_owner");
-  await client.query("alter schema public owner to polynovea_owner");
-  await client.query("revoke create on schema public from public");
-});
+// Plain PostgreSQL, as the one-time admin login: create polynovea_owner (not a superuser; owns
+// schema public, runs migrations) and polynovea_app (rows and functions only), plus the Supabase role
+// names the historical migrations grant to. Migration 0067 then gives polynovea_app its grants and a
+// row-level security policy on every table, so tests hit the same rules as RDS or Azure.
+await withClient(adminUrl, (client) => bootstrapInstallRoles(client, {
+  database: "polynovea",
+  ownerPassword: env.POLYNOVEA_DEV_OWNER_PASSWORD,
+  appPassword: env.POLYNOVEA_DEV_APP_PASSWORD,
+}));
 runMigrations(ownerUrl);
-await withClient(ownerUrl, async (client) => {
-  await client.query(`
-    grant usage on schema public to polynovea_app;
-    grant select, insert, update, delete on all tables in schema public to polynovea_app;
-    grant usage, select on all sequences in schema public to polynovea_app;
-    grant execute on all functions in schema public to polynovea_app;
-    alter default privileges in schema public grant select, insert, update, delete on tables to polynovea_app;
-    alter default privileges in schema public grant usage, select on sequences to polynovea_app;
-    alter default privileges in schema public grant execute on functions to polynovea_app;
-  `);
-  // Every table has row-level security enabled with no policies. Supabase's service_role has
-  // BYPASSRLS; polynovea_app does not, so without a policy it would read nothing and write nothing.
-  // A permissive policy per table (what phase 1's migration 0067 must do) keeps the app role free of
-  // BYPASSRLS, which managed databases may not let the installer grant anyway.
-  await client.query(`
-    do $$
-    declare t record;
-    begin
-      for t in
-        select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname = 'public' and c.relkind in ('r', 'p') and c.relrowsecurity
-      loop
-        if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = t.relname and policyname = 'polynovea_app_all') then
-          execute format('create policy polynovea_app_all on public.%I for all to polynovea_app using (true) with check (true)', t.relname);
-        end if;
-      end loop;
-    end $$;
-  `);
-});
 
 // Supabase-compatible database: PostgREST logs in as `authenticator` and GoTrue as
 // `supabase_auth_admin` (only supabase_admin may set their passwords).

@@ -101,6 +101,8 @@ const { rows } = await client.query(`
   where n.nspname = 'public'
     and p.prokind = 'f'
     and p.prorettype <> 'trigger'::regtype
+    -- Only functions the runtime role may execute are callable (migration helpers are excluded).
+    and has_function_privilege('polynovea_app', p.oid, 'execute')
     and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
   order by p.proname, p.oid
 `);
