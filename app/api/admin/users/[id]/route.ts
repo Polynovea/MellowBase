@@ -3,8 +3,7 @@ import { z } from "zod";
 import { ACCESS_MODULES, normalizeAdminUser } from "@/lib/admin/access";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { syncDefaultWorkspaceMembership } from "@/lib/admin/workspaceMembership";
+import { deleteAdminProfile, findAdminUser, updateAdminProfile } from "@/lib/admin/adminUserService";
 import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
@@ -28,7 +27,6 @@ export async function PATCH(
   if (auth.error) return auth.error;
 
   const { id } = await params;
-  const db = createServiceRoleClient();
   const identity = getSupabaseServerIdentityProvider();
 
   try {
@@ -37,13 +35,9 @@ export async function PATCH(
     const filteredModules = parsed.module_access.filter((module) => allowedModules.has(module as any));
     const filteredWriteModules = parsed.module_write_access.filter((module) => allowedModules.has(module as any));
 
-    const { data: existing, error: existingError } = await db
-      .from("admin_users")
-      .select("*")
-      .eq("id", id)
-      .single();
+    const existing = await findAdminUser(id);
 
-    if (existingError || !existing) {
+    if (!existing) {
       return NextResponse.json({ success: false, data: null, error: "User profile not found", timestamp: ts() }, { status: 404 });
     }
 
@@ -69,9 +63,9 @@ export async function PATCH(
       }
     }
 
-    const { data, error } = await db
-      .from("admin_users")
-      .update({
+    let data;
+    try {
+      data = await updateAdminProfile(id, {
         display_name: parsed.display_name,
         role: parsed.role,
         is_active: parsed.is_active,
@@ -79,24 +73,9 @@ export async function PATCH(
         module_access: filteredModules,
         module_write_access: filteredWriteModules.length ? filteredWriteModules : filteredModules,
         updated_at: new Date().toISOString(),
-      })
-      .eq("id", id)
-      .select("*")
-      .single();
-
-    if (error) {
-      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
-    }
-
-    try {
-      await syncDefaultWorkspaceMembership(data as any, db);
-    } catch (membershipError: any) {
-      return NextResponse.json({
-        success: false,
-        data: null,
-        error: membershipError?.message || "Failed to synchronize workspace membership",
-        timestamp: ts(),
-      }, { status: 500 });
+      });
+    } catch (updateError) {
+      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(updateError, "Failed to update the member profile"), timestamp: ts() }, { status: 500 });
     }
 
     await logAdminActivity({
@@ -134,16 +113,11 @@ export async function DELETE(
   if (auth.error) return auth.error;
 
   const { id } = await params;
-  const db = createServiceRoleClient();
   const identity = getSupabaseServerIdentityProvider();
 
-  const { data: existing, error: existingError } = await db
-    .from("admin_users")
-    .select("*")
-    .eq("id", id)
-    .single();
+  const existing = await findAdminUser(id);
 
-  if (existingError || !existing) {
+  if (!existing) {
     return NextResponse.json({ success: false, data: null, error: "User profile not found", timestamp: ts() }, { status: 404 });
   }
 
@@ -158,8 +132,9 @@ export async function DELETE(
     }
   }
 
-  const { error } = await db.from("admin_users").delete().eq("id", id);
-  if (error) {
+  try {
+    await deleteAdminProfile(id);
+  } catch (error) {
     return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
   }
 

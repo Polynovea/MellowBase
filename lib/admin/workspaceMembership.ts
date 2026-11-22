@@ -29,9 +29,9 @@ export async function syncDefaultWorkspaceMembership(
     .select("id")
     .eq("slug", workspaceSlug)
     .single();
-  if (workspaceError || !workspace) {
-    throw new Error(workspaceError?.message || `Default workspace '${workspaceSlug}' not found`);
-  }
+  // PGRST116 is .single() finding no row: that is "not found", not a database failure.
+  if (workspaceError && workspaceError.code !== "PGRST116") throw new Error(workspaceError.message);
+  if (!workspace) throw new Error(`Default workspace '${workspaceSlug}' not found`);
 
   const { data: member, error: memberError } = await db
     .from("workspace_members")
