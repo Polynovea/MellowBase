@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Security:** the CMS actor resolver now ignores a member's role assignment when the role belongs to another workspace (both data paths). Before, a `member_roles` row pointing at another workspace's role granted that role's permissions. The platform area (workspace lookup, actor resolver, role and collaborator lists) can run on the direct PostgreSQL path (`platform=postgres`).
 - Content models (the schema area) can run on the direct PostgreSQL path (`schema=postgres`). Schema validation, diff classification and the unsafe-change gate are shared by both paths. On the direct path, database errors from creating or applying a model no longer reach the browser; the duplicate-apiKey conflict keeps its message. Model metadata updates moved from the route into the service and are scoped by workspace.
 - Redirects can run on the direct PostgreSQL path (`routing=postgres`). Updates write their history row, the change and the audit event in one transaction, and bulk imports are atomic. Locale filters are bound parameters instead of a PostgREST filter string.
 - Routes (the routing area's route service) can run on the direct PostgreSQL path (`routing=postgres`). Registering a route is atomic: a failed registration no longer clears the entry's canonical route. Path changes and deletions commit with their dependency edges and audit events. The single-route lookup moved from the route handler into the service.
