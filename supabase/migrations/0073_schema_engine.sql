@@ -15,7 +15,36 @@
 -- drop a content table. The engine grants privileges, enables row-level security and adds the same
 -- permissive polynovea_app policy every table has, in the transaction that creates each table.
 
-create schema if not exists content;
+-- On a database the customer brings, a schema called "content" may already exist. Never adopt one that
+-- belongs to someone else or holds anything that is not ours: refuse, with a plain message.
+-- schema-guard:start
+do $
+declare
+  owner_name text;
+  foreign_objects bigint;
+begin
+  select pg_catalog.pg_get_userbyid(n.nspowner) into owner_name from pg_catalog.pg_namespace n where n.nspname = 'content';
+  if owner_name is null then
+    create schema content;
+    return;
+  end if;
+  if owner_name <> current_user then
+    raise exception 'This database already has a schema named "content", owned by another role. Polynovea CMS needs its own: rename or remove that schema, then run setup again.';
+  end if;
+  select (select count(*) from pg_catalog.pg_class c
+            where c.relnamespace = 'content'::regnamespace
+              and c.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'c')
+              and c.relname !~ '^m_[a-z0-9_]{1,61}$')
+       + (select count(*) from pg_catalog.pg_proc p where p.pronamespace = 'content'::regnamespace)
+       + (select count(*) from pg_catalog.pg_type t where t.typnamespace = 'content'::regnamespace and t.typtype in ('b', 'd', 'e', 'r', 'm'))
+    into foreign_objects;
+  if foreign_objects > 0 then
+    raise exception 'This database already has a schema named "content" that holds objects Polynovea CMS did not create. Rename or remove that schema, then run setup again.';
+  end if;
+end;
+$;
+-- schema-guard:end
+
 revoke all on schema content from public;
 grant usage on schema content to polynovea_app;
 alter default privileges in schema content grant select, insert, update, delete on tables to polynovea_app;
@@ -84,7 +113,7 @@ create index if not exists schema_name_reservations_lookup_idx
   on public.schema_name_reservations (workspace_id, kind, name, reserved_until);
 
 -- One row per plan stage. The additive ("expand") stage runs when the plan is applied; a destructive
--- stage waits as awaiting_confirmation until someone types the model name, and runs as its own later
+-- stage waits as awaiting_confirmation until someone types the model's API key, and runs as its own later
 -- step. The request that asks for a change writes the row; the migration worker runs it under the
 -- owner role and records the outcome.
 create table if not exists public.schema_migration_ledger (

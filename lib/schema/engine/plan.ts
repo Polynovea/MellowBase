@@ -11,7 +11,7 @@
 //   may execute a step its own way (lock_timeout and retries, CONCURRENTLY, expand and contract) as
 //   long as the end state matches the step.
 // - Steps come in two stages. "expand" steps never delete data and run when the plan is applied.
-//   "destructive" steps delete data, need the model name typed, and run as a separate, later step.
+//   "destructive" steps delete data, need the model's API key typed, and run as a separate, later step.
 // - Applying a stage is refused unless the table's current shape hash equals the hash that stage was
 //   planned from (baseShapeHash for expand, expandedShapeHash for destructive).
 import type { RawBuilder } from "kysely";

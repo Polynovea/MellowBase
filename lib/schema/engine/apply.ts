@@ -268,7 +268,7 @@ function ledgerRow(plan: MigrationPlan, stage: PlanStage, requestedBy: string | 
 
 export interface ExpandResult {
   ledgerId: string;
-  /** The ledger row of the destructive stage, waiting for the typed model name; null if there is none. */
+  /** The ledger row of the destructive stage, waiting for the model's API key to be typed; null if there is none. */
   awaitingConfirmationId: string | null;
 }
 
