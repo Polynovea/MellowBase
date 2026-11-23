@@ -9,6 +9,11 @@
  *   npm run worker:schema            # poll every 1.5 s
  *   npm run worker:schema -- --once  # run what is waiting, then exit
  *
+ * Start it with the project's module loader, like the certification scripts (Node strips the
+ * TypeScript types itself; the loader resolves the "@/lib/..." imports):
+ *
+ *   node --loader ./scripts/phase12_75-node-loader.mjs scripts/schema-migration-worker.mjs
+ *
  * Connection: POLYNOVEA_MIGRATION_DATABASE_URL (else DATABASE_URL), the polynovea_owner login. It
  * MUST be a direct connection to PostgreSQL (or a session-mode pooler). A transaction-mode pooler
  * (PgBouncer in transaction mode, Supabase's port 6543) breaks it: the worker holds a session
@@ -23,13 +28,9 @@
  *
  * Logs carry event names, ids and error codes only: never SQL text, identifiers or values.
  */
-import { register } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-
-// Resolves the "@/" imports of the TypeScript modules (Node strips their types itself).
-register("./phase12_75-node-loader.mjs", import.meta.url);
 
 if (existsSync(".env.local")) {
   for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
@@ -54,7 +55,16 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping 
 
 const engine = productionEngine();
 const pool = createOwnerPool();
-const client = await pool.connect();
+let client;
+try {
+  client = await pool.connect();
+} catch (error) {
+  // A code only (e.g. ECONNREFUSED, 28P01): never the connection string.
+  const code = typeof error?.code === "string" && /^[0-9A-Z_]{1,40}$/.test(error.code) ? error.code : errorCode(error);
+  log("startup_failed", { code });
+  await pool.end().catch(() => undefined);
+  process.exit(1);
+}
 try {
   await assertOwnerSession(client);
   log("started", { workerId, releaseId, once });
