@@ -1,5 +1,4 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import * as reconciliationData from "@/lib/intelligence/reconciliationData";
 import { sha256Canonical } from "@/lib/intelligence/operationalCanonical";
 import type { OperationalDesiredState, OperationalDriftCandidate } from "@/lib/intelligence/operationalTypes";
 import { buildGeneratedDesiredState, getOperationalWorldModel, refreshOperationalWorldModel } from "@/lib/intelligence/worldModelService";
@@ -13,27 +12,14 @@ function assertDesiredState(value: unknown): asserts value is OperationalDesired
   }
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function listDesiredStateRevisions(workspaceId: string, environmentId: string) {
-  const { data, error } = await createServiceRoleClient()
-    .from("operational_desired_state_revisions")
-    .select("*")
-    .eq("workspace_id", workspaceId)
-    .eq("environment_id", environmentId)
-    .order("revision", { ascending: false });
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return UUID.test(environmentId) ? reconciliationData.listRevisions(workspaceId, environmentId) : [];
 }
 
 export async function getActiveDesiredState(workspaceId: string, environmentId: string) {
-  const { data, error } = await createServiceRoleClient()
-    .from("operational_desired_state_revisions")
-    .select("*")
-    .eq("workspace_id", workspaceId)
-    .eq("environment_id", environmentId)
-    .eq("status", "active")
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  return data ?? null;
+  return UUID.test(environmentId) ? reconciliationData.activeRevision(workspaceId, environmentId) : null;
 }
 
 export async function createDesiredStateRevision(params: {
@@ -45,56 +31,34 @@ export async function createDesiredStateRevision(params: {
   source?: "user" | "generated_baseline" | "api" | "import";
   changeNote?: string | null;
 }) {
-  const db = createServiceRoleClient();
   const desired = params.desired ?? (await buildGeneratedDesiredState(params.workspaceId, params.environmentId));
   assertDesiredState(desired);
   const checksum = sha256Canonical(desired);
 
-  const { data: existing, error: existingError } = await db
-    .from("operational_desired_state_revisions")
-    .select("*")
-    .eq("workspace_id", params.workspaceId)
-    .eq("environment_id", params.environmentId)
-    .eq("checksum_sha256", checksum)
-    .maybeSingle();
-  if (existingError) throw new Error(existingError.message);
+  if (!UUID.test(params.environmentId)) throw Object.assign(new Error("Environment not found"), { status: 404 });
+  const existing = await reconciliationData.revisionByChecksum(params.workspaceId, params.environmentId, checksum);
   if (existing) {
     if (params.activate && existing.status !== "active") return activateDesiredStateRevision({ workspaceId: params.workspaceId, environmentId: params.environmentId, revisionId: existing.id, actorId: params.actorId });
     return existing;
   }
 
-  const { data: latest, error: latestError } = await db
-    .from("operational_desired_state_revisions")
-    .select("revision")
-    .eq("workspace_id", params.workspaceId)
-    .eq("environment_id", params.environmentId)
-    .order("revision", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (latestError) throw new Error(latestError.message);
-  const revision = Number(latest?.revision ?? 0) + 1;
-
-  const { data: created, error } = await db.from("operational_desired_state_revisions").insert({
+  const created = await reconciliationData.createRevision({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
-    revision,
     status: "draft",
     source: params.source ?? (params.desired ? "user" : "generated_baseline"),
     desired_json: desired,
     checksum_sha256: checksum,
     change_note: params.changeNote ?? null,
     created_by: params.actorId,
-  }).select().single();
-  if (error || !created) throw new Error(error?.message || "Could not create desired-state revision");
-
-  await logPlatformEvent({
+  }, (revision) => ({
     workspaceId: params.workspaceId,
     actorAdminUserId: params.actorId,
     action: "operational.desired_state.created",
     entityType: "operational_desired_state",
-    entityId: created.id,
-    metadata: { environmentId: params.environmentId, revision, checksum, source: created.source },
-  });
+    entityId: revision.id,
+    metadata: { environmentId: params.environmentId, revision: revision.revision, checksum, source: revision.source },
+  }));
 
   return params.activate
     ? activateDesiredStateRevision({ workspaceId: params.workspaceId, environmentId: params.environmentId, revisionId: created.id, actorId: params.actorId })
@@ -102,14 +66,13 @@ export async function createDesiredStateRevision(params: {
 }
 
 export async function activateDesiredStateRevision(params: { workspaceId: string; environmentId: string; revisionId: string; actorId: string }) {
-  const { data, error } = await createServiceRoleClient().rpc("cms_activate_operational_desired_state", {
+  if (!UUID.test(params.environmentId) || !UUID.test(params.revisionId)) throw Object.assign(new Error("Desired-state revision not found"), { status: 404 });
+  return reconciliationData.callActivateRevision({
     p_workspace_id: params.workspaceId,
     p_environment_id: params.environmentId,
     p_revision_id: params.revisionId,
     p_actor_id: params.actorId,
   });
-  if (error || !data) throw Object.assign(new Error(error?.message || "Could not activate desired-state revision"), { status: error?.code === "P0002" ? 404 : 400 });
-  return data;
 }
 
 function actionForEnvironment(kind: string, severity: "warning" | "blocking"): OperationalDriftCandidate["actionClass"] {
@@ -292,17 +255,17 @@ export async function reconcileOperationalState(params: {
   desiredStateRevisionId?: string | null;
   refreshWorld?: boolean;
 }) {
-  const db = createServiceRoleClient();
+  if (!UUID.test(params.environmentId)) throw Object.assign(new Error("Environment not found"), { status: 404 });
   let discoveryRunId: string | null = null;
   if (params.refreshWorld !== false) {
     const discovery = await refreshOperationalWorldModel({ workspaceId: params.workspaceId, environmentId: params.environmentId, actorId: params.actorId, source: "controller" });
     discoveryRunId = discovery.run.id;
   }
 
-  const [{ data: environment }, desiredState, world] = await Promise.all([
-    db.from("workspace_environments").select("id,kind,status").eq("workspace_id", params.workspaceId).eq("id", params.environmentId).maybeSingle(),
+  const [environment, desiredState, world] = await Promise.all([
+    reconciliationData.environmentState(params.workspaceId, params.environmentId),
     params.desiredStateRevisionId
-      ? db.from("operational_desired_state_revisions").select("*").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("id", params.desiredStateRevisionId).maybeSingle().then((result: any) => result.data)
+      ? (UUID.test(params.desiredStateRevisionId) ? reconciliationData.revisionById(params.workspaceId, params.environmentId, params.desiredStateRevisionId) : null)
       : getActiveDesiredState(params.workspaceId, params.environmentId),
     getOperationalWorldModel(params.workspaceId, params.environmentId),
   ]);
@@ -311,54 +274,36 @@ export async function reconcileOperationalState(params: {
   assertDesiredState(desiredState.desired_json);
   discoveryRunId = discoveryRunId ?? world.latestDiscovery?.id ?? null;
 
-  const { data: run, error: runError } = await db.from("operational_reconciliation_runs").insert({
+  const run = await reconciliationData.startReconciliation({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     desired_state_revision_id: desiredState.id,
     discovery_run_id: discoveryRunId,
     status: "running",
     created_by: params.actorId,
-  }).select().single();
-  if (runError || !run) throw new Error(runError?.message || "Could not start reconciliation");
+  });
 
   try {
     const drifts = calculateDriftCandidates({ desired: desiredState.desired_json, environment, worldNodes: world.nodes });
     const now = new Date().toISOString();
-    if (drifts.length) {
-      const rows = drifts.map((drift) => ({
-        workspace_id: params.workspaceId,
-        environment_id: params.environmentId,
-        desired_state_revision_id: desiredState.id,
-        reconciliation_run_id: run.id,
-        node_id: drift.nodeId ?? null,
-        drift_key: drift.driftKey,
-        category: drift.category,
-        severity: drift.severity,
-        action_class: drift.actionClass,
-        state: "open",
-        current_json: drift.current,
-        desired_json: drift.desired,
-        evidence_json: drift.evidence ?? {},
-        last_seen_at: now,
-        resolved_at: null,
-      }));
-      const { error } = await db.from("operational_drift_items").upsert(rows, { onConflict: "environment_id,desired_state_revision_id,drift_key" });
-      if (error) throw new Error(error.message);
-    }
-
-    const { data: prior, error: priorError } = await db.from("operational_drift_items")
-      .select("id,drift_key,state")
-      .eq("workspace_id", params.workspaceId)
-      .eq("environment_id", params.environmentId)
-      .eq("desired_state_revision_id", desiredState.id)
-      .in("state", ["open", "acknowledged", "planned"]);
-    if (priorError) throw new Error(priorError.message);
+    const rows = drifts.map((drift) => ({
+      workspace_id: params.workspaceId,
+      environment_id: params.environmentId,
+      desired_state_revision_id: desiredState.id,
+      reconciliation_run_id: run.id,
+      node_id: drift.nodeId ?? null,
+      drift_key: drift.driftKey,
+      category: drift.category,
+      severity: drift.severity,
+      action_class: drift.actionClass,
+      state: "open",
+      current_json: drift.current,
+      desired_json: drift.desired,
+      evidence_json: drift.evidence ?? {},
+      last_seen_at: now,
+      resolved_at: null,
+    }));
     const currentKeys = new Set(drifts.map((item) => item.driftKey));
-    const resolvedIds = (prior ?? []).filter((item) => !currentKeys.has(item.drift_key)).map((item) => item.id);
-    for (const id of resolvedIds) {
-      const { error } = await db.from("operational_drift_items").update({ state: "resolved", resolved_at: now, last_seen_at: now }).eq("id", id);
-      if (error) throw new Error(error.message);
-    }
 
     const blocking = drifts.filter((item) => item.severity === "blocking").length;
     const warnings = drifts.filter((item) => item.severity === "warning").length;
@@ -366,31 +311,32 @@ export async function reconcileOperationalState(params: {
     const approvals = drifts.filter((item) => item.actionClass === "approval_required").length;
     const autoRepairable = drifts.filter((item) => item.actionClass === "safe_auto_repair").length;
     const status = drifts.length === 0 ? "converged" : "drifted";
-    const summary = { total: drifts.length, blocking, warnings, manual, approvals, autoRepairable, resolved: resolvedIds.length };
-    const { data: completed, error: completeError } = await db.from("operational_reconciliation_runs").update({ status, summary_json: summary, completed_at: now }).eq("id", run.id).select().single();
-    if (completeError || !completed) throw new Error(completeError?.message || "Could not complete reconciliation");
-
-    await logPlatformEvent({
+    const summaryFor = (resolved: number) => ({ total: drifts.length, blocking, warnings, manual, approvals, autoRepairable, resolved });
+    const { completed } = await reconciliationData.applyReconciliation({
       workspaceId: params.workspaceId,
-      actorAdminUserId: params.actorId,
-      action: "operational.reconciliation.completed",
-      entityType: "workspace_environment",
-      entityId: params.environmentId,
-      metadata: { reconciliationRunId: run.id, desiredStateRevisionId: desiredState.id, discoveryRunId, status, ...summary },
+      environmentId: params.environmentId,
+      revisionId: desiredState.id,
+      runId: run.id,
+      rows,
+      currentKeys,
+      now,
+      completion: (resolved) => ({ status, summary_json: summaryFor(resolved), completed_at: now }),
+      auditFor: (_completed, resolved) => ({
+        workspaceId: params.workspaceId,
+        actorAdminUserId: params.actorId,
+        action: "operational.reconciliation.completed",
+        entityType: "workspace_environment",
+        entityId: params.environmentId,
+        metadata: { reconciliationRunId: run.id, desiredStateRevisionId: desiredState.id, discoveryRunId, status, ...summaryFor(resolved) },
+      }),
     });
     return { run: completed, drifts, desiredState, discoveryRunId };
   } catch (error) {
-    await db.from("operational_reconciliation_runs").update({ status: "failed", summary_json: { error: error instanceof Error ? error.message : "Reconciliation failed" }, completed_at: new Date().toISOString() }).eq("id", run.id);
+    await reconciliationData.failReconciliation(params.workspaceId, run.id, { status: "failed", summary_json: { error: error instanceof Error ? error.message : "Reconciliation failed" }, completed_at: new Date().toISOString() });
     throw error;
   }
 }
 
 export async function listOperationalDrift(workspaceId: string, environmentId: string) {
-  const { data, error } = await createServiceRoleClient().from("operational_drift_items")
-    .select("*")
-    .eq("workspace_id", workspaceId)
-    .eq("environment_id", environmentId)
-    .order("last_seen_at", { ascending: false });
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return UUID.test(environmentId) ? reconciliationData.listDrift(workspaceId, environmentId) : [];
 }
