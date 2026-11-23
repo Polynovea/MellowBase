@@ -14,7 +14,7 @@ import { guardedFetchFor, guardedS3RequestHandler } from "@/lib/infrastructure/g
 import type { Readable } from "node:stream";
 import { localStorageRoot, removeLocalObject, writeLocalObject } from "@/lib/media/localDiskStorage";
 import { azureSettingsFrom, createAzureBlobStore } from "@/lib/media/azureBlobStorage";
-import { signedReadUrl, signedUploadUrl } from "@/lib/media/signedStorageUrls";
+import { cmsBaseUrl, mediaLinkUrl, signedReadUrl, signedUploadUrl } from "@/lib/media/signedStorageUrls";
 import { activeStorageConnections, defaultEnvironment, environmentKind as environmentKindOf, exactStorageConnection, findEnvironment, type EnvironmentRow, type StorageConnectionRow } from "@/lib/media/mediaData";
 
 export interface StorageProvider {
@@ -24,7 +24,14 @@ export interface StorageProvider {
   readonly environmentId: string | null;
   upload(input: { body: Buffer; key: string; contentType: string }): Promise<{ key: string; url: string }>;
   remove(key: string): Promise<void>;
+  /** Short-lived (or public) URL for reading now: admin previews and API read URLs. */
   resolveReadUrl(key: string): Promise<string>;
+  /**
+   * URL to store in content (image fields, rich text). It never expires: the bucket's public/CDN URL
+   * when one is configured, otherwise the CMS's permanent media link (/api/storage/media), which signs a
+   * fresh read on every request. createPresignedUpload's readUrl and upload's url are this URL.
+   */
+  contentUrl(key: string): Promise<string>;
   /** contentLength is signed into the URL, so the provider rejects a body of any other size. */
   createPresignedUpload?(key: string, contentType: string, contentLength: number): Promise<{ uploadUrl: string; readUrl: string }>;
   /**
@@ -81,6 +88,9 @@ function legacyR2Provider(): StorageProvider {
     async resolveReadUrl(key) {
       return resolveObjectUrl(key);
     },
+    async contentUrl(key) {
+      return resolveObjectUrl(key);
+    },
     createPresignedUpload: createLegacyR2PresignedUpload,
   };
 }
@@ -124,6 +134,11 @@ async function s3Provider(connection: StorageConnectionRow, credentials: Record<
     return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: 3600 });
   };
 
+  // A private bucket's presigned GET expires; content gets the permanent CMS media link instead.
+  const contentUrl = async (key: string) => publicUrl
+    ? `${publicUrl}/${encodeStorageKey(key)}`
+    : mediaLinkUrl({ providerKey: connectionKey(connection.id), workspaceId: connection.workspace_id, key, servedFromDisk: false }, cmsBaseUrl(configText(config, "appUrl")));
+
   return {
     key: connectionKey(connection.id),
     kind: type,
@@ -131,15 +146,16 @@ async function s3Provider(connection: StorageConnectionRow, credentials: Record<
     environmentId: connection.environment_id,
     async upload(input) {
       await client.send(new PutObjectCommand({ Bucket: bucket, Key: input.key, Body: input.body, ContentType: input.contentType }));
-      return { key: input.key, url: await resolveReadUrl(input.key) };
+      return { key: input.key, url: await contentUrl(input.key) };
     },
+    contentUrl,
     async remove(key) {
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     },
     resolveReadUrl,
     async createPresignedUpload(key, contentType, contentLength) {
       const uploadUrl = await getSignedUrl(client, new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType, ContentLength: contentLength }), { expiresIn: 900, signableHeaders: new Set(["content-type", "content-length"]) });
-      return { uploadUrl, readUrl: await resolveReadUrl(key) };
+      return { uploadUrl, readUrl: await contentUrl(key) };
     },
   };
 }
@@ -163,6 +179,11 @@ async function supabaseStorageProvider(connection: StorageConnectionRow, credent
     return data.signedUrl;
   };
 
+  // Public and CDN URLs are permanent; a private bucket's signed URL is not, so content gets the media link.
+  const contentUrl = async (path: string) => configuredPublicUrl || visibility === "public"
+    ? resolveReadUrl(path)
+    : mediaLinkUrl({ providerKey: connectionKey(connection.id), workspaceId: connection.workspace_id, key: path, servedFromDisk: false }, cmsBaseUrl(configText(config, "appUrl")));
+
   return {
     key: connectionKey(connection.id),
     kind: connection.connector_type,
@@ -171,30 +192,23 @@ async function supabaseStorageProvider(connection: StorageConnectionRow, credent
     async upload(input) {
       const { error } = await client.storage.from(bucket).upload(input.key, input.body, { contentType: input.contentType, upsert: false });
       if (error) throw new Error(error.message);
-      return { key: input.key, url: await resolveReadUrl(input.key) };
+      return { key: input.key, url: await contentUrl(input.key) };
     },
     async remove(path) {
       const { error } = await client.storage.from(bucket).remove([path]);
       if (error) throw new Error(error.message);
     },
     resolveReadUrl,
+    contentUrl,
   };
-}
-
-/** Base URL of this CMS for signed app URLs; relative URLs when unset (fine for the admin UI). */
-function appBaseUrl(config: Record<string, unknown>) {
-  const value = trimSlash(configText(config, "appUrl"));
-  if (!value) return null;
-  const url = new URL(value);
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("App URL must be an http(s) URL");
-  return url.origin + url.pathname.replace(/\/+$/, "");
 }
 
 function localDiskProvider(connection: StorageConnectionRow): StorageProvider {
   const config = connection.config_json ?? {};
   const root = localStorageRoot();
-  const baseUrl = appBaseUrl(config);
+  const baseUrl = cmsBaseUrl(configText(config, "appUrl"));
   const key = connectionKey(connection.id);
+  const contentUrl = async (path: string) => mediaLinkUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, servedFromDisk: true }, baseUrl);
   return {
     key,
     kind: connection.connector_type,
@@ -202,16 +216,17 @@ function localDiskProvider(connection: StorageConnectionRow): StorageProvider {
     environmentId: connection.environment_id,
     async upload(input) {
       await writeLocalObject(root, input.key, input.body);
-      return { key: input.key, url: signedReadUrl(input.key, baseUrl) };
+      return { key: input.key, url: await contentUrl(input.key) };
     },
     remove: (path) => removeLocalObject(root, path),
     async resolveReadUrl(path) {
       return signedReadUrl(path, baseUrl);
     },
+    contentUrl,
     async createPresignedUpload(path, contentType, contentLength) {
       return {
         uploadUrl: signedUploadUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, contentType, contentLength }, baseUrl),
-        readUrl: signedReadUrl(path, baseUrl),
+        readUrl: await contentUrl(path),
       };
     },
     async writeStream(input) {
@@ -222,9 +237,13 @@ function localDiskProvider(connection: StorageConnectionRow): StorageProvider {
 
 async function azureBlobProvider(connection: StorageConnectionRow, credentials: Record<string, string>, environmentKind: EnvironmentKind): Promise<StorageProvider> {
   const config = connection.config_json ?? {};
-  const store = await createAzureBlobStore(azureSettingsFrom(config, credentials, environmentKind), environmentKind);
-  const baseUrl = appBaseUrl(config);
+  const settings = azureSettingsFrom(config, credentials, environmentKind);
+  const store = await createAzureBlobStore(settings, environmentKind);
+  const baseUrl = cmsBaseUrl(configText(config, "appUrl"));
   const key = connectionKey(connection.id);
+  const contentUrl = async (path: string) => settings.publicUrl
+    ? store.readUrl(path)
+    : mediaLinkUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, servedFromDisk: false }, baseUrl);
   return {
     key,
     kind: connection.connector_type,
@@ -232,15 +251,16 @@ async function azureBlobProvider(connection: StorageConnectionRow, credentials: 
     environmentId: connection.environment_id,
     async upload(input) {
       await store.put(input.key, input.body, input.contentType);
-      return { key: input.key, url: await store.readUrl(input.key) };
+      return { key: input.key, url: await contentUrl(input.key) };
     },
     remove: (path) => store.remove(path),
     resolveReadUrl: (path) => store.readUrl(path),
+    contentUrl,
     async createPresignedUpload(path, contentType, contentLength) {
       // A SAS cannot bind the upload size, so the browser uploads through the app's signed URL instead.
       return {
         uploadUrl: signedUploadUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, contentType, contentLength }, baseUrl),
-        readUrl: await store.readUrl(path),
+        readUrl: await contentUrl(path),
       };
     },
     async writeStream(input) {

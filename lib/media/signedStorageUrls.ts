@@ -22,10 +22,13 @@ const SIGNATURE_CONTEXT = "polynovea-storage-url.v1.";
 
 export type StorageTokenPayload =
   | { v: 1; o: "read"; p: "local"; k: string; e: number }
+  /** Permanent media link for content: no expiry; `d` says whether the CMS serves it from disk. */
+  | { v: 1; o: "media"; p: string; w: string; k: string; d: "local" | "remote" }
   | { v: 1; o: "write"; p: string; w: string; k: string; t: string; n: number; e: number };
 
 export type ReadTokenPayload = Extract<StorageTokenPayload, { o: "read" }>;
 export type WriteTokenPayload = Extract<StorageTokenPayload, { o: "write" }>;
+export type MediaTokenPayload = Extract<StorageTokenPayload, { o: "media" }>;
 
 type Env = Record<string, string | undefined>;
 
@@ -58,12 +61,26 @@ function nowSeconds() {
 
 type UnsignedRead = Omit<ReadTokenPayload, "v" | "e">;
 type UnsignedWrite = Omit<WriteTokenPayload, "v" | "e">;
+type UnsignedMedia = Omit<MediaTokenPayload, "v">;
+
+function seal(full: object, env: Env) {
+  const body = Buffer.from(JSON.stringify(full)).toString("base64url");
+  return `${body}.${mac(storageSigningKeys(env)[0], body).toString("base64url")}`;
+}
 
 export function signStorageToken(payload: UnsignedRead | UnsignedWrite, ttlSeconds: number, env: Env = process.env): string {
   if (!Number.isInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > MAX_TTL_SECONDS) throw new Error("Signed storage URL lifetime is out of range");
-  const full = { v: 1, ...payload, e: nowSeconds() + ttlSeconds };
-  const body = Buffer.from(JSON.stringify(full)).toString("base64url");
-  return `${body}.${mac(storageSigningKeys(env)[0], body).toString("base64url")}`;
+  return seal({ v: 1, ...payload, e: nowSeconds() + ttlSeconds }, env);
+}
+
+/**
+ * Permanent media link token. Content (rich text, image fields) stores this link, never an expiring
+ * read URL. It names one object of one workspace's storage connection and stays valid while the object
+ * exists and the signing key stays in the key ring; the link route turns it into a fresh signed read
+ * at request time.
+ */
+export function signMediaToken(payload: UnsignedMedia, env: Env = process.env): string {
+  return seal({ v: 1, ...payload }, env);
 }
 
 export type VerifyResult<T> = { ok: true; payload: T } | { ok: false; reason: "malformed" | "signature" | "expired" | "operation" };
@@ -71,7 +88,9 @@ export type VerifyResult<T> = { ok: true; payload: T } | { ok: false; reason: "m
 function isWellFormed(value: unknown): value is StorageTokenPayload {
   if (!value || typeof value !== "object") return false;
   const p = value as Record<string, unknown>;
-  if (p.v !== 1 || typeof p.k !== "string" || !Number.isInteger(p.e)) return false;
+  if (p.v !== 1 || typeof p.k !== "string") return false;
+  if (p.o === "media") return typeof p.p === "string" && typeof p.w === "string" && (p.d === "local" || p.d === "remote") && p.e === undefined;
+  if (!Number.isInteger(p.e)) return false;
   if (p.o === "read") return p.p === "local";
   if (p.o === "write") return typeof p.p === "string" && typeof p.w === "string" && typeof p.t === "string" && Number.isSafeInteger(p.n) && (p.n as number) > 0;
   return false;
@@ -100,15 +119,34 @@ export function verifyStorageToken<O extends StorageTokenPayload["o"]>(token: un
     return { ok: false, reason: "malformed" };
   }
   if (!isWellFormed(payload)) return { ok: false, reason: "malformed" };
+  if (payload.o !== operation) return { ok: false, reason: "operation" };
+  if (payload.o === "media") return { ok: true, payload: payload as Extract<StorageTokenPayload, { o: O }> };
   const now = nowSeconds();
   if (payload.e <= now || payload.e > now + MAX_TTL_SECONDS + CLOCK_SKEW_SECONDS) return { ok: false, reason: "expired" };
-  if (payload.o !== operation) return { ok: false, reason: "operation" };
   return { ok: true, payload: payload as Extract<StorageTokenPayload, { o: O }> };
 }
 
 /** Path prefix of the signed routes; the routes live under app/api/storage. */
 export const SIGNED_UPLOAD_PATH = "/api/storage/upload";
 export const SIGNED_READ_PATH = "/api/storage/files";
+export const MEDIA_LINK_PATH = "/api/storage/media";
+
+/**
+ * Public URL of this CMS for links that leave the admin (content, public site): the connection's own
+ * appUrl override, then POLYNOVEA_PUBLIC_URL. Without either, links are relative to the CMS origin.
+ */
+export function cmsBaseUrl(override?: string | null, env: Env = process.env): string | null {
+  const raw = override?.trim() || env.POLYNOVEA_PUBLIC_URL?.trim();
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("CMS public URL is not a valid URL");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("CMS public URL must be an http(s) URL");
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
 
 function joinBase(baseUrl: string | null | undefined, path: string) {
   const base = baseUrl?.trim().replace(/\/+$/, "");
@@ -123,6 +161,12 @@ function lastSegment(key: string) {
 export function signedReadUrl(key: string, baseUrl?: string | null, env: Env = process.env) {
   const token = signStorageToken({ o: "read", p: "local", k: key }, READ_URL_TTL_SECONDS, env);
   return joinBase(baseUrl, `${SIGNED_READ_PATH}/${token}/${lastSegment(key)}`);
+}
+
+/** Permanent media link for content; see signMediaToken. */
+export function mediaLinkUrl(input: { providerKey: string; workspaceId: string; key: string; servedFromDisk: boolean }, baseUrl?: string | null, env: Env = process.env) {
+  const token = signMediaToken({ o: "media", p: input.providerKey, w: input.workspaceId, k: input.key, d: input.servedFromDisk ? "local" : "remote" }, env);
+  return joinBase(baseUrl, `${MEDIA_LINK_PATH}/${token}/${lastSegment(input.key)}`);
 }
 
 export function signedUploadUrl(input: { providerKey: string; workspaceId: string; key: string; contentType: string; contentLength: number }, baseUrl?: string | null, env: Env = process.env) {

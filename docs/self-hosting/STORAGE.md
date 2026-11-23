@@ -16,6 +16,23 @@ have no way to sign a size, so for those the browser uploads to the CMS (`PUT /a
 which checks the type, counts the bytes as they stream, checks the file signature (magic bytes) and only
 commits the object when the body is exactly the signed size. Objects are never overwritten.
 
+## Links stored in content
+
+Content (image fields, rich text) never stores a URL that expires. Uploads return a **content URL**:
+
+- the bucket's public or CDN URL when the connection has one (S3/R2/MinIO `publicUrl`, Azure
+  `publicUrl`, a public Supabase bucket), or
+- otherwise a permanent **CMS media link**, `/api/storage/media/<token>/<name>`. The token is an HMAC
+  signature over the connection, workspace and storage key, with no expiry. For local disk the CMS
+  serves the file itself (cacheable for a day; objects are never overwritten under a key). For private
+  S3, Azure and Supabase buckets it redirects to a freshly signed read URL, cached for 5 minutes.
+
+A media link stops working when its object is deleted, or when the key that signed it is removed from
+`POLYNOVEA_STORAGE_SIGNING_KEY` (keep retired keys in the ring for as long as content uses their links).
+Set `POLYNOVEA_PUBLIC_URL` to the CMS's public address so these links work on the public website.
+Short-lived read URLs (1 hour) are still used for admin previews and API read URLs, which are signed
+fresh on every request. Existing content keeps the URLs it already stores.
+
 ## On this server (`storage.local`)
 
 For the "on this server" install without a bucket.
@@ -23,17 +40,19 @@ For the "on this server" install without a bucket.
 - Files are written under `POLYNOVEA_STORAGE_DIR` (default `/var/lib/polynovea/storage`), one directory
   per workspace. The directory is created with mode `0750`, files with `0640`; run the CMS as its own
   user that owns this directory.
-- Files are served by `GET /api/storage/files/<token>/<name>`. The token is an HMAC-SHA256 signature over
-  the key and an expiry (1 hour), checked in constant time. Links need no session, so public pages can
-  embed them, and they stop working when they expire. Range requests are supported for video.
+- Files are served by the permanent media link (content) and by `GET /api/storage/files/<token>/<name>`
+  (previews; HMAC-SHA256 over the key and a 1-hour expiry). Signatures are checked in constant time,
+  links need no session, and range requests are supported for video.
 - Files are served only as an allowlisted media type detected from their bytes, with `nosniff` and a
-  sandboxing `Content-Security-Policy`; anything else is a download.
+  sandboxing `Content-Security-Policy`; anything else, and PDFs (the sandbox breaks browser PDF
+  viewers), is a download.
 - Storage keys are validated segment by segment, resolved under the root, and the real path (after
   symlinks) must stay inside the root's real path. The final file is opened with `O_NOFOLLOW`.
 - Uploads are refused when they would leave less than `POLYNOVEA_STORAGE_MIN_FREE_BYTES` free on the disk
   (default 1 GiB), because the database may share it.
-- Set **CMS URL for File Links** (`appUrl`) on the connection to the public URL of the CMS, so stored
-  links work outside the admin.
+- Connection verification also creates a hard link: uploads are committed with `link()`, so a mount
+  without hard links (SMB, Azure Files, some Docker bind mounts on Windows) fails verification.
+- Free-space checks count uploads still in progress, so concurrent uploads cannot overrun the reserve.
 
 **Backups.** This directory is data, exactly like the database. Include it in the server's backup set
 alongside the pgBackRest repository (for example a nightly `restic`/`azcopy`/`aws s3 sync` of
@@ -53,7 +72,9 @@ asset rows that point at missing files.
   may resolve to private addresses, unlike the generic rule for other connections.
 - A connection string (with `AccountKey`) is accepted only for Local and Development environments, for
   Azurite or a developer account.
-- Set **CMS URL for Upload Links** (`appUrl`) to the public URL of the CMS.
+- Azure service errors are logged with a reference; API callers see only the HTTP status and reference.
+- Azurite on a loopback address is accepted in Local and Development environments, the same ones that
+  accept connection strings.
 
 ## Signing key
 

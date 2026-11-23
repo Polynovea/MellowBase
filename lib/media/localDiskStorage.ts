@@ -134,13 +134,28 @@ async function existingObjectPath(root: string, key: string) {
 
 const NOFOLLOW = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
 
-async function assertFreeSpace(directory: string, incomingBytes: number, env: Env) {
+/** Bytes reserved by uploads in progress in this process. */
+let inFlightBytes = 0;
+
+/**
+ * The database may share this disk; never let uploads fill it. Bytes promised to uploads still in
+ * flight count as used, so concurrent uploads cannot each pass the check and together overrun it. The
+ * check and the reservation happen in one synchronous step after statfs, so no other upload's check
+ * runs in between. The caller releases the reservation when its write ends.
+ */
+async function reserveFreeSpace(directory: string, incomingBytes: number, env: Env) {
   const reserve = minFreeBytes(env);
-  if (reserve === 0) return;
-  const info = await statfs(directory);
-  const available = Number(info.bavail) * Number(info.bsize);
-  // The database may share this disk; never let uploads fill it.
-  if (available - incomingBytes < reserve) throw new Error("Not enough free space on the storage disk for this upload");
+  if (reserve > 0) {
+    const info = await statfs(directory);
+    const available = Number(info.bavail) * Number(info.bsize);
+    if (available - inFlightBytes - incomingBytes < reserve) throw new Error("Not enough free space on the storage disk for this upload");
+  }
+  inFlightBytes += incomingBytes;
+}
+
+/** Test hook: bytes currently reserved by in-flight uploads. */
+export function inFlightUploadBytes() {
+  return inFlightBytes;
 }
 
 /**
@@ -150,7 +165,8 @@ async function assertFreeSpace(directory: string, incomingBytes: number, env: En
 export async function writeLocalObject(root: string, key: string, body: Readable | Buffer, options: { expectedBytes?: number; env?: Env } = {}) {
   const env = options.env ?? process.env;
   const { target, directory } = await safeDirectoryFor(root, key);
-  await assertFreeSpace(directory, options.expectedBytes ?? (Buffer.isBuffer(body) ? body.length : 0), env);
+  const incoming = options.expectedBytes ?? (Buffer.isBuffer(body) ? body.length : 0);
+  await reserveFreeSpace(directory, incoming, env);
   const temporary = path.join(directory, `${TEMP_PREFIX}${randomBytes(12).toString("hex")}`);
   try {
     // "wx": O_CREAT | O_EXCL, so the temporary name can never be an existing file or symlink.
@@ -164,6 +180,7 @@ export async function writeLocalObject(root: string, key: string, body: Readable
       throw error;
     }
   } finally {
+    inFlightBytes -= incoming;
     await rm(temporary, { force: true }).catch(() => undefined);
   }
 }
@@ -263,7 +280,8 @@ const SIGNATURES: Array<[string, (b: Buffer) => boolean]> = [
  * signature. Anything else is served as a download, never rendered.
  */
 export function servedContentType(key: string, head: Buffer): { contentType: string; inline: boolean } {
-  for (const [type, matches] of SIGNATURES) if (matches(head)) return { contentType: type, inline: true };
+  // PDFs download: the sandbox CSP on these responses breaks the browser's built-in PDF viewer.
+  for (const [type, matches] of SIGNATURES) if (matches(head)) return { contentType: type, inline: type !== "application/pdf" };
   if (head.subarray(4, 8).toString("latin1") === "ftyp") {
     return { contentType: key.toLowerCase().endsWith(".mov") ? "video/quicktime" : "video/mp4", inline: true };
   }
@@ -277,6 +295,7 @@ export async function probeLocalStorage(root: string, env: Env = process.env) {
   const directory = path.join(rootReal, ".polynovea-verification");
   await mkdir(directory, { recursive: true, mode: 0o750 });
   const file = path.join(directory, randomBytes(8).toString("hex"));
+  const linked = `${file}-link`;
   const body = randomBytes(32);
   try {
     const writer = await open(file, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NOFOLLOW, 0o640);
@@ -285,7 +304,14 @@ export async function probeLocalStorage(root: string, env: Env = process.env) {
     } finally {
       await writer.close();
     }
-    const reader = await open(file, fsConstants.O_RDONLY | NOFOLLOW);
+    // Uploads are committed with link(); a mount without hard links (SMB, Azure Files, some Docker
+    // bind mounts on Windows) must fail here, not on every upload.
+    try {
+      await link(file, linked);
+    } catch (error) {
+      throw new Error(`The storage directory does not support hard links (${(error as NodeJS.ErrnoException).code ?? "error"}); use a local disk such as ext4 or xfs`);
+    }
+    const reader = await open(linked, fsConstants.O_RDONLY | NOFOLLOW);
     try {
       if (!(await reader.readFile()).equals(body)) throw new Error("Storage read-back did not match the disposable verification file");
     } finally {
@@ -293,6 +319,7 @@ export async function probeLocalStorage(root: string, env: Env = process.env) {
     }
   } finally {
     await unlink(file).catch(() => undefined);
+    await unlink(linked).catch(() => undefined);
   }
   const info = await statfs(rootReal);
   return { root: rootReal, availableBytes: Number(info.bavail) * Number(info.bsize), minFreeBytes: minFreeBytes(env) };

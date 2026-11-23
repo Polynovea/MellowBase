@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { signedReadUrl, signedUploadUrl, signStorageToken, storageSigningKeys, verifyStorageToken } from "@/lib/media/signedStorageUrls";
+import { cmsBaseUrl, mediaLinkUrl, signedReadUrl, signedUploadUrl, signStorageToken, storageSigningKeys, verifyStorageToken } from "@/lib/media/signedStorageUrls";
 
 const keyA = randomBytes(32).toString("base64");
 const keyB = randomBytes(32).toString("base64");
@@ -80,6 +80,34 @@ describe("storage URL signing", () => {
     expect(derived.equals(master)).toBe(false);
     expect(() => storageSigningKeys({})).toThrow(/POLYNOVEA_STORAGE_SIGNING_KEY/);
     expect(() => storageSigningKeys({ POLYNOVEA_STORAGE_SIGNING_KEY: randomBytes(16).toString("base64") })).toThrow(/32/);
+  });
+
+  it("media links never expire, bind connection, workspace and key, and are their own operation", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-23T10:00:00Z"));
+    const url = mediaLinkUrl({ providerKey: write.p, workspaceId: ws, key: write.k, servedFromDisk: true }, null, env);
+    const token = url.split("/")[4];
+    vi.setSystemTime(new Date("2036-11-23T10:00:00Z"));
+    const verified = verifyStorageToken(token, "media", env);
+    expect(verified).toEqual({ ok: true, payload: { v: 1, o: "media", p: write.p, w: ws, k: write.k, d: "local" } });
+    expect(verifyStorageToken(token, "read", env)).toEqual({ ok: false, reason: "operation" });
+    expect(verifyStorageToken(token, "write", env)).toEqual({ ok: false, reason: "operation" });
+    const [, signature] = token.split(".");
+    const forged = Buffer.from(JSON.stringify({ v: 1, o: "media", p: write.p, w: ws, k: `${ws}/general/other.png`, d: "local" })).toString("base64url");
+    expect(verifyStorageToken(`${forged}.${signature}`, "media", env)).toEqual({ ok: false, reason: "signature" });
+  });
+
+  it("an expiring read token cannot be passed off as a media link", () => {
+    const read = signStorageToken({ o: "read", p: "local", k: write.k }, 3600, env);
+    expect(verifyStorageToken(read, "media", env).ok).toBe(false);
+  });
+
+  it("resolves the CMS public URL from the connection override, then POLYNOVEA_PUBLIC_URL", () => {
+    expect(cmsBaseUrl("https://override.example.com/cms/", { POLYNOVEA_PUBLIC_URL: "https://cms.example.com" })).toBe("https://override.example.com/cms");
+    expect(cmsBaseUrl("", { POLYNOVEA_PUBLIC_URL: "https://cms.example.com/" })).toBe("https://cms.example.com");
+    expect(cmsBaseUrl(null, {})).toBeNull();
+    expect(() => cmsBaseUrl("javascript:alert(1)", {})).toThrow();
+    expect(mediaLinkUrl({ providerKey: write.p, workspaceId: ws, key: write.k, servedFromDisk: false }, "https://cms.example.com", env)).toMatch(/^https:\/\/cms\.example\.com\/api\/storage\/media\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\/1-x\.png$/);
   });
 
   it("builds read and upload URLs under the signed routes", () => {
