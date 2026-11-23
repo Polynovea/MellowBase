@@ -6,7 +6,7 @@ import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { logPlatformEvent, type PlatformAuditPayload } from "@/lib/platform/audit";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- rows are passed through as the services read them */
-export type DatabaseConnectionRow = { id: string; connector_type: string; status: string; active: boolean; created_at: string };
+export type DatabaseConnectionRow = { id: string; connector_type: string; name: string; status: string; active: boolean; created_at: string };
 
 export async function changeAssessment(workspaceId: string, assessmentId: string): Promise<any | null> {
   const { data, error } = await createServiceRoleClient().from("operational_change_assessments").select("*").eq("workspace_id", workspaceId).eq("id", assessmentId).maybeSingle();
@@ -39,7 +39,7 @@ export async function recordSchemaDeployment(
 /** The environment's active database connections, newest first. */
 export async function databaseConnections(workspaceId: string, environmentId: string): Promise<DatabaseConnectionRow[]> {
   const { data, error } = await createServiceRoleClient().from("workspace_connections")
-    .select("id,connector_type,status,active,created_at")
+    .select("id,connector_type,name,status,active,created_at")
     .eq("workspace_id", workspaceId)
     .eq("environment_id", environmentId)
     .eq("connector_family", "database")
