@@ -99,6 +99,50 @@ alter table public.content_model_move_runs enable row level security;
 -- missing a required value): if the model reads from its table, the save fails (we never save what the
 -- reads cannot return); otherwise the save goes through, the entry is counted as failed and the model
 -- is marked out of sync until a later matching run.
+-- A renamed field keeps its old key in snapshots saved before the rename (history is never rewritten).
+-- For each column of `p_shape`, the names its field had before, newest first, each with the schema
+-- version from which it no longer applied: [{"name": "<old key>", "below": <version_number>}]. A
+-- snapshot saved under schema version s uses the alias with the smallest "below" greater than s, or the
+-- field's current key. The renames come from the model's finished expand stages (the ledger's renames,
+-- with the version each built toward). Read-only.
+create or replace function public.polynovea_content_field_aliases(p_content_model_id uuid, p_shape jsonb)
+returns jsonb
+language plpgsql
+stable
+security invoker
+set search_path = ''
+as $$
+declare
+  c record;
+  r record;
+  v_current text;
+  v_names jsonb;
+  v_result jsonb := '{}'::jsonb;
+begin
+  for c in select col.key as name, col.value ->> 'field' as field from jsonb_each(coalesce(p_shape -> 'columns', '{}'::jsonb)) col loop
+    v_current := c.field;
+    v_names := '[]'::jsonb;
+    for r in
+      select rn ->> 'from' as old_key, rn ->> 'to' as new_key, mv.version_number
+        from public.schema_migration_ledger l
+        join public.content_model_versions mv on mv.id = l.target_version_id and mv.content_model_id = l.content_model_id
+        cross join lateral jsonb_array_elements(case when jsonb_typeof(l.renames) = 'array' then l.renames else '[]'::jsonb end) rn
+       where l.content_model_id = p_content_model_id and l.stage = 'expand' and l.status = 'succeeded'
+       order by mv.version_number desc, l.created_at desc
+    loop
+      if r.new_key = v_current and r.old_key ~ '^[a-z][a-z0-9_]*$' then
+        v_names := v_names || jsonb_build_array(jsonb_build_object('name', r.old_key, 'below', r.version_number));
+        v_current := r.old_key;
+      end if;
+    end loop;
+    if jsonb_array_length(v_names) > 0 then
+      v_result := v_result || jsonb_build_object(c.name, v_names);
+    end if;
+  end loop;
+  return v_result;
+end;
+$$;
+
 create or replace function public.polynovea_content_sync_entries(p_entry_ids uuid[])
 returns jsonb
 language plpgsql
@@ -110,6 +154,7 @@ declare
   v_ids uuid[];
   v_entry uuid;
   v_columns jsonb;
+  v_aliases jsonb;
   v_state text;
   v_delete text;
   v_insert text;
@@ -161,6 +206,7 @@ begin
     if exists (select 1 from jsonb_each_text(v_columns) c where c.key !~ '^[a-z][a-z0-9_]{0,62}$' or c.value is null) then
       raise exception using errcode = '22023', message = 'content_table_shape_invalid';
     end if;
+    v_aliases := public.polynovea_content_field_aliases(m.content_model_id, m.applied_shape);
 
     v_delete := format('delete from content.%I where _entry_id = any ($1)', m.table_name);
     -- jsonb_populate_record casts each JSON value to its column type the way PostgreSQL casts input;
@@ -174,23 +220,27 @@ begin
         cross join lateral pg_catalog.jsonb_populate_record(
           null::content.%1$I,
           pg_catalog.jsonb_build_object('_entry_id', e.id, '_variant', p.variant, '_locale', v.locale)
-          || coalesce((select pg_catalog.jsonb_object_agg(c.key, v.data_jsonb -> c.value)
+          || coalesce((select pg_catalog.jsonb_object_agg(c.key, v.data_jsonb -> k.name)
                          from pg_catalog.jsonb_each_text($2) c
-                        where jsonb_typeof(v.data_jsonb) = 'object' and v.data_jsonb ? c.value), '{}'::jsonb)
+                         cross join lateral (select coalesce(
+                           (select a ->> 'name' from pg_catalog.jsonb_array_elements(coalesce($3 -> c.key, '[]'::jsonb)) a
+                             where v.model_schema_version < (a ->> 'below')::integer order by (a ->> 'below')::integer limit 1),
+                           c.value) as name) k
+                        where jsonb_typeof(v.data_jsonb) = 'object' and v.data_jsonb ? k.name), '{}'::jsonb)
         ) r
        where e.id = any ($1)
     $sql$, m.table_name);
 
     begin
       execute v_delete using m.ids;
-      execute v_insert using m.ids, v_columns;
+      execute v_insert using m.ids, v_columns, v_aliases;
       v_synced := v_synced + cardinality(m.ids);
     exception when others then
       -- Find the entries that cannot be written, one at a time.
       foreach v_entry in array m.ids loop
         begin
           execute v_delete using array[v_entry];
-          execute v_insert using array[v_entry], v_columns;
+          execute v_insert using array[v_entry], v_columns, v_aliases;
           v_synced := v_synced + 1;
         exception when others then
           get stacked diagnostics v_state = returned_sqlstate;
@@ -314,6 +364,8 @@ declare
   v_matched boolean;
   v_backfill jsonb;
   v_pg_types constant text[] := array['text', 'jsonb', 'numeric', 'bigint', 'boolean', 'date', 'timestamptz', 'uuid'];
+  v_aliases jsonb;
+  v_key text;
 begin
   select mt.table_name, mt.applied_shape, mt.applied_shape_hash, mt.workspace_id into t
     from public.content_model_tables mt
@@ -348,6 +400,8 @@ begin
       left join public.content_entries e on e.id = r._entry_id
   $sql$, t.table_name) into v_table_counts using p_content_model_id, p_workspace_id;
 
+  v_aliases := public.polynovea_content_field_aliases(p_content_model_id, t.applied_shape);
+
   -- Fields: one pass over each side for all columns.
   for c in
     select col.key as name, col.value ->> 'field' as field, col.value ->> 'pgType' as pg_type
@@ -357,9 +411,13 @@ begin
     if c.name !~ '^[a-z][a-z0-9_]{0,62}$' or c.field is null or not (c.pg_type = any (v_pg_types)) then
       raise exception using errcode = '22023', message = 'content_table_shape_invalid';
     end if;
+    -- The key the snapshot used: the field's key, or an older name for snapshots saved before a rename.
+    v_key := case when v_aliases ? c.name
+      then format('coalesce((select a ->> ''name'' from jsonb_array_elements(%L::jsonb) a where v.model_schema_version < (a ->> ''below'')::integer order by (a ->> ''below'')::integer limit 1), %L)', v_aliases -> c.name, c.field)
+      else format('%L', c.field) end;
     v_snapshot_expr := case when c.pg_type = 'jsonb'
-      then format('nullif(v.data_jsonb -> %L, ''null''::jsonb)', c.field)
-      else format('(v.data_jsonb ->> %L)::%s', c.field, c.pg_type) end;
+      then format('nullif(v.data_jsonb -> %s, ''null''::jsonb)', v_key)
+      else format('(v.data_jsonb ->> %s)::%s', v_key, c.pg_type) end;
     foreach v_variant in array array['draft', 'published'] loop
       v_hash := 'coalesce(sum((''x'' || substr(md5(%s::text || ''|'' || %L || ''|'' || coalesce(to_jsonb(%s)::text, ''~'')), 1, 15))::bit(60)::bigint) filter (where %s = %L), 0)::text';
       v_snapshot_sql := v_snapshot_sql || format(' || jsonb_build_object(%L, jsonb_build_array(count(%s) filter (where p.variant = %L), %s))',
@@ -385,17 +443,20 @@ begin
       for c in
         select col.key as name, col.value ->> 'field' as field, col.value ->> 'pgType' as pg_type
           from jsonb_each(coalesce(t.applied_shape -> 'columns', '{}'::jsonb)) col
-         where col.value ->> 'pgType' <> 'jsonb'
+         where col.value ->> 'pgType' <> 'jsonb' and col.value ->> 'pgType' = any (v_pg_types)
          order by col.key
       loop
+        v_key := case when v_aliases ? c.name
+          then format('coalesce((select a ->> ''name'' from jsonb_array_elements(%L::jsonb) a where v.model_schema_version < (a ->> ''below'')::integer order by (a ->> ''below'')::integer limit 1), %L)', v_aliases -> c.name, c.field)
+          else format('%L', c.field) end;
         begin
           execute format($sql$
-            select count((v.data_jsonb ->> %L)::%s)
+            select count((v.data_jsonb ->> %s)::%s)
               from public.content_entries e
               cross join lateral (values (e.current_draft_version_id), (e.published_version_id)) p (version_id)
               join public.content_entry_versions v on v.id = p.version_id and v.entry_id = e.id
              where e.content_model_id = $1 and e.workspace_id = $2
-          $sql$, c.field, c.pg_type) using p_content_model_id, p_workspace_id;
+          $sql$, v_key, c.pg_type) using p_content_model_id, p_workspace_id;
         exception when data_exception then
           v_mismatches := v_mismatches || jsonb_build_array(jsonb_build_object('kind', 'snapshot_value_not_convertible', 'column', c.name));
         end;
@@ -659,6 +720,7 @@ revoke all on function public.polynovea_content_sync_entries(uuid[]) from public
 revoke all on function public.polynovea_content_verify_model(uuid, uuid, uuid, integer, integer, integer) from public;
 revoke all on function public.polynovea_content_set_read_source(uuid, uuid, text, uuid) from public;
 revoke all on function public.polynovea_content_entries_sync() from public;
+revoke all on function public.polynovea_content_field_aliases(uuid, jsonb) from public;
 
 select public.polynovea_apply_app_access();
 
