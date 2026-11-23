@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 3: dependency, impact and asset-usage graph reads on the direct path; every lookup is scoped by workspace and a widely used entry's or asset's blast radius is no longer cut off at 1000 relations.
 Phase 1 wave 3: content health (scan, findings, remediation tasks, health profiles) on the direct path. Migration 0069 keeps remediation tasks inside their workspace: a task can no longer reference another workspace's finding, entry or asset, or be assigned to a non-member. Scans and the health overview no longer stop at 1000 rows.
 Phase 1 wave 3: localization writes (locales, translation links, review, stale marking) and web-quality policy, sitemap and site audit on the direct path; the sitemap and audit no longer stop at 1000 rows, and link and review writes commit with their audit events.
 - Fixed: release previews (`/preview/<token>` for a release) always came back empty on Supabase, because their lookup of entries and models was ambiguous. Preview tokens and saved entry views can run on the direct PostgreSQL path (`content=postgres`).

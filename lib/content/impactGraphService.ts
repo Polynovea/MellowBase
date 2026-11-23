@@ -1,5 +1,5 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { getEntry } from "@/lib/content/entryService";
+import * as impactData from "@/lib/content/impactData";
 
 export interface GraphEdge {
   entryId: string;
@@ -45,30 +45,20 @@ async function activeEntries(workspaceId: string, ids: string[]) {
   if (!ids.length) {
     return new Map<string, { status: string; current_draft_version_id: string | null; published_version_id: string | null }>();
   }
-  const { data } = await createServiceRoleClient()
-    .from("content_entries")
-    .select("id, status, current_draft_version_id, published_version_id")
-    .eq("workspace_id", workspaceId)
-    .in("id", ids);
-
-  return new Map((data ?? []).map((item) => [item.id, item]));
+  const data = await impactData.entryStates(workspaceId, ids);
+  return new Map(data.map((item) => [item.id, item]));
 }
 
 export async function getDependencies(workspaceId: string, entryId: string): Promise<GraphEdge[] | null> {
   const entry = await getEntry(workspaceId, entryId);
   if (!entry?.current_draft_version_id) return null;
 
-  const { data } = await createServiceRoleClient()
-    .from("content_relations")
-    .select("target_entry_id, target_asset_id, target_term_id, target_route_id, target_menu_id, source_field_key, relation_type, source_version_id")
-    .eq("workspace_id", workspaceId)
-    .eq("source_entry_id", entry.id)
-    .eq("source_version_id", entry.current_draft_version_id);
+  const data = await impactData.outgoingRelations(workspaceId, entry.id, entry.current_draft_version_id);
 
-  const entryTargetIds = (data ?? []).map((item) => item.target_entry_id).filter((id): id is string => Boolean(id));
+  const entryTargetIds = data.map((item) => item.target_entry_id).filter((id): id is string => Boolean(id));
   const targets = await activeEntries(workspaceId, entryTargetIds);
 
-  return (data ?? []).map((item) => {
+  return data.map((item) => {
     if (item.target_entry_id) {
       const t = targets.get(item.target_entry_id);
       return {
@@ -130,16 +120,12 @@ export async function getDependents(workspaceId: string, entryId: string): Promi
   const target = await getEntry(workspaceId, entryId);
   if (!target) return null;
 
-  const { data } = await createServiceRoleClient()
-    .from("content_relations")
-    .select("source_entry_id, source_version_id, source_field_key, relation_type, source_menu_id, source_route_id, source_redirect_id, source_translation_id, source_release_id")
-    .eq("workspace_id", workspaceId)
-    .eq("target_entry_id", target.id);
+  const data = await impactData.incomingRelations(workspaceId, target.id);
 
-  const sourceIds = [...new Set((data ?? []).map((item) => item.source_entry_id).filter(Boolean))];
+  const sourceIds = [...new Set(data.map((item) => item.source_entry_id).filter(Boolean))];
   const sources = await activeEntries(workspaceId, sourceIds as string[]);
 
-  return (data ?? []).flatMap((item): GraphEdge[] => {
+  return data.flatMap((item): GraphEdge[] => {
     if (item.source_release_id) {
       return [{ entryId: item.source_release_id, field: item.source_field_key || "release_item", relationType: item.relation_type, status: "active", active: true, sourceType: "release" as const, targetType: "entry" as const, targetId: target.id }];
     }
@@ -198,19 +184,8 @@ export async function getImpact(workspaceId: string, entryId: string): Promise<I
 
   if (!dependencies || !dependents) return null;
 
-  const { data: memberships } = await createServiceRoleClient()
-    .from("release_items")
-    .select("release_id, releases!inner(workspace_id, status)")
-    .eq("entry_id", entryId)
-    .eq("releases.workspace_id", workspaceId);
-
-  const releaseIds = [...new Set((memberships ?? []).map((item) => item.release_id))];
-  const db = createServiceRoleClient();
-  const { data: routes } = await db.from("content_routes").select("id,path,locale,is_canonical,indexing_policy,status").eq("workspace_id", workspaceId).eq("entry_id", entryId).neq("status", "archived");
-  const routeIds = (routes ?? []).map((route) => route.id);
-  const { data: routeRelations } = routeIds.length
-    ? await db.from("content_relations").select("target_route_id,relation_type,source_entry_id,source_menu_id,source_route_id,source_redirect_id,source_translation_id,source_release_id").eq("workspace_id", workspaceId).in("target_route_id", routeIds)
-    : { data: [] as Array<Record<string, string | null>> };
+  const releaseIds = [...new Set(await impactData.releaseIdsForEntry(workspaceId, entryId))];
+  const { routes, routeRelations } = await impactData.destinationRows(workspaceId, entryId);
   const sourceOf = (edge: Record<string, string | null>) => {
     if (edge.source_release_id) return { sourceType: "release", sourceId: edge.source_release_id };
     if (edge.source_translation_id) return { sourceType: "translation", sourceId: edge.source_translation_id };
@@ -219,9 +194,9 @@ export async function getImpact(workspaceId: string, entryId: string): Promise<I
     if (edge.source_route_id) return { sourceType: "route", sourceId: edge.source_route_id };
     return edge.source_entry_id ? { sourceType: "entry", sourceId: edge.source_entry_id } : null;
   };
-  const destinations: ImpactDestination[] = (routes ?? []).map((route) => ({
+  const destinations: ImpactDestination[] = routes.map((route) => ({
     routeId: route.id, path: route.path, locale: route.locale, canonical: route.is_canonical, indexingPolicy: route.indexing_policy,
-    dependentSources: (routeRelations ?? []).filter((edge) => edge.target_route_id === route.id).flatMap((edge) => { const source = sourceOf(edge as Record<string, string | null>); return source ? [{ ...source, relationType: String(edge.relation_type) }] : []; }),
+    dependentSources: routeRelations.filter((edge) => edge.target_route_id === route.id).flatMap((edge) => { const source = sourceOf(edge as Record<string, string | null>); return source ? [{ ...source, relationType: String(edge.relation_type) }] : []; }),
   }));
   const sourceTypeCounts: Record<string, number> = {};
   for (const edge of dependents) sourceTypeCounts[edge.sourceType ?? "entry"] = (sourceTypeCounts[edge.sourceType ?? "entry"] ?? 0) + 1;
@@ -239,62 +214,16 @@ export async function getImpact(workspaceId: string, entryId: string): Promise<I
  * Finds all content entries, navigation menus, and routes that reference this asset.
  */
 export async function getAssetUsageGraph(workspaceId: string, assetId: string): Promise<AssetUsageReference[]> {
-  const db = createServiceRoleClient();
-
-  // 1. Check content_relations with target_asset_id
-  const { data: relations } = await db
-    .from("content_relations")
-    .select("source_entry_id, source_version_id, source_field_key, source_menu_id, source_route_id")
-    .eq("workspace_id", workspaceId)
-    .eq("target_asset_id", assetId);
-
-  const entryIds = [...new Set((relations ?? []).map((r) => r.source_entry_id).filter(Boolean))];
+  const { relations, versions, menus, routes } = await impactData.assetUsageRows(workspaceId, assetId);
+  const entryIds = [...new Set(relations.map((r) => r.source_entry_id).filter(Boolean))];
   const entriesMap = await activeEntries(workspaceId, entryIds as string[]);
-
-  // 2. Fetch entry version titles
-  const versionIds = [...new Set((relations ?? []).map((r) => r.source_version_id).filter(Boolean))];
   const titlesMap = new Map<string, string>();
-
-  if (versionIds.length > 0) {
-    const { data: versions } = await db
-      .from("content_entry_versions")
-      .select("id, data_jsonb")
-      .in("id", versionIds as string[]);
-
-    for (const v of (versions ?? [])) {
-      const title = v.data_jsonb?.title || v.data_jsonb?.name || "Untitled Entry";
-      titlesMap.set(v.id, String(title));
-    }
-  }
-
-  // 3. Fetch menu titles for menu sources
-  const menuIds = [...new Set((relations ?? []).map((r) => r.source_menu_id).filter(Boolean))];
-  const menuMap = new Map<string, string>();
-  if (menuIds.length > 0) {
-    const { data: menus } = await db
-      .from("navigation_menus")
-      .select("id, name")
-      .in("id", menuIds as string[]);
-    for (const m of (menus ?? [])) {
-      menuMap.set(m.id, m.name);
-    }
-  }
-
-  // 4. Fetch route paths for route sources
-  const routeIds = [...new Set((relations ?? []).map((r) => r.source_route_id).filter(Boolean))];
-  const routeMap = new Map<string, string>();
-  if (routeIds.length > 0) {
-    const { data: routes } = await db
-      .from("content_routes")
-      .select("id, path")
-      .in("id", routeIds as string[]);
-    for (const rt of (routes ?? [])) {
-      routeMap.set(rt.id, rt.path);
-    }
-  }
+  for (const v of versions) titlesMap.set(v.id, String(v.data_jsonb?.title || v.data_jsonb?.name || "Untitled Entry"));
+  const menuMap = new Map(menus.map((m) => [m.id, m.name]));
+  const routeMap = new Map(routes.map((rt) => [rt.id, rt.path]));
 
   const results: AssetUsageReference[] = [];
-  for (const r of (relations ?? [])) {
+  for (const r of relations) {
     if (r.source_menu_id) {
       results.push({
         entryId: r.source_menu_id,
