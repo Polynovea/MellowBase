@@ -14,6 +14,10 @@ export function productionEngine(limits: SchemaLimits = schemaLimitsFromEnv()): 
     buildPlanFromTrustedState: async () => {
       throw new RunnerError("trusted_plan_builder_unavailable");
     },
+    // Wave 1's computeStageHash, likewise (agreed: each stage row holds its own stage's hash).
+    computeStageHash: () => {
+      throw new RunnerError("stage_hash_unavailable");
+    },
     // Indexes CONCURRENTLY (the engine's default for the runner).
     renderStep: (step) => renderStep(step),
     computePlanHash,

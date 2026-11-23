@@ -22,6 +22,8 @@ export interface PlanRequest {
   stage: string;
   plan_hash: string;
   target_version_id: string | null;
+  /** [{ from, to }] field renames the request carries (re-validated by the engine). */
+  renames?: unknown;
   created_at?: string | Date;
 }
 
@@ -36,6 +38,11 @@ export interface SchemaEngine {
   renderStep(step: PlanStep): RenderedStatement[];
   /** The plan's identity hash, recomputed from its contents. */
   computePlanHash(plan: MigrationPlan): SchemaHash;
+  /**
+   * One stage's hash: what the ledger row's plan_hash holds. The worker rebuilds the stage from the
+   * current applied shape, the target version and the renames, and runs it only if this matches.
+   */
+  computeStageHash(plan: MigrationPlan, stage: PlanStage): SchemaHash;
   /** Throws unless the plan is well formed, within the name rules and caps, and its hashes replay. Pure. */
   validatePlan(plan: MigrationPlan, options?: { limits?: SchemaLimits }): void;
   /**

@@ -34,7 +34,7 @@ export async function unlockModel(client: pg.ClientBase, modelId: string): Promi
 }
 
 const LEDGER_COLUMNS = `id, workspace_id, content_model_id, model_api_key, table_name, stage, status, plan_hash,
-  base_shape_hash, target_schema_hash, plan_json, target_version_id, requested_by, confirmed_by, confirmed_at, attempts, created_at`;
+  base_shape_hash, target_schema_hash, plan_json, target_version_id, renames, requested_by, confirmed_by, confirmed_at, attempts, created_at`;
 
 export interface ClaimedStage {
   row: LedgerRow;

@@ -172,6 +172,10 @@ comment on function public.polynovea_schema_dual_write() is
 -- table's applied shape), instead of trusting the plan stored in the row.
 alter table public.schema_migration_ledger
   add column if not exists target_version_id uuid references public.content_model_versions (id) on delete set null;
+-- The field renames the user asked for ([{"from": ..., "to": ...}]): a version cannot say them, so the
+-- request carries them and the engine re-validates them when it rebuilds the plan.
+alter table public.schema_migration_ledger
+  add column if not exists renames jsonb not null default '[]'::jsonb check (jsonb_typeof(renames) = 'array');
 
 -- Whatever an inserting session supplies, a request starts clean: its status follows from its stage
 -- (expand: pending; destructive: awaiting_confirmation) and nothing about a run is set. Sessions that
@@ -231,20 +235,29 @@ set search_path = ''
 as $$
 declare
   request record;
+  model_key text;
 begin
-  select l.id, l.stage, l.status, l.workspace_id, m.api_key
+  -- Errors are plain codes; the typed text is never logged or echoed.
+  select l.id, l.stage, l.status, l.workspace_id, l.content_model_id, l.model_api_key
     into request
     from public.schema_migration_ledger l
-    join public.content_models m on m.id = l.content_model_id
    where l.id = p_ledger_id
-     for update of l;
+     for update;
   if not found or request.stage <> 'destructive' then
     raise exception using errcode = 'P0002', message = 'schema_stage_not_found';
   end if;
   if request.status <> 'awaiting_confirmation' then
     raise exception using errcode = '55000', message = 'schema_stage_not_awaiting_confirmation';
   end if;
-  if p_typed_api_key is distinct from request.api_key then
+  -- The key that confirms is the api key of the model this request belongs to, in its workspace (and
+  -- the request must name that same key).
+  select m.api_key into model_key
+    from public.content_models m
+   where m.id = request.content_model_id and m.workspace_id = request.workspace_id;
+  if model_key is null or model_key is distinct from request.model_api_key then
+    raise exception using errcode = 'P0002', message = 'schema_stage_not_found';
+  end if;
+  if p_typed_api_key is distinct from model_key then
     raise exception using errcode = '22023', message = 'schema_confirmation_mismatch';
   end if;
   insert into public.schema_migration_confirmations (ledger_id, workspace_id, confirmed_by, typed_api_key)
@@ -262,14 +275,25 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+  current_status text;
 begin
-  update public.schema_migration_ledger set status = 'pending', error_ref = null
-   where id = p_ledger_id and status = 'failed';
+  select status into current_status from public.schema_migration_ledger where id = p_ledger_id for update;
   if not found then
+    raise exception using errcode = 'P0002', message = 'schema_stage_not_found';
+  end if;
+  if current_status <> 'failed' then
     raise exception using errcode = '55000', message = 'schema_stage_not_failed';
   end if;
+  update public.schema_migration_ledger set status = 'pending', error_ref = null where id = p_ledger_id;
 end;
 $$;
+
+-- Both functions: the app role only (never PUBLIC, anon, authenticated or service_role).
+revoke all on function public.polynovea_confirm_schema_stage(uuid, uuid, text) from public;
+revoke all on function public.polynovea_retry_schema_stage(uuid) from public;
+grant execute on function public.polynovea_confirm_schema_stage(uuid, uuid, text) to polynovea_app;
+grant execute on function public.polynovea_retry_schema_stage(uuid) to polynovea_app;
 
 -- ── App access ───────────────────────────────────────────────────────────────────────────────────
 -- The helper from 0072 (the latest), unchanged except for one explicit list of tables the app role may
@@ -303,7 +327,8 @@ declare
     'polynovea_migration_ledger', 'schema_migration_runs', 'schema_expand_contract_tasks',
     'content_model_tables', 'schema_name_reservations', 'schema_migration_confirmations'];
   ledger_request_columns text := 'workspace_id, content_model_id, model_api_key, table_name, stage, plan_hash, '
-    || 'base_shape_hash, target_schema_hash, plan_json, requested_by, target_version_id';
+    || 'base_shape_hash, target_schema_hash, plan_json, requested_by, target_version_id, renames';
+  app_only_functions text[] := array['polynovea_confirm_schema_stage', 'polynovea_retry_schema_stage'];
 begin
   execute 'grant usage on schema public to polynovea_app';
 
@@ -384,6 +409,12 @@ begin
       continue; -- for migrations only
     end if;
     execute format('grant execute on function %s to polynovea_app', item.signature);
+    if item.proname = any (app_only_functions) then
+      if has_service_role then
+        execute format('revoke execute on function %s from service_role', item.signature);
+      end if;
+      continue;
+    end if;
     if has_service_role then
       execute format('grant execute on function %s to service_role', item.signature);
     end if;

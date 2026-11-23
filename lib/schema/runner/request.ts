@@ -13,6 +13,10 @@ export interface PlanStageRequest {
   requestedBy: string | null;
   /** The content_model_versions row the change is for (the worker rebuilds the plan from it). */
   targetVersionId?: string | null;
+  /** Field renames the user asked for; a version cannot express them. */
+  renames?: Array<{ from: string; to: string }>;
+  /** This stage's hash (the engine's computeStageHash); the plan's own hash until wave 1 provides it. */
+  stageHash?: string;
 }
 
 /**
@@ -24,9 +28,11 @@ export async function requestPlanStage(db: DbExecutor, request: PlanStageRequest
   const baseShapeHash = stage === "expand" ? plan.baseShapeHash : plan.expandedShapeHash;
   const { rows: [row] } = await sql<{ id: string; status: string }>`
     insert into public.schema_migration_ledger
-      (workspace_id, content_model_id, model_api_key, table_name, stage, plan_hash, base_shape_hash, target_schema_hash, plan_json, requested_by, target_version_id)
-    values (${plan.workspaceId}, ${plan.modelId}, ${plan.modelApiKey}, ${plan.table}, ${stage}, ${plan.planHash},
-            ${baseShapeHash}, ${plan.targetSchemaHash}, ${JSON.stringify(plan)}::jsonb, ${request.requestedBy}, ${request.targetVersionId ?? null})
+      (workspace_id, content_model_id, model_api_key, table_name, stage, plan_hash, base_shape_hash, target_schema_hash, plan_json, requested_by,
+       target_version_id, renames)
+    values (${plan.workspaceId}, ${plan.modelId}, ${plan.modelApiKey}, ${plan.table}, ${stage}, ${request.stageHash ?? plan.planHash},
+            ${baseShapeHash}, ${plan.targetSchemaHash}, ${JSON.stringify(plan)}::jsonb, ${request.requestedBy}, ${request.targetVersionId ?? null},
+            ${JSON.stringify(request.renames ?? [])}::jsonb)
     returning id, status`.execute(db);
   return { ledgerId: row.id, status: row.status };
 }

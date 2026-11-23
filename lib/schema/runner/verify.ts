@@ -46,6 +46,7 @@ export interface LedgerRow {
   target_schema_hash: string | null;
   plan_json: unknown;
   target_version_id: string | null;
+  renames?: unknown;
   requested_by: string | null;
   confirmed_by: string | null;
   confirmed_at: string | Date | null;
@@ -196,7 +197,7 @@ function indexCount(shape: TableShape | null): number {
  */
 export function verifyRowAgainstPlan(
   row: LedgerRow,
-  engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan">,
+  engine: Pick<SchemaEngine, "computePlanHash" | "computeStageHash" | "validatePlan">,
   limits: SchemaLimits = schemaLimitsFromEnv(),
   planSource: unknown = row.plan_json,
 ): Omit<VerifiedStage, "createsTable"> {
@@ -205,12 +206,16 @@ export function verifyRowAgainstPlan(
   const plan = parsePlan(planSource);
 
   let recomputed: string;
+  let stageHash: string;
   try {
     recomputed = engine.computePlanHash(plan);
-  } catch {
-    throw new RefusedError("plan_malformed");
+    stageHash = engine.computeStageHash(plan, stage);
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    throw new RefusedError(code === "stage_hash_unavailable" ? code : "plan_malformed");
   }
-  if (row.plan_hash !== plan.planHash || recomputed !== plan.planHash) throw new RefusedError("plan_hash_mismatch");
+  // The request asked for exactly this stage: the row's hash is the stage's hash, recomputed here.
+  if (recomputed !== plan.planHash || row.plan_hash !== stageHash) throw new RefusedError("plan_hash_mismatch");
   if (row.base_shape_hash !== stageBaseHash(plan, stage)) throw new RefusedError("ledger_base_hash_mismatch");
   if (row.workspace_id !== plan.workspaceId || row.content_model_id !== plan.modelId) throw new RefusedError("plan_target_mismatch");
   if (row.model_api_key !== plan.modelApiKey || row.table_name !== plan.table) throw new RefusedError("plan_target_mismatch");
@@ -251,7 +256,7 @@ export function verifyRowAgainstPlan(
 export async function verifyLedgerRow(
   client: pg.ClientBase,
   row: LedgerRow,
-  engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan" | "buildPlanFromTrustedState">,
+  engine: Pick<SchemaEngine, "computePlanHash" | "computeStageHash" | "validatePlan" | "buildPlanFromTrustedState">,
   limits: SchemaLimits = schemaLimitsFromEnv(),
 ): Promise<VerifiedStage> {
   // The plan to run comes from trusted state, never from plan_json.

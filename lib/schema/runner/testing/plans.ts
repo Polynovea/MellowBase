@@ -13,6 +13,8 @@ import { productionEngine } from "@/lib/schema/runner/engineAdapter";
  */
 export const testEngine: SchemaEngine = {
   ...productionEngine(DEFAULT_SCHEMA_LIMITS),
+  // Stand-in for wave 1's computeStageHash: the whole plan's hash, which is what the tests' requests store.
+  computeStageHash: (plan) => computePlanHash(plan),
   buildPlanFromTrustedState: async (db, request) => {
     const { rows: [row] } = await sql<{ plan_json: MigrationPlan }>`select plan_json from public.schema_migration_ledger where id = ${request.id}`.execute(db);
     return row.plan_json;
