@@ -9,7 +9,7 @@ At start-up the CMS decides which of three modes it is in, and logs it.
 | No database settings | **setup** | Only `/setup`, `/api/setup/*`, the wizard's static files and `/api/health`. Everything else answers 503 with a link to `/setup`. |
 | Settings, database reachable, no `installation` row | **setup** (resuming) | The same; the wizard skips its database step. |
 | Settings, database reachable, `installation` row | **running** | Everything except `/setup` and `/api/setup/*`, which answer 404. |
-| Settings, but the database cannot be reached, `config.enc` cannot be decrypted, or migrations have not run on an existing install | **unavailable** | Only `/api/health`. Everything else answers 503. |
+| Settings, but the database cannot be reached, `config.enc` cannot be decrypted, migrations have not run on an existing install, or the database holds users or content without an `installation` row | **unavailable** | Only `/api/health`. Everything else answers 503. |
 
 "Database settings" means `config.enc` (written by the wizard) or, for installs set up before the
 wizard, `POLYNOVEA_DATABASE_URL` / `DATABASE_URL`.
@@ -33,8 +33,10 @@ can.
 
 ### Upgrading an existing install
 
-Migration `0072_installation` gives existing installs their `installation` row (owner: the oldest
-active master admin), so they keep running. Run the migrations before starting the new release; if
+Migration `0072_installation` gives existing installs their `installation` row, so they keep
+running. A database counts as an existing install when it has any admin user (any role, active or
+not), any workspace member, any content entry, or any workspace besides the seeded `polynovea` one.
+The owner recorded is the oldest active master, else the oldest active admin, else none. Run the migrations before starting the new release; if
 the new release starts first, it reports unavailable ("migrations pending") until they have run.
 
 ## The master key
@@ -49,9 +51,11 @@ Everything the CMS encrypts is protected by one master key ring:
 
 The master key itself is never used directly; each of these gets its own key derived from it.
 
-**Where it comes from.** Either you set `CMS_MASTER_KEY`, or the first start creates
-`/var/lib/polynovea/master.key` (change the folder with `POLYNOVEA_CONFIG_DIR`). The wizard shows
-the created key once.
+**Where it comes from.** You set `CMS_MASTER_KEY`; or, on an install from before the wizard, the
+existing `CMS_CONFIG_ENCRYPTION_KEY` serves as the key (nothing is created); otherwise the first
+start creates `/var/lib/polynovea/master.key` (change the folder with `POLYNOVEA_CONFIG_DIR`) and the
+wizard shows it once. Several servers, or a worker on another machine, must share the same
+variable: a key file created on one server is not on the others.
 
 **Keep a copy somewhere else.** It is the one secret that cannot be regenerated: without it,
 `config.enc` and every stored secret are unreadable. Store it in your password manager or secrets
@@ -80,13 +84,16 @@ A key ID is letters, digits, `-` and `_`, up to 32 characters. Generate a key wi
 
 ### Moving off CMS_CONFIG_ENCRYPTION_KEY
 
-Installs from before the wizard encrypted stored secrets with `CMS_CONFIG_ENCRYPTION_KEY`. This
-release still reads them with that key and writes new values with the master key ring.
+Installs from before the wizard encrypted stored secrets with `CMS_CONFIG_ENCRYPTION_KEY`. Nothing
+has to change to upgrade: while it is the only key, this release uses it as the master key (key ID
+`legacy`) on every server and worker that has it, and creates no key file.
 
-1. Start this release with `CMS_CONFIG_ENCRYPTION_KEY` still set. The first start creates
-   `master.key` (or set `CMS_MASTER_KEY`).
-2. Run `npm run cms -- keys reencrypt`. When it reports `legacy 0` for every column, the old key is
-   no longer needed for stored secrets.
+To move to a master key of your own:
+
+1. Set `CMS_MASTER_KEY` on every server and worker, keeping `CMS_CONFIG_ENCRYPTION_KEY` set. New
+   values use the new key; everything written before stays readable.
+2. Run `npm run cms -- keys reencrypt`. When it reports `older key 0` and `legacy 0` for every
+   column, the old key is no longer needed for stored secrets.
 3. File and media links signed before the upgrade still verify only while
    `CMS_CONFIG_ENCRYPTION_KEY` is set. Leave it set until the media links in your content have been
    re-saved, or ask for help before removing it.

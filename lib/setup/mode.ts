@@ -102,6 +102,27 @@ function settle(state: ModeState): ModeState {
 
 const now = () => Date.now();
 
+/**
+ * The same rule as migration 0072's backfill: any admin user, workspace member or content entry, or
+ * any workspace other than the 'polynovea' workspace 0007 seeds on every fresh database.
+ */
+async function holdsInstall(client: pg.Client): Promise<boolean> {
+  const { rows } = await client.query<Record<string, boolean>>(`
+    select to_regclass('public.admin_users') is not null as admin_users,
+           to_regclass('public.workspace_members') is not null as workspace_members,
+           to_regclass('public.content_entries') is not null as content_entries,
+           to_regclass('public.workspaces') is not null as workspaces`);
+  const probes = [
+    rows[0].admin_users && "select 1 from public.admin_users",
+    rows[0].workspace_members && "select 1 from public.workspace_members",
+    rows[0].content_entries && "select 1 from public.content_entries",
+    rows[0].workspaces && "select 1 from public.workspaces where slug <> 'polynovea'",
+  ].filter((probe): probe is string => Boolean(probe));
+  if (!probes.length) return false;
+  const live = await client.query<{ live: boolean }>(`select exists (${probes.map((probe) => `(${probe} limit 1)`).join(" union all ")}) as live`);
+  return live.rows[0].live;
+}
+
 async function check(env: Env): Promise<ModeState> {
   let config: InstallConfig | null;
   try {
@@ -126,18 +147,17 @@ async function check(env: Env): Promise<ModeState> {
       application_name: "polynovea-cms-mode",
     });
     await client.connect();
-    const { rows } = await client.query<{ has_table: boolean; has_admin_table: boolean }>(
-      "select to_regclass('public.installation') is not null as has_table, to_regclass('public.admin_users') is not null as has_admin_table",
-    );
+    const { rows } = await client.query<{ has_table: boolean }>("select to_regclass('public.installation') is not null as has_table");
     if (!rows[0].has_table) {
-      // An install with users but without migration 0072 is an upgrade whose migrations have not run.
-      // Setup mode there would hand a live install to whoever reaches /setup first.
-      const hasAdmins = rows[0].has_admin_table && (await client.query("select 1 from public.admin_users limit 1")).rowCount! > 0;
-      if (hasAdmins) return { mode: "unavailable", databaseSource: source, databaseReady: false, reason: "migrations pending: run db:migrate", checkedAt: now() };
+      // A database with an install but without migration 0072 is an upgrade whose migrations have not
+      // run. Setup mode there would hand a live install to whoever reaches /setup first.
+      if (await holdsInstall(client)) return { mode: "unavailable", databaseSource: source, databaseReady: false, reason: "migrations pending: run db:migrate", checkedAt: now() };
       return { mode: "setup", databaseSource: source, databaseReady: false, reason: "database not migrated yet", checkedAt: now() };
     }
     const installed = await client.query<{ installed: boolean }>("select exists (select 1 from public.installation where singleton) as installed");
     if (installed.rows[0].installed) return { mode: "running", databaseSource: source, databaseReady: true, reason: "installed", checkedAt: now() };
+    // Users or content but no row (for example created outside the wizard): never open setup on it.
+    if (await holdsInstall(client)) return { mode: "unavailable", databaseSource: source, databaseReady: false, reason: "the database holds an install but has no installation row", checkedAt: now() };
     return { mode: "setup", databaseSource: source, databaseReady: true, reason: "no installation row", checkedAt: now() };
   } catch (error) {
     const code = (error as { code?: string }).code;

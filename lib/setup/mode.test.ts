@@ -32,8 +32,9 @@ vi.mock("pg", () => {
       if (!db.reachable) throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
     }
     async query(text: string) {
-      if (text.includes("to_regclass")) return { rows: [{ has_table: db.hasTable, has_admin_table: true }], rowCount: 1 };
-      if (text.includes("from public.admin_users")) return { rows: db.hasAdmins ? [{}] : [], rowCount: db.hasAdmins ? 1 : 0 };
+      if (text.includes("to_regclass('public.installation')")) return { rows: [{ has_table: db.hasTable }], rowCount: 1 };
+      if (text.includes("to_regclass('public.admin_users')")) return { rows: [{ admin_users: true, workspace_members: true, content_entries: true, workspaces: true }], rowCount: 1 };
+      if (text.includes("as live")) return { rows: [{ live: db.hasAdmins }], rowCount: 1 };
       return { rows: [{ installed: db.installed }], rowCount: 1 };
     }
     async end() {}
@@ -86,6 +87,13 @@ describe("setup mode decision", () => {
     resetModeForTests();
     db.hasAdmins = false;
     expect(await resolveMode({ POLYNOVEA_CONFIG_DIR: emptyDir(), POLYNOVEA_DATABASE_URL: envUrl })).toMatchObject({ mode: "setup", databaseReady: false });
+  });
+
+  it("users or content without the installation row → unavailable, never setup", async () => {
+    db.hasAdmins = true;
+    const state = await resolveMode({ POLYNOVEA_CONFIG_DIR: emptyDir(), POLYNOVEA_DATABASE_URL: envUrl });
+    expect(state).toMatchObject({ mode: "unavailable", databaseReady: false });
+    expect(state.reason).toContain("no installation row");
   });
 
   it("uses config.enc (the app role) before the environment", async () => {

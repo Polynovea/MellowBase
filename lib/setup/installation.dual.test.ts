@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { resetModeForTests, resolveMode } from "@/lib/setup/mode";
 
 // Migration 0072 (installation row) on plain PostgreSQL, as the roles themselves. Setup locks for good
 // on this row, so the app role must be able to insert it once and never change or delete it.
@@ -107,3 +111,100 @@ describe("installation row (migration 0072)", () => {
     expect(await check()).toEqual(expected);
   });
 });
+
+// Migration 0072's backfill, run exactly as written but against copies of the tables in a throwaway
+// schema inside a rolled-back transaction, so each case starts from a known database and parallel test
+// files cannot affect it.
+const migration = readFileSync(path.join(process.cwd(), "supabase", "migrations", "0072_installation.sql"), "utf8");
+const backfill = migration.slice(migration.indexOf("-- backfill:start"), migration.indexOf("-- backfill:end")).replace(/public\./g, "backfill_probe.");
+
+describe("0072 backfill: setup never opens on a database that holds an install", () => {
+  let owner: pg.Client;
+  beforeAll(async () => { owner = await connect(process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL); });
+  afterAll(async () => { await owner?.end(); });
+
+  type Seed = (q: (text: string, values?: unknown[]) => Promise<pg.QueryResult>) => Promise<void>;
+  async function runBackfill(seed: Seed) {
+    await owner.query("begin");
+    try {
+      await owner.query("create schema backfill_probe");
+      for (const table of ["admin_users", "workspace_members", "content_entries", "workspaces", "installation"]) {
+        await owner.query(`create table backfill_probe.${table} (like public.${table} including all)`);
+      }
+      // What migration 0007 leaves on every fresh database.
+      await owner.query("insert into backfill_probe.workspaces (name, slug) values ('Polynovea', 'polynovea')");
+      await seed((text, values) => owner.query(text, values));
+      await owner.query(backfill);
+      const { rows } = await owner.query("select organisation_name, owner_admin_user_id, database_mode from backfill_probe.installation");
+      return rows;
+    } finally {
+      await owner.query("rollback");
+    }
+  }
+  const admin = (role: string, active = true, created = "2025-01-01") =>
+    async (q: Parameters<Seed>[0]) => (await q("insert into backfill_probe.admin_users (username, email, role, is_active, created_at) values ($1, $2, $3, $4, $5) returning id", [`u-${randomUUID().slice(0, 8)}`, `${randomUUID().slice(0, 8)}@example.test`, role, active, created])).rows[0].id as string;
+
+  it("a fresh database (only the seeded workspace) gets no row, so setup runs", async () => {
+    expect(backfill).toContain("insert into backfill_probe.installation");
+    expect(backfill).not.toContain("public.");
+    expect(await runBackfill(async () => {})).toEqual([]);
+  });
+
+  it("only an editor: row, no owner", async () => {
+    expect(await runBackfill(async (q) => { await admin("editor")(q); })).toEqual([{ organisation_name: "Polynovea", owner_admin_user_id: null, database_mode: "managed" }]);
+  });
+
+  it("only an admin-role user: row, that admin is the owner", async () => {
+    let id = "";
+    const rows = await runBackfill(async (q) => { id = await admin("admin")(q); });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].owner_admin_user_id).toBe(id);
+  });
+
+  it("a deactivated master: row; the owner is an active admin if there is one, else none", async () => {
+    expect((await runBackfill(async (q) => { await admin("master", false)(q); }))[0]).toMatchObject({ owner_admin_user_id: null });
+    let adminId = "";
+    const rows = await runBackfill(async (q) => { await admin("master", false, "2024-01-01")(q); adminId = await admin("admin", true, "2025-06-01")(q); });
+    expect(rows[0].owner_admin_user_id).toBe(adminId);
+  });
+
+  it("an active master wins over an older admin", async () => {
+    let masterId = "";
+    const rows = await runBackfill(async (q) => { await admin("admin", true, "2023-01-01")(q); masterId = await admin("master", true, "2025-01-01")(q); });
+    expect(rows[0].owner_admin_user_id).toBe(masterId);
+  });
+
+  it("content, members or another workspace without users still count as an install", async () => {
+    const workspace = async (q: Parameters<Seed>[0]) => (await q("insert into backfill_probe.workspaces (name, slug) values ('Acme', 'acme') returning id")).rows[0].id as string;
+    expect(await runBackfill(async (q) => { await workspace(q); })).toEqual([{ organisation_name: "Acme", owner_admin_user_id: null, database_mode: "managed" }]);
+    expect(await runBackfill(async (q) => {
+      const { rows } = await q("select id from backfill_probe.workspaces where slug = 'polynovea'");
+      await q("insert into backfill_probe.content_entries (workspace_id, content_model_id) values ($1, $2)", [rows[0].id, randomUUID()]);
+    })).toHaveLength(1);
+  });
+});
+
+describe("start-up mode on the test database (users exist)", () => {
+  let owner: pg.Client;
+  beforeAll(async () => { owner = await connect(process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL); });
+  afterAll(async () => {
+    await owner?.query("delete from installation").catch(() => {});
+    await owner?.end();
+    resetModeForTests();
+  });
+
+  it("without the installation row the CMS is unavailable, never in setup; with it, running", async () => {
+    const env = { POLYNOVEA_DATABASE_URL: process.env.POLYNOVEA_TEST_POSTGRES_URL, POLYNOVEA_CONFIG_DIR: mkdtempSync(path.join(os.tmpdir(), "polynovea-mode-dual-")) };
+    await owner.query("delete from installation");
+    // Other test files create admin users and workspaces; make sure at least one exists here.
+    await owner.query("insert into admin_users (username, email, role) values ($1, $2, 'editor')", [`mode-${randomUUID().slice(0, 8)}`, `mode-${randomUUID().slice(0, 8)}@example.test`]);
+    resetModeForTests();
+    const state = await resolveMode(env);
+    expect(state.mode).toBe("unavailable");
+    expect(state.reason).toContain("no installation row");
+    await owner.query("insert into installation (organisation_name, database_mode) values ('Mode test', 'managed')");
+    resetModeForTests();
+    expect((await resolveMode(env)).mode).toBe("running");
+  });
+});
+

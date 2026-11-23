@@ -11,8 +11,8 @@
 -- same permissive one every table has (lib/db/roles.dual.test.ts checks it); the table privileges are
 -- what limit the app role here.
 --
--- Existing installs (set up with `bootstrap:admin` before the wizard existed) already have an owner,
--- so they get their row here and keep running after the upgrade instead of dropping into setup mode.
+-- Existing installs get their row here and keep running after the upgrade instead of dropping into
+-- setup mode: setup must never open on a database that already holds an install (see the backfill).
 
 create table if not exists public.installation (
   singleton boolean primary key default true check (singleton),
@@ -27,23 +27,35 @@ create table if not exists public.installation (
 comment on table public.installation is
   'Setup is finished while this single row exists. The app role may read and insert it, never change or delete it.';
 comment on column public.installation.owner_admin_user_id is
-  'The owner created by the setup wizard. Empty only on installs set up before the wizard whose master admin was later removed.';
+  'The owner created by the setup wizard. Empty only on installs set up before the wizard that had no active master or admin user.';
 
 alter table public.installation enable row level security;
 
--- Existing installs: the oldest active master admin is the owner, the oldest workspace names the
--- organisation. A fresh database has no admin yet, so nothing is inserted and setup runs.
+-- Existing installs. A database holds an install when it has ANY admin user (whatever the role, active
+-- or not), any workspace member, any content entry, or any workspace other than the 'polynovea'
+-- workspace that 0007 seeds on every fresh database. A fresh database has none of these (every later
+-- seed into these tables copies existing users or content), so nothing is inserted and setup runs.
+-- Owner: the oldest active master, else the oldest active admin, else none. Organisation: the oldest
+-- workspace, preferring one that is not the seed. lib/setup/mode.ts applies the same rule at start-up
+-- and answers "unavailable", never "setup", if a database matches it without the row.
+-- backfill:start
 insert into public.installation (organisation_name, owner_admin_user_id, database_mode, completed_at)
 select
-  coalesce((select w.name from public.workspaces w order by w.created_at nulls last, w.id limit 1), 'Polynovea CMS'),
-  a.id,
+  coalesce(
+    (select w.name from public.workspaces w order by (w.slug = 'polynovea'), w.created_at nulls last, w.id limit 1),
+    'Polynovea CMS'),
+  (select a.id from public.admin_users a
+   where coalesce(a.is_active, true) and a.role in ('master', 'admin')
+   order by (a.role = 'master') desc, a.created_at nulls last, a.id
+   limit 1),
   'managed',
-  coalesce(a.created_at, now())
-from public.admin_users a
-where a.role = 'master' and coalesce(a.is_active, true)
-order by a.created_at nulls last, a.id
-limit 1
+  coalesce((select min(a.created_at) from public.admin_users a), now())
+where exists (select 1 from public.admin_users)
+   or exists (select 1 from public.workspace_members)
+   or exists (select 1 from public.content_entries)
+   or exists (select 1 from public.workspaces w where w.slug <> 'polynovea')
 on conflict (singleton) do nothing;
+-- backfill:end
 
 -- The access helper from 0067/0068, unchanged except for the installation table: the app role gets
 -- SELECT and INSERT there and any UPDATE, DELETE or TRUNCATE is taken away again, so the later

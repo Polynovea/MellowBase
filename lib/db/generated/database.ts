@@ -912,7 +912,7 @@ export interface Installation {
   install_id: Generated<string>;
   organisation_name: string;
   /**
-   * The owner created by the setup wizard. Empty only on installs set up before the wizard whose master admin was later removed.
+   * The owner created by the setup wizard. Empty only on installs set up before the wizard that had no active master or admin user.
    */
   owner_admin_user_id: string | null;
   singleton: Generated<boolean>;
