@@ -31,9 +31,17 @@ if (area === "auth") {
   let db;
   try {
     const config = readConfigSync();
-    const url = (config && databaseUrlFromConfig(config, "app")) || process.env.POLYNOVEA_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
-    if (!url) throw new Error("No database: run this on the CMS server (config.enc), or set POLYNOVEA_DATABASE_URL");
-    db = new pg.Client({ ...postgresConnectionConfig(url), application_name: "polynovea-cms-keys" });
+    let connection;
+    if (config) {
+      // The wizard's database: TLS with exactly the CA bundle it verified (db-step's caBundles.mjs).
+      const { tlsConnectionFor } = await import("../lib/setup/installConnection.mjs");
+      connection = tlsConnectionFor(databaseUrlFromConfig(config, "app"), config.database);
+    } else {
+      const url = process.env.POLYNOVEA_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
+      if (!url) throw new Error("No database: run this on the CMS server (config.enc), or set POLYNOVEA_DATABASE_URL");
+      connection = postgresConnectionConfig(url);
+    }
+    db = new pg.Client({ ...connection, application_name: "polynovea-cms-keys" });
     await db.connect();
     const report = await reencryptSecrets(db, {
       dryRun: args.includes("--dry-run"),

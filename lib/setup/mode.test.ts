@@ -17,7 +17,7 @@ const db = vi.hoisted(() => ({
 
 const TEST_ROOT = vi.hoisted(() => ["-----BEGIN CERTIFICATE-----", "root", "-----END CERTIFICATE-----"].join("\n"));
 
-vi.mock("@/lib/setup/database/caBundles", () => ({
+vi.mock("@/lib/setup/database/caBundles.mjs", () => ({
   certificateAuthoritiesFor: (id: string | null) => (id === "aws-rds-global-1" ? [TEST_ROOT] : null),
 }));
 
@@ -146,6 +146,15 @@ describe("TLS from config.enc", () => {
   it("a remote database with no CA bundle ID is refused, not verified against the system roots", async () => {
     expect((await resolveMode(writeConfig(null))).mode).toBe("unavailable");
     expect(db.connects).toBe(0);
+  });
+
+  it("verifies the endpoint name, and leaves the name check off only for a literal IP (bracketed IPv6 too)", async () => {
+    const { tlsConnectionFor } = await import("@/lib/setup/installConnection.mjs");
+    const named = tlsConnectionFor("postgresql://a:b@db.example.com:5432/x", { host: "db.example.com", caBundleId: "aws-rds-global-1" }, {});
+    expect(named.ssl).toMatchObject({ servername: "db.example.com", ca: [TEST_ROOT] });
+    const ipv6 = tlsConnectionFor("postgresql://a:b@[2001:db8::1]:5432/x", { host: "[2001:db8::1]", caBundleId: "aws-rds-global-1" }, {});
+    expect(ipv6.ssl).not.toHaveProperty("servername");
+    expect(() => tlsConnectionFor("postgresql://a:b@db.example.com/x", { host: "db.example.com", caBundleId: null }, {})).toThrow(/no CA bundle/);
   });
 
   it("the bundled database on loopback connects without TLS", async () => {
