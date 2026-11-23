@@ -67,7 +67,9 @@ export async function requestPlanStage(db: DbExecutor, request: PlanStageRequest
 }
 
 /**
- * Confirms a destructive stage: `typedApiKey` must be the model's api key. Throws (SQLSTATE 22023
+ * Confirms a destructive stage: `typedApiKey` must be the model's api key. `confirmedBy` must be the
+ * signed-in admin: the database checks it is an active member of the workspace but cannot prove who
+ * is at the keyboard, so the audit trail is as trustworthy as the caller's session handling. Throws (SQLSTATE 22023
  * schema_confirmation_mismatch, 55000 not waiting, P0002 not found) otherwise.
  */
 export async function confirmPlanStage(db: DbExecutor, input: { ledgerId: string; confirmedBy: string | null; typedApiKey: string }): Promise<void> {

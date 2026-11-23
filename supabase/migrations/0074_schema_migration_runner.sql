@@ -279,7 +279,9 @@ comment on table public.schema_migration_confirmations is
 
 -- The app confirms a deletion only through this function: it checks the stage is a destructive one
 -- waiting for confirmation and that the typed text is the model's api key, records the confirmation
--- and queues the stage. A stolen app login can still call it (confirming is an app action by design);
+-- and queues the stage. Audit note: p_confirmed_by is supplied by the caller (the app passes the
+-- signed-in admin). The function only checks it names an active admin who is an active member of the
+-- workspace; the confirmation row records whoever the app said, not a database-proven identity. A stolen app login can still call it (confirming is an app action by design);
 -- what keeps that harmless is that the worker rebuilds every plan from trusted state.
 create or replace function public.polynovea_confirm_schema_stage(p_ledger_id uuid, p_confirmed_by uuid, p_typed_api_key text)
 returns void
