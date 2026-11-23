@@ -16,6 +16,28 @@ function url(name: string): string {
   return value;
 }
 
+/**
+ * Runs `work` (GRANT/REVOKE on shared objects, e.g. the access helper) while holding one advisory lock,
+ * so this suite's files never change the same privileges at once ("tuple concurrently updated"), and
+ * retries that error when another suite collides.
+ */
+export async function withPrivilegeLock<T>(client: pg.ClientBase, work: () => Promise<T>): Promise<T> {
+  await client.query("select pg_advisory_lock(7401, 1)");
+  try {
+    // Other suites (installation.dual) run the helper without this lock: retry the rare collision.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await work();
+      } catch (error) {
+        if (attempt >= 5 || !/tuple concurrently updated/.test(String((error as Error).message))) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+      }
+    }
+  } finally {
+    await client.query("select pg_advisory_unlock(7401, 1)");
+  }
+}
+
 export async function connect(kind: "owner" | "app"): Promise<pg.Client> {
   const client = new pg.Client({ connectionString: url(kind === "owner" ? "POLYNOVEA_TEST_POSTGRES_OWNER_URL" : "POLYNOVEA_TEST_POSTGRES_URL"), ssl: false });
   await client.connect();

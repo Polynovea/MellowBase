@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";
-import { connect } from "@/lib/schema/runner/testing/dualFixtures";
+import { connect, withPrivilegeLock } from "@/lib/schema/runner/testing/dualFixtures";
 
 // Migration 0074's access rule: the tables the migration worker and the engine's bookkeeping act on
 // are read-only for the app role, and stay so when the access helper runs again (every later
@@ -34,7 +34,7 @@ async function privileges(table: string) {
 describe("0074: read-only tables for the app role", () => {
   for (const pass of ["after the migrations", "after the helper runs again"]) {
     it(`each listed table is SELECT only ${pass}; installation is SELECT and INSERT; requests stay writable`, async () => {
-      if (pass !== "after the migrations") await owner.query("select public.polynovea_apply_app_access()");
+      if (pass !== "after the migrations") await withPrivilegeLock(owner, () => owner.query("select public.polynovea_apply_app_access()"));
       for (const table of READ_ONLY) expect({ table, ...(await privileges(table)) }).toEqual({ table, s: true, i: false, u: false, d: false, t: false });
       expect(await privileges("installation")).toEqual({ s: true, i: true, u: false, d: false, t: false });
       expect(await privileges("content_model_versions")).toEqual({ s: true, i: true, u: false, d: false, t: false });

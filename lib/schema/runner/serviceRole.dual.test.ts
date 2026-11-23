@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
-import { connect } from "@/lib/schema/runner/testing/dualFixtures";
+import { connect, withPrivilegeLock } from "@/lib/schema/runner/testing/dualFixtures";
 
 // Security re-review (A): on Supabase, migrations run as `postgres`, whose default privileges give
 // service_role everything on public tables, and a deployment holds the service key (PostgREST). The
@@ -31,8 +31,10 @@ beforeAll(async () => {
   owner = await connect("owner");
   await admin.query("do $$ begin if not exists (select 1 from pg_roles where rolname = 'service_role') then create role service_role nologin; end if; end $$");
   // What Supabase's default privileges amount to, then the helper as every later migration runs it.
-  await admin.query("grant all on all tables in schema public to service_role");
-  await owner.query("select public.polynovea_apply_app_access()");
+  await withPrivilegeLock(admin, async () => {
+    await admin.query("grant all on all tables in schema public to service_role");
+    await owner.query("select public.polynovea_apply_app_access()");
+  });
 });
 afterAll(async () => { await Promise.all([admin?.end(), owner?.end()]); });
 
@@ -84,6 +86,8 @@ describe("service_role (Supabase's service key) cannot write what the worker tru
     await admin.query("begin");
     try {
       await admin.query("grant insert, update on public.schema_migration_ledger to service_role");
+      // As on Supabase, service_role bypasses row-level security (it must see the model's row).
+      await admin.query("alter role service_role bypassrls");
       await admin.query("set local role service_role");
       const { rows: [row] } = await admin.query(
         `insert into public.schema_migration_ledger (workspace_id, content_model_id, model_api_key, table_name, stage, status, attempts, plan_hash, plan_json)
