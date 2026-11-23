@@ -911,6 +911,9 @@ export interface Installation {
   database_mode: string;
   install_id: Generated<string>;
   organisation_name: string;
+  /**
+   * The owner created by the setup wizard. Empty only on installs set up before the wizard whose master admin was later removed.
+   */
   owner_admin_user_id: string | null;
   singleton: Generated<boolean>;
 }
@@ -2173,6 +2176,7 @@ export interface DB {
   extension_manifests: ExtensionManifests;
   extension_permission_grants: ExtensionPermissionGrants;
   infrastructure_approval_requests: InfrastructureApprovalRequests;
+  installation: Installation;
   legacy_content_migrations: LegacyContentMigrations;
   live_events: LiveEvents;
   live_metrics: LiveMetrics;
