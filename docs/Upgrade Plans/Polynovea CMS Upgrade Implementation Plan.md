@@ -354,6 +354,7 @@ Each model gets its own table for current content, while the immutable version h
 - [ ] Per model: create the table, backfill current draft and published versions from the JSONB snapshots in batches of 1,000, compare row counts and a checksum of each field.
 - [ ] Switch that model's reads to the table; keep writing the JSONB snapshot (as history) as before, so rolling back a model is just switching reads back.
 - [ ] Search moves to `pg_trgm` indexes on each model's text columns.
+  Deviation (approved): once a model's reads are switched, model-scoped search matches on its table's text columns (`pg_trgm` indexes); ranking and cross-model search stay on `content_search_documents`, which every save still maintains.
 
 **Tests:** random sequences of model changes applied and reverted on fixture data; a schema change while a 30-second query holds a lock (the change must wait and retry, never block other queries); a migration of a copy of a real install with every count and checksum matching.
 

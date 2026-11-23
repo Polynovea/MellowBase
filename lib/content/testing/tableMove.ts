@@ -1,14 +1,14 @@
 // TEST ONLY. Brings a model's table up to its current schema version the way production does it: the
-// change is requested as the app role (requestSchemaChange), the migration worker's runNextStage runs
-// it as the owner (the real engine and trusted rebuild), then the content is backfilled, verified and
-// (optionally) the model's reads are switched to its table.
+// change is requested as the app role (requestSchemaChange), the migration worker process
+// (scripts/schema-migration-worker.mjs, as the owner, the real engine and trusted rebuild) runs it, then
+// the content is backfilled, verified and (optionally) the model's reads are switched to its table.
+// The worker runs as its own process, so no code outside the runner imports its owner-side modules.
+import { execFile } from "node:child_process";
 import pg from "pg";
 import { getDb } from "@/lib/db/index";
 import { backfillModel, setReadSource, verifyModel, type BackfillResult, type VerifyResult } from "@/lib/content/contentMove";
 import { TEST_LIMITS } from "@/lib/schema/engine/testing";
-import { productionEngine } from "@/lib/schema/runner/engineAdapter";
 import { confirmPlanStage, requestSchemaChange } from "@/lib/schema/runner/request";
-import { runNextStage } from "@/lib/schema/runner/runner";
 
 let session: pg.Client | null = null;
 
@@ -29,19 +29,31 @@ export async function closeTableMoveSession(): Promise<void> {
   await client?.end().catch(() => undefined);
 }
 
-const engine = productionEngine(TEST_LIMITS);
-
-/** Runs every queued stage of the model as the migration worker would; returns the outcomes. */
-export async function runWorker(modelId: string): Promise<string[]> {
-  const client = await ownerSession();
-  const outcomes: string[] = [];
-  for (let i = 0; i < 10; i += 1) {
-    const outcome = await runNextStage(client, { engine, workerId: "content-move-test", releaseId: "test-release", limits: TEST_LIMITS, modelId });
-    if (!outcome) break;
-    outcomes.push(outcome.outcome);
-    if (outcome.outcome !== "succeeded") break;
-  }
-  return outcomes;
+/**
+ * Runs the migration worker once for the model (`--once --model <id>`) and returns the final status of
+ * each stage that was waiting. `contracts` also lets it contract finished renames and type changes;
+ * `releaseId` is the worker's release (a newer one makes those contracts due).
+ */
+export async function runWorker(modelId: string, options: { contracts?: boolean; releaseId?: string } = {}): Promise<string[]> {
+  const db = getDb();
+  const waiting = await db.selectFrom("schema_migration_ledger").select("id").where("content_model_id", "=", modelId).where("status", "=", "pending").orderBy("created_at").execute();
+  const env = {
+    ...process.env,
+    POLYNOVEA_MIGRATION_DATABASE_URL: process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL,
+    POLYNOVEA_SCHEMA_MAX_MODELS: String(TEST_LIMITS.maxModels),
+    POLYNOVEA_RELEASE_ID: options.releaseId ?? "test-release",
+  };
+  const args = ["--loader", "./scripts/phase12_75-node-loader.mjs", "scripts/schema-migration-worker.mjs", "--once", "--model", modelId, ...(options.contracts ? ["--contracts"] : [])];
+  await new Promise<void>((resolve, reject) => {
+    execFile(process.execPath, args, { env, cwd: process.cwd(), timeout: 280_000 }, (error, _stdout, stderr) => {
+      if (error) reject(new Error(`schema worker exited with an error: ${String(stderr).slice(-400)}`));
+      else resolve();
+    });
+  });
+  if (!waiting.length) return [];
+  const rows = await db.selectFrom("schema_migration_ledger").select(["id", "status"]).where("id", "in", waiting.map((row) => row.id)).execute();
+  const status = new Map(rows.map((row) => [row.id, row.status]));
+  return waiting.map((row) => status.get(row.id) ?? "unknown");
 }
 
 export interface BringUpResult {

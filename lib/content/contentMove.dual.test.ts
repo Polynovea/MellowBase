@@ -12,16 +12,18 @@
 // - Random sequences of model changes, each applied and reverted, with the table matching after each.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import type pg from "pg";
+import pg from "pg";
 import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { getDb } from "@/lib/db/index";
 import { uniqueKey } from "@/lib/schema/engine/testing";
 import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
 import { requestSchemaChange } from "@/lib/schema/runner/request";
-import { connect } from "@/lib/schema/runner/testing/dualFixtures";
 import { TEST_LIMITS } from "@/lib/schema/engine/testing";
 import { backfillModel, moveRun, readSourceOf, setReadSource, syncEntries, verifyModel } from "@/lib/content/contentMove";
 import { bringModelTableUp, closeTableMoveSession, runWorker } from "@/lib/content/testing/tableMove";
+import { createEntry } from "@/lib/content/entryService";
+import { searchContent } from "@/lib/content/searchService";
+import { derivedName } from "@/lib/schema/engine/names";
 import { currentVersionsOfModel, listEntries } from "@/lib/content/entryData";
 import { readTableRows, tableSource } from "@/lib/content/tableStore";
 import { getPublishedContent, listPublishedContent } from "@/lib/developer/publishedContentService";
@@ -162,7 +164,12 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
   let app: pg.Client;
   let install: Install;
   beforeAll(async () => {
-    [owner, app] = await Promise.all([connect("owner"), connect("app")]);
+    const connect = async (name: string) => {
+      const client = new pg.Client({ connectionString: process.env[name], ssl: false });
+      await client.connect();
+      return client;
+    };
+    [owner, app] = await Promise.all([connect("POLYNOVEA_TEST_POSTGRES_OWNER_URL"), connect("POLYNOVEA_TEST_POSTGRES_URL")]);
     install = await fixtureInstall(backend, 2_500);
   });
   afterAll(async () => {
@@ -416,6 +423,43 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(bulkMs).toBeLessThan(30_000);
     expect(singleMs).toBeLessThan(60_000);
     expect(await verifyModel(getDb(), { workspaceId, modelId: postModelId })).toMatchObject({ matched: true });
+  });
+
+  it("renaming a search-indexed field keeps search working through expand, switch and contract; the old index goes at the contract", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const apiKey = uniqueKey("doc");
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Doc", apiKey, fields: [field({ key: "title", type: "text" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    for (const title of ["Kubernetes guide", "Gardening tips"]) {
+      const entry = await createEntry({ workspaceId, modelId, data: { title }, actorAdminUserId: adminUserId });
+      if (!entry.ok) throw new Error(entry.error);
+    }
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId, switchReads: true })).verify.matched).toBe(true);
+    const table = (await tableOf(backend, modelId))!;
+    const search = async () => (await searchContent({ workspaceId, modelId, query: "Kubernet" })).length;
+    const indexNames = async () => (await backend.query<{ indexname: string }>("select indexname from pg_indexes where schemaname = 'content' and tablename = $1", [table])).map((r) => r.indexname);
+    expect(await search()).toBe(1);
+
+    const model = (await getModel(workspaceId, modelId))!;
+    const changed = await applyChange({ model, proposedSchema: { name: "Doc", apiKey, fields: [field({ key: "headline", type: "text" })] }, acknowledgeUnsafe: true, actorAdminUserId: adminUserId });
+    if (!changed.ok || !changed.data.version) throw new Error("version 2 not created");
+    await requestSchemaChange(getDb(), { contentModelId: modelId, targetVersionId: changed.data.version.id, renames: [{ from: "title", to: "headline" }], requestedBy: adminUserId, limits: TEST_LIMITS });
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    // Expanded and switched: both columns carry a search index until the contract.
+    expect(await indexNames()).toEqual(expect.arrayContaining([derivedName("tg", table, "title"), derivedName("tg", table, "headline")]));
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId, switchReads: true })).verify.matched).toBe(true);
+    expect(await search()).toBe(1);
+
+    // The contract (a newer release, past the minimum wait) drops the old column and its index.
+    await backend.query("update schema_expand_contract_tasks set contract_min_at = now() - interval '1 minute' where content_model_id = $1", [modelId]);
+    await runWorker(modelId, { contracts: true, releaseId: "test-release-next" });
+    const after = await indexNames();
+    expect(after).toContain(derivedName("tg", table, "headline"));
+    expect(after).not.toContain(derivedName("tg", table, "title"));
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId, switchReads: true })).verify.matched).toBe(true);
+    expect(await search()).toBe(1);
   });
 
   it("random sequences of model changes, each applied and reverted, keep the table matching the snapshots", async () => {
