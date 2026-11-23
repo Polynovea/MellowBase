@@ -8,6 +8,8 @@ import { createPublicationTarget } from "@/lib/content/publicationService";
 import { getModel, getVersion } from "@/lib/schema/modelService";
 import { dryRunSchemaPromotion, modelBundle, promoteSchemaBundle, type SchemaBundle } from "@/lib/developer/schemaDeliveryService";
 import { logPlatformEvent } from "@/lib/platform/audit";
+import * as operabilityData from "@/lib/infrastructure/operabilityData";
+import * as connectionData from "@/lib/infrastructure/connectionData";
 import { runDatabaseProvisioning } from "@/lib/infrastructure/databaseProvisioning";
 import { deploySupabaseEdgeFunctions, discoverPackagedSupabaseEdgeFunctions, edgeFunctionManifestsFromComponent, inspectSupabaseEdgeRuntime } from "@/lib/infrastructure/supabaseManagement";
 
@@ -24,19 +26,14 @@ const REQUIRED_COMPONENTS = [
 ] as const;
 
 async function resolveApprovedInfrastructureRequest(params:{workspaceId:string;environmentId?:string|null;operation:string;entityId:string;approvalRequestId?:string|null}){
-  const db=createServiceRoleClient();let query=db.from("infrastructure_approval_requests").select("id,status,expires_at").eq("workspace_id",params.workspaceId).eq("operation",params.operation).eq("entity_id",params.entityId).eq("status","approved");if(params.environmentId)query=query.eq("environment_id",params.environmentId);if(params.approvalRequestId)query=query.eq("id",params.approvalRequestId);const {data}=await query.order("reviewed_at",{ascending:false}).limit(10);return (data??[]).find(item=>!item.expires_at||new Date(item.expires_at)>new Date())?.id??null;
+  const data=await operabilityData.approvedRequests(params);return data.find(item=>!item.expires_at||new Date(item.expires_at)>new Date())?.id??null;
 }
-async function markInfrastructureApprovalExecuted(workspaceId:string,requestId:string|null|undefined){if(!requestId)return;await createServiceRoleClient().from("infrastructure_approval_requests").update({status:"executed",executed_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("workspace_id",workspaceId).eq("id",requestId).eq("status","approved");}
+async function markInfrastructureApprovalExecuted(workspaceId:string,requestId:string|null|undefined){if(!requestId)return;await operabilityData.markApprovalExecuted(workspaceId,requestId);}
 
 export async function ensureEnvironmentComponents(workspaceId:string,environmentId:string){
-  const db=createServiceRoleClient();
-  const {data:env}=await db.from("workspace_environments").select("id,database_provider,storage_provider,runtime_provider,secret_provider_id").eq("workspace_id",workspaceId).eq("id",environmentId).maybeSingle();
-  if(!env)throw Object.assign(new Error("Environment not found"),{status:404});
-  const [{data:connections},{data:secretProvider},{data:existing}]=await Promise.all([
-    db.from("workspace_connections").select("id,connector_type,connector_family,status,active,last_verified_at,last_success_at").eq("workspace_id",workspaceId).eq("environment_id",environmentId),
-    env.secret_provider_id?db.from("workspace_secret_providers").select("id,provider_kind,status").eq("workspace_id",workspaceId).eq("environment_id",environmentId).eq("id",env.secret_provider_id).maybeSingle():Promise.resolve({data:null}),
-    db.from("environment_components").select("id,capability_key,component_key,provider,state,metadata_json,last_checked_at").eq("workspace_id",workspaceId).eq("environment_id",environmentId),
-  ]);
+  const inputs=await operabilityData.componentInputs(workspaceId,environmentId);
+  if(!inputs)throw Object.assign(new Error("Environment not found"),{status:404});
+  const {env,connections,secretProvider,existing}=inputs;
   const active=(connections??[]).filter(c=>c.active&&c.status==="active");const databaseConnection=active.find(c=>c.connector_family==="database")??null;const storageConnection=active.find(c=>c.connector_family==="storage")??null;
   const legacyR2=Boolean(process.env.R2_ACCESS_KEY_ID&&process.env.R2_SECRET_ACCESS_KEY&&(process.env.R2_ACCOUNT_ID||process.env.R2_S3_ENDPOINT));
   const runtimeProvider=env.runtime_provider??null;const edgeProvider=runtimeProvider&&/(supabase|edge|deno)/i.test(runtimeProvider)?runtimeProvider:null;
@@ -52,6 +49,7 @@ export async function ensureEnvironmentComponents(workspaceId:string,environment
     edge_runtime:edgeProvider,
   };
   const existingByKey=new Map((existing??[]).map(row=>[row.component_key,row]));
+  const rows:Array<Record<string,unknown>>=[];
   for(const item of REQUIRED_COMPONENTS){
     const provider=providerByCapability[item.capabilityKey]??null;
     const previous=existingByKey.get(item.componentKey);let inferredState:string;
@@ -60,23 +58,15 @@ export async function ensureEnvironmentComponents(workspaceId:string,environment
     else if(item.capabilityKey==="secret_store")inferredState=secretReady?"present":"missing";
     else inferredState=provider?(previous&&["degraded","outdated","failed"].includes(previous.state)?previous.state:"present"):item.required?"missing":"unsupported";
     const metadata={...(previous?.metadata_json??{}),source:item.capabilityKey==="postgres"&&databaseConnection?"verified_connection":item.capabilityKey==="object_storage"&&storageConnection?"verified_connection":item.capabilityKey==="secret_store"?"secret_provider":"environment",connectionId:item.capabilityKey==="postgres"?databaseConnection?.id??null:item.capabilityKey==="object_storage"?storageConnection?.id??null:null,lastCapabilityResolutionAt:new Date().toISOString()};
-    await db.from("environment_components").upsert({workspace_id:workspaceId,environment_id:environmentId,capability_key:item.capabilityKey,component_key:item.componentKey,required:item.required,provider,state:inferredState,metadata_json:metadata,last_checked_at:new Date().toISOString(),updated_at:new Date().toISOString()},{onConflict:"environment_id,component_key"});
+    rows.push({workspace_id:workspaceId,environment_id:environmentId,capability_key:item.capabilityKey,component_key:item.componentKey,required:item.required,provider,state:inferredState,metadata_json:metadata,last_checked_at:new Date().toISOString(),updated_at:new Date().toISOString()});
   }
-  const {data}=await db.from("environment_components").select("*").eq("workspace_id",workspaceId).eq("environment_id",environmentId).order("required",{ascending:false});
-  return data??[];
+  return operabilityData.saveComponents(workspaceId,environmentId,rows);
 }
 
 export async function runSystemDoctor(params:{workspaceId:string;environmentId:string;actorId:string}){
-  const db=createServiceRoleClient();
-  const [{data:env},{data:connections},{data:jobs},{data:sync},{data:runtime}]=await Promise.all([
-    db.from("workspace_environments").select("*").eq("workspace_id",params.workspaceId).eq("id",params.environmentId).maybeSingle(),
-    db.from("workspace_connections").select("id,name,connector_type,status,last_error_code,last_error_message,last_verified_at").eq("workspace_id",params.workspaceId).eq("environment_id",params.environmentId),
-    db.from("delivery_jobs").select("id,status,kind,updated_at,last_error_code,last_error_message").eq("workspace_id",params.workspaceId).order("updated_at",{ascending:false}).limit(50),
-    db.from("analytics_sync_state").select("status,fresh_through,last_success_at,last_error").eq("workspace_id",params.workspaceId),
-    db.from("cms_runtime_state").select("schema_migration,app_version,worker_version").eq("singleton",true).maybeSingle(),
-  ]);
+  const {env,connections,jobs,sync,runtime}=await operabilityData.doctorInputs(params.workspaceId,params.environmentId);
   if(!env)throw Object.assign(new Error("Environment not found"),{status:404});
-  const {data:secretProvider}=env.secret_provider_id?await db.from("workspace_secret_providers").select("provider_kind,status").eq("workspace_id",params.workspaceId).eq("id",env.secret_provider_id).maybeSingle():{data:null};
+  const secretProvider=env.secret_provider_id?await operabilityData.secretProviderKind(params.workspaceId,env.secret_provider_id):null;
   const components=await ensureEnvironmentComponents(params.workspaceId,params.environmentId);
   const findings:Array<Record<string,unknown>>=[];
   const add=(key:string,severity:"info"|"warning"|"blocking",message:string,owner:string,repairHref:string,evidence:Record<string,unknown>={})=>findings.push({key,severity,message,owner,repairHref,evidence});
@@ -94,51 +84,40 @@ export async function runSystemDoctor(params:{workspaceId:string;environmentId:s
   for(const connection of connections??[]){if(["failed","degraded"].includes(connection.status))add(`connection.${connection.id}`,connection.status==="failed"?"blocking":"warning",`${connection.name} is ${connection.status}${connection.last_error_message?`: ${connection.last_error_message}`:""}.`,"connections","/admin/connections",{connectorType:connection.connector_type});else if(connection.status!=="active")add(`connection.${connection.id}`,"warning",`${connection.name} has not been verified active.`,"connections","/admin/connections",{status:connection.status});}
   const recentFailed=(jobs??[]).filter(j=>["failed","dead_letter"].includes(j.status));if(recentFailed.length)add("delivery.failures","warning",`${recentFailed.length} recent durable delivery job(s) need attention.`,"delivery","/admin/operations",{count:recentFailed.length});
   for(const state of sync??[]){if(["failed","stale"].includes(state.status))add("analytics.freshness","warning",`Analytics synchronization is ${state.status}.`,"analytics","/admin/intelligence",{freshThrough:state.fresh_through});}
-  const schemaRows=await db.from("environment_schema_deployments").select("content_model_id,schema_version,schema_hash,status").eq("workspace_id",params.workspaceId).eq("environment_id",params.environmentId).order("deployed_at",{ascending:false});
-  const deployedByModel=new Map<string,any>();for(const row of schemaRows.data??[])if(!deployedByModel.has(row.content_model_id))deployedByModel.set(row.content_model_id,row);
-  const models=await db.from("content_models").select("id,api_key,current_schema_version").eq("workspace_id",params.workspaceId).eq("status","active");
-  for(const model of models.data??[]){const deployed=deployedByModel.get(model.id);if(!deployed)add(`schema.${model.id}`,"warning",`Model ${model.api_key} has no recorded deployment for this environment.`,"schema","/admin/models",{currentVersion:model.current_schema_version});else if(deployed.schema_version!==model.current_schema_version)add(`schema.${model.id}`,"warning",`Model ${model.api_key} is deployed at v${deployed.schema_version} while canonical is v${model.current_schema_version}.`,"schema","/admin/models",{deployedVersion:deployed.schema_version,currentVersion:model.current_schema_version});}
+  const schemaState=await operabilityData.schemaDeploymentState(params.workspaceId,params.environmentId);
+  const deployedByModel=new Map<string,any>();for(const row of schemaState.deployments)if(!deployedByModel.has(row.content_model_id))deployedByModel.set(row.content_model_id,row);
+  for(const model of schemaState.models){const deployed=deployedByModel.get(model.id);if(!deployed)add(`schema.${model.id}`,"warning",`Model ${model.api_key} has no recorded deployment for this environment.`,"schema","/admin/models",{currentVersion:model.current_schema_version});else if(deployed.schema_version!==model.current_schema_version)add(`schema.${model.id}`,"warning",`Model ${model.api_key} is deployed at v${deployed.schema_version} while canonical is v${model.current_schema_version}.`,"schema","/admin/models",{deployedVersion:deployed.schema_version,currentVersion:model.current_schema_version});}
   const blocking=findings.filter(f=>f.severity==="blocking").length,warnings=findings.filter(f=>f.severity==="warning").length;
   const status=blocking?"blocked":warnings?"warning":"healthy";
   const correlationId=randomUUID();
-  const {data:run,error}=await db.from("system_doctor_runs").insert({workspace_id:params.workspaceId,environment_id:params.environmentId,status,correlation_id:correlationId,findings_json:findings,summary_json:{blocking,warnings,total:findings.length},checked_by:params.actorId}).select().single();
-  if(error||!run)throw new Error(error?.message||"Could not record System Doctor run");
-  await db.from("workspace_environments").update({status:blocking?"blocked":warnings?"degraded":"ready",health_json:{status,blocking,warnings,total:findings.length,lastRunId:run.id},last_health_check_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("workspace_id",params.workspaceId).eq("id",params.environmentId);
-  await logPlatformEvent({workspaceId:params.workspaceId,actorAdminUserId:params.actorId,action:"infrastructure.doctor.ran",entityType:"workspace_environment",entityId:params.environmentId,metadata:{correlationId,status,blocking,warnings}});
-  return run;
+  return operabilityData.recordDoctorRun(
+    {workspace_id:params.workspaceId,environment_id:params.environmentId,status,correlation_id:correlationId,findings_json:findings,summary_json:{blocking,warnings,total:findings.length},checked_by:params.actorId},
+    (runId)=>({status:blocking?"blocked":warnings?"degraded":"ready",health_json:{status,blocking,warnings,total:findings.length,lastRunId:runId},last_health_check_at:new Date().toISOString(),updated_at:new Date().toISOString()}),
+    {workspaceId:params.workspaceId,actorAdminUserId:params.actorId,action:"infrastructure.doctor.ran",entityType:"workspace_environment",entityId:params.environmentId,metadata:{correlationId,status,blocking,warnings}},
+  );
 }
 
 export async function listOperabilityOverview(workspaceId:string,environmentId?:string){
-  const db=createServiceRoleClient();const envFilter=(q:any)=>environmentId?q.eq("environment_id",environmentId):q;
-  const [doctor,provisioning,components,backups,upgrades,approvals,websites]=await Promise.all([
-    envFilter(db.from("system_doctor_runs").select("*").eq("workspace_id",workspaceId)).order("checked_at",{ascending:false}).limit(20),
-    envFilter(db.from("environment_provisioning_runs").select("*").eq("workspace_id",workspaceId)).order("created_at",{ascending:false}).limit(50),
-    envFilter(db.from("environment_components").select("*").eq("workspace_id",workspaceId)).order("component_key"),
-    envFilter(db.from("workspace_backups").select("id,environment_id,backup_kind,status,format_version,checksum_sha256,size_bytes,storage_locator,created_at,verified_at,restored_at").eq("workspace_id",workspaceId)).order("created_at",{ascending:false}).limit(50),
-    envFilter(db.from("environment_upgrade_runs").select("*").eq("workspace_id",workspaceId)).order("created_at",{ascending:false}).limit(50),
-    envFilter(db.from("infrastructure_approval_requests").select("*").eq("workspace_id",workspaceId)).order("created_at",{ascending:false}).limit(100),
-    envFilter(db.from("website_connection_bindings").select("*").eq("workspace_id",workspaceId)).order("created_at",{ascending:false}).limit(50),
-  ]);
-  return {doctorRuns:doctor.data??[],provisioningRuns:provisioning.data??[],components:components.data??[],backups:backups.data??[],upgrades:upgrades.data??[],approvals:approvals.data??[],websites:websites.data??[]};
+  return operabilityData.overview(workspaceId,environmentId);
 }
 
 export async function runProvisioning(params:{workspaceId:string;environmentId:string;actorId:string;providerKind:"managed"|"postgres"|"supabase"|"local";operation:"preflight"|"initialize"|"upgrade"|"verify"|"repair";approvalRequestId?:string|null}){
-  const db=createServiceRoleClient();const idempotencyKey=`${params.environmentId}:${params.providerKind}:${params.operation}:${new Date().toISOString().slice(0,13)}`;
-  const {data:existing}=await db.from("environment_provisioning_runs").select("*").eq("workspace_id",params.workspaceId).eq("idempotency_key",idempotencyKey).maybeSingle();if(existing)return existing;
-  const {data:environment}=await db.from("workspace_environments").select("id,kind").eq("workspace_id",params.workspaceId).eq("id",params.environmentId).maybeSingle();if(!environment)throw Object.assign(new Error("Environment not found"),{status:404});
+  const idempotencyKey=`${params.environmentId}:${params.providerKind}:${params.operation}:${new Date().toISOString().slice(0,13)}`;
+  const existing=await operabilityData.provisioningRunByKey(params.workspaceId,idempotencyKey);if(existing)return existing;
+  const environment=await connectionData.environmentInWorkspace(params.workspaceId,params.environmentId);if(!environment)throw Object.assign(new Error("Environment not found"),{status:404});
   let approvalRequestId=params.approvalRequestId??null;
   if(environment.kind==="production"&&["initialize","upgrade","repair"].includes(params.operation)){
     approvalRequestId=await resolveApprovedInfrastructureRequest({workspaceId:params.workspaceId,environmentId:params.environmentId,operation:"provision",entityId:params.environmentId,approvalRequestId});
     if(!approvalRequestId)throw Object.assign(new Error("Production provisioning change requires approval."),{status:409,requiresApproval:true});
   }
-  const {data:run,error}=await db.from("environment_provisioning_runs").insert({workspace_id:params.workspaceId,environment_id:params.environmentId,provider_kind:params.providerKind,operation:params.operation,status:"running",idempotency_key:idempotencyKey,started_at:new Date().toISOString(),created_by:params.actorId,safe_input_json:{providerKind:params.providerKind,operation:params.operation}}).select().single();if(error||!run)throw new Error(error?.message||"Could not start provisioning run");
+  const run=await operabilityData.startProvisioningRun({workspace_id:params.workspaceId,environment_id:params.environmentId,provider_kind:params.providerKind,operation:params.operation,status:"running",idempotency_key:idempotencyKey,started_at:new Date().toISOString(),created_by:params.actorId,safe_input_json:{providerKind:params.providerKind,operation:params.operation}});
   try{
     const components=await ensureEnvironmentComponents(params.workspaceId,params.environmentId);
     let checks:Array<Record<string,unknown>>=[],result:Record<string,unknown>={};let blocked=false,ready=false;
     if(params.providerKind==="postgres"||params.providerKind==="supabase"){
       const database=await runDatabaseProvisioning({workspaceId:params.workspaceId,environmentId:params.environmentId,operation:params.operation});
       checks=database.checks.map(check=>({...check}));result={database,migrations:database.migration,components:components.map(c=>({key:c.component_key,state:c.state,provider:c.provider}))};blocked=!database.supported||database.checks.some(c=>c.status==="failed");ready=database.ready&&!components.some(c=>c.required&&c.state!=="present");
-      if(database.ready){const postgres=components.find(c=>c.component_key==="postgres");if(postgres)await db.from("environment_components").update({state:"present",last_checked_at:new Date().toISOString(),last_error:null,updated_at:new Date().toISOString()}).eq("id",postgres.id);}
+      if(database.ready){const postgres=components.find(c=>c.component_key==="postgres");if(postgres)await operabilityData.markComponentPresent(params.workspaceId,postgres.id);}
     }else{
       checks=[{key:"database",status:"passed",message:"Current CMS database session is operational."},{key:"components",status:components.some(c=>c.required&&c.state!=="present")?"warning":"passed",message:`${components.length} capability records evaluated.`}];
       if(params.providerKind==="managed")checks.push({key:"managed",status:"warning",message:"Managed provisioning is provider-adapter dependent. Configure the hosting/database connection and run Verify; unsupported automation remains explicit."});
@@ -146,12 +125,14 @@ export async function runProvisioning(params:{workspaceId:string;environmentId:s
       blocked=components.some(c=>c.required&&c.state==="missing");ready=!blocked&&params.operation==="verify";result={components:components.map(c=>({key:c.component_key,state:c.state,provider:c.provider}))};
     }
     const status=blocked?"blocked":"succeeded";
-    const {data:done}=await db.from("environment_provisioning_runs").update({status,checks_json:checks,result_json:result,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",run.id).select().single();
-    await db.from("workspace_environments").update({status:blocked?"blocked":ready?"ready":"provisioning",updated_at:new Date().toISOString()}).eq("workspace_id",params.workspaceId).eq("id",params.environmentId);
-    if(status==="succeeded")await markInfrastructureApprovalExecuted(params.workspaceId,approvalRequestId);
-    await logPlatformEvent({workspaceId:params.workspaceId,actorAdminUserId:params.actorId,action:"infrastructure.provisioning.completed",entityType:"workspace_environment",entityId:params.environmentId,metadata:{runId:run.id,providerKind:params.providerKind,operation:params.operation,status,ready}});
-    return done;
-  }catch(error){const message=error instanceof Error?error.message:"Provisioning failed";await db.from("environment_provisioning_runs").update({status:"failed",last_error_code:"PROVISIONING_FAILED",last_error_message:message,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",run.id);await db.from("workspace_environments").update({status:"blocked",updated_at:new Date().toISOString()}).eq("workspace_id",params.workspaceId).eq("id",params.environmentId);throw error;}
+    return await operabilityData.completeProvisioningRun({
+      workspaceId:params.workspaceId,environmentId:params.environmentId,runId:run.id,
+      runPatch:{status,checks_json:checks,result_json:result,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()},
+      environmentStatus:blocked?"blocked":ready?"ready":"provisioning",
+      approvalRequestId:status==="succeeded"?approvalRequestId:null,
+      audit:{workspaceId:params.workspaceId,actorAdminUserId:params.actorId,action:"infrastructure.provisioning.completed",entityType:"workspace_environment",entityId:params.environmentId,metadata:{runId:run.id,providerKind:params.providerKind,operation:params.operation,status,ready}},
+    });
+  }catch(error){const message=error instanceof Error?error.message:"Provisioning failed";await operabilityData.failProvisioningRun(params.workspaceId,params.environmentId,run.id,message);throw error;}
 }
 
 export async function planEnvironmentSchema(params:{workspaceId:string;environmentId:string;modelId:string;proposedSchema:unknown;actorId?:string}){

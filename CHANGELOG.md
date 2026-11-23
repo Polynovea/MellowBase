@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 5: environment components, System Doctor, the operability overview and provisioning runs on the direct path. A doctor run commits with the environment's health and its audit event; a provisioning run's completion commits with the environment's status, its approval and its audit event; component re-evaluation commits as one transaction.
 Phase 1 wave 5: workspace connections on the direct path. Creating a GA4 connection and linking it to analytics commit together, and a duplicate connection name is reported as a conflict without the database's constraint text.
 Phase 1 wave 5: environments, credential lookups and the database and Supabase connection lookups on the direct path. A duplicate environment key is reported as a conflict without the database's constraint text, and a malformed environment id answers 404.
 Phase 1 wave 4: operational plan simulation and execution on the direct path, which finishes lib/intelligence. A simulation and its plan's review status, an execution's start with its pending node runs, and an execution's completion with its proof package and operational event each commit together.
