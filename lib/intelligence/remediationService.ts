@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as remediationData from "@/lib/intelligence/remediationData";
+import * as discoveryData from "@/lib/intelligence/discoveryData";
 import { verifyConnection } from "@/lib/infrastructure/connectionService";
 import { runComponentAction, runSystemDoctor } from "@/lib/infrastructure/operabilityService";
 import { replayDeliveryJob } from "@/lib/operations/deliveryJobService";
@@ -7,7 +8,6 @@ import { refreshOperationalWorldModel } from "@/lib/intelligence/worldModelServi
 import { getAutonomyPolicy } from "@/lib/intelligence/planningService";
 import { getActiveDesiredState, reconcileOperationalState } from "@/lib/intelligence/reconciliationService";
 import type { OperationalDeterministicClassification } from "@/lib/intelligence/operationalTypes";
-import { logPlatformEvent } from "@/lib/platform/audit";
 
 const CLASSIFICATION_ORDER: Record<OperationalDeterministicClassification, number> = {
   safe: 0,
@@ -18,15 +18,14 @@ const CLASSIFICATION_ORDER: Record<OperationalDeterministicClassification, numbe
   destructive: 5,
 };
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function listRemediationRegistry() {
-  const { data, error } = await createServiceRoleClient().from("operational_remediation_registry").select("*").eq("enabled", true).order("remediation_key");
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return remediationData.enabledRegistry();
 }
 
 async function resolveRegistry(remediationKey: string) {
-  const { data, error } = await createServiceRoleClient().from("operational_remediation_registry").select("*").eq("remediation_key", remediationKey).eq("enabled", true).maybeSingle();
-  if (error) throw new Error(error.message);
+  const data = await remediationData.registryEntry(remediationKey);
   if (!data) throw Object.assign(new Error(`Remediation ${remediationKey} is not registered/enabled`), { status: 409 });
   return data;
 }
@@ -74,13 +73,16 @@ export async function executeDeterministicRemediation(params: {
   executionMode?: "manual" | "approval_execute" | "policy_auto_repair";
   desiredStateRevisionId?: string | null;
 }) {
-  const db = createServiceRoleClient();
   const [registry, policy, environment] = await Promise.all([
     resolveRegistry(params.remediationKey),
     getAutonomyPolicy(params.workspaceId, params.environmentId),
-    db.from("workspace_environments").select("id,kind").eq("workspace_id", params.workspaceId).eq("id", params.environmentId).maybeSingle().then((r: any) => r.data),
+    UUID.test(params.environmentId) ? discoveryData.environmentKind(params.workspaceId, params.environmentId) : null,
   ]);
   if (!environment) throw Object.assign(new Error("Environment not found"), { status: 404 });
+  // The drift item comes from the request body and its foreign key is not workspace-scoped.
+  if (params.sourceDriftItemId && (!UUID.test(params.sourceDriftItemId) || !(await remediationData.driftInEnvironment(params.workspaceId, params.environmentId, params.sourceDriftItemId)))) {
+    throw Object.assign(new Error("Drift item not found in this environment"), { status: 404 });
+  }
 
   const classification = String(registry.deterministic_classification) as OperationalDeterministicClassification;
   const executionMode = params.executionMode ?? "manual";
@@ -93,7 +95,7 @@ export async function executeDeterministicRemediation(params: {
   }
 
   const correlationId = randomUUID();
-  const { data: run, error: runError } = await db.from("operational_remediation_runs").insert({
+  const run = await remediationData.startRun({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     remediation_key: params.remediationKey,
@@ -106,8 +108,7 @@ export async function executeDeterministicRemediation(params: {
     correlation_id: correlationId,
     safe_input_json: { remediationKey: params.remediationKey, targetType: params.targetType, targetId: params.targetId ?? null },
     started_by: params.actorId,
-  }).select().single();
-  if (runError || !run) throw new Error(runError?.message || "Could not start remediation run");
+  });
 
   try {
     let raw: any;
@@ -134,15 +135,11 @@ export async function executeDeterministicRemediation(params: {
       : await verifyAfter({ workspaceId: params.workspaceId, environmentId: params.environmentId, actorId: params.actorId, remediationKey: params.remediationKey, targetId: params.targetId, desiredStateRevisionId: params.desiredStateRevisionId });
     const status = verification.convergedForTarget ? "succeeded" : "partial";
     const completedAt = new Date().toISOString();
-    const { data: completed, error } = await db.from("operational_remediation_runs").update({ status, safe_result_json: result, verification_json: verification, completed_at: completedAt }).eq("id", run.id).select().single();
-    if (error || !completed) throw new Error(error?.message || "Could not finalize remediation run");
-
-    await db.from("operational_events").insert({
+    const completed = await remediationData.completeRun(params.workspaceId, run.id, { status, safe_result_json: result, verification_json: verification, completed_at: completedAt }, {
       workspace_id: params.workspaceId,
       environment_id: params.environmentId,
       event_type: "remediation.outcome",
       source_type: "operational_remediation_run",
-      source_id: completed.id,
       correlation_id: correlationId,
       occurred_at: completedAt,
       features_json: { remediationKey: params.remediationKey, classification, executionMode, environmentKind: environment.kind, targetType: params.targetType },
@@ -150,19 +147,16 @@ export async function executeDeterministicRemediation(params: {
       privacy_class: "operational_minimized",
       eligible_for_local_learning: true,
       eligible_for_cross_install_learning: false,
-    });
-    await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.remediation.completed", entityType: "operational_remediation_run", entityId: completed.id, metadata: { environmentId: params.environmentId, remediationKey: params.remediationKey, classification, executionMode, status, correlationId } });
+    }, (finished) => ({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.remediation.completed", entityType: "operational_remediation_run", entityId: finished.id, metadata: { environmentId: params.environmentId, remediationKey: params.remediationKey, classification, executionMode, status, correlationId } }));
     return completed;
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "Deterministic remediation failed";
     const completedAt = new Date().toISOString();
-    await db.from("operational_remediation_runs").update({ status: "failed", error_code: "REMEDIATION_FAILED", error_message: message.slice(0, 2000), completed_at: completedAt }).eq("id", run.id);
-    await db.from("operational_events").insert({
+    await remediationData.failRun(params.workspaceId, run.id, { status: "failed", error_code: "REMEDIATION_FAILED", error_message: message.slice(0, 2000), completed_at: completedAt }, {
       workspace_id: params.workspaceId,
       environment_id: params.environmentId,
       event_type: "remediation.outcome",
       source_type: "operational_remediation_run",
-      source_id: run.id,
       correlation_id: correlationId,
       occurred_at: completedAt,
       features_json: { remediationKey: params.remediationKey, classification, executionMode, environmentKind: environment.kind, targetType: params.targetType },
@@ -184,19 +178,15 @@ function remediationForDrift(drift: any, node: any): { key: string; targetType: 
 }
 
 export async function runPolicyAutoRepair(params: { workspaceId: string; environmentId: string; actorId: string }) {
-  const db = createServiceRoleClient();
   const policy = await getAutonomyPolicy(params.workspaceId, params.environmentId);
   if (policy.mode !== "policy_auto_repair") throw Object.assign(new Error("Environment is not configured for policy auto-repair"), { status: 409 });
   const desired = await getActiveDesiredState(params.workspaceId, params.environmentId);
   if (!desired) throw Object.assign(new Error("No active desired state exists"), { status: 409 });
 
-  const [{ data: drifts }, { data: nodes }] = await Promise.all([
-    db.from("operational_drift_items").select("*").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("desired_state_revision_id", desired.id).eq("state", "open").eq("action_class", "safe_auto_repair").order("severity"),
-    db.from("operational_world_nodes").select("id,source_entity_id").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId),
-  ]);
-  const nodeById = new Map((nodes ?? []).map((node: any) => [node.id, node]));
+  const { drifts, nodes } = await remediationData.autoRepairRows(params.workspaceId, params.environmentId, desired.id);
+  const nodeById = new Map(nodes.map((node: any) => [node.id, node]));
   const results: Array<Record<string, unknown>> = [];
-  for (const drift of drifts ?? []) {
+  for (const drift of drifts) {
     const mapped = remediationForDrift(drift, drift.node_id ? nodeById.get(drift.node_id) : null);
     if (!mapped) {
       results.push({ driftId: drift.id, status: "skipped", reason: "no_safe_deterministic_remediation" });
@@ -213,5 +203,5 @@ export async function runPolicyAutoRepair(params: { workspaceId: string; environ
       results.push({ driftId: drift.id, remediationKey: mapped.key, status: "failed", error: cause instanceof Error ? cause.message : "auto-repair failed" });
     }
   }
-  return { attempted: results.filter((item) => item.status !== "skipped").length, candidates: (drifts ?? []).length, results };
+  return { attempted: results.filter((item) => item.status !== "skipped").length, candidates: drifts.length, results };
 }
