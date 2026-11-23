@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import process from "node:process";
 import { createClient } from "@supabase/supabase-js";
+import { seedStarterContent } from "../lib/setup/owner/starterContent.mjs";
 
 function loadLocalEnv() {
   if (!existsSync(".env.local")) return;
@@ -49,66 +50,19 @@ const { data: login, error: loginError } = await auth.auth.signInWithPassword({ 
 if (loginError || !login.session) throw loginError || new Error("Owner sign-in did not return a session.");
 const token = login.session.access_token;
 
-const models = await apiRequest(appUrl, "/api/models", token);
-let model = (models || []).find((candidate) => candidate.api_key === "starter_article");
-let modelCreated = false;
-if (!model) {
-  const created = await apiRequest(appUrl, "/api/models", token, {
-    method: "POST",
-    body: JSON.stringify({
-      description: "Starter publishable article model created by the OSS onboarding command.",
-      icon: "FileText",
-      schema: {
-        apiKey: "starter_article",
-        name: "Starter Article",
-        capability: "publishable",
-        fields: [
-          { key: "title", label: "Title", type: "text", required: true, localized: false, unique: false, index: true },
-          { key: "slug", label: "Slug", type: "slug", required: true, localized: false, unique: true, generatedFrom: "title" },
-          { key: "summary", label: "Summary", type: "long_text", required: false, localized: false, unique: false },
-          { key: "body", label: "Body", type: "rich_text", required: false, localized: false, unique: false },
-        ],
-      },
-    }),
-  });
-  model = created?.model || created;
-  modelCreated = true;
-}
+// The same idempotent starter content the setup wizard creates (lib/setup/owner/starterContent.mjs),
+// here through the authenticated CMS API.
+const result = await seedStarterContent({
+  listModels: () => apiRequest(appUrl, "/api/models", token),
+  createModel: async (input) => {
+    const created = await apiRequest(appUrl, "/api/models", token, { method: "POST", body: JSON.stringify(input) });
+    return created?.model || created;
+  },
+  listEntries: (modelId) => apiRequest(appUrl, `/api/entries?modelId=${encodeURIComponent(modelId)}`, token),
+  createEntry: async (input) => {
+    const created = await apiRequest(appUrl, "/api/entries", token, { method: "POST", body: JSON.stringify(input) });
+    return created?.entry || created;
+  },
+});
 
-if (!model?.id) throw new Error("Starter model creation did not return a model identifier.");
-
-const entries = await apiRequest(appUrl, `/api/entries?modelId=${encodeURIComponent(model.id)}`, token);
-let entry = (entries || []).find((candidate) => candidate.data?.slug === "welcome-to-polynovea");
-let entryCreated = false;
-if (!entry) {
-  const created = await apiRequest(appUrl, "/api/entries", token, {
-    method: "POST",
-    body: JSON.stringify({
-      modelId: model.id,
-      data: {
-        title: "Welcome to Polynovea",
-        slug: "welcome-to-polynovea",
-        summary: "Your first structured entry is ready to edit, review and publish.",
-        body: {
-          type: "document",
-          version: 1,
-          content: [
-            { type: "heading", level: 2, text: "Your CMS is ready" },
-            { type: "paragraph", text: "Use this entry to explore the editorial workflow, preview, releases and the scoped delivery API." },
-          ],
-        },
-      },
-      changeSummary: "Created by the OSS starter-content command",
-    }),
-  });
-  entry = created?.entry || created;
-  entryCreated = true;
-}
-
-if (!entry?.id) throw new Error("Starter entry creation did not return an entry identifier.");
-
-console.log(JSON.stringify({
-  model: { id: model.id, apiKey: "starter_article", created: modelCreated },
-  entry: { id: entry.id, slug: "welcome-to-polynovea", created: entryCreated, status: entry.status },
-  next: `${appUrl}/admin/entries/${entry.id}`,
-}, null, 2));
+console.log(JSON.stringify({ ...result, next: `${appUrl}/admin/entries/${result.entry.id}` }, null, 2));

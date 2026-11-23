@@ -4,8 +4,28 @@ import process from "node:process";
 import { createClient } from "@supabase/supabase-js";
 import pg from "pg";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
-import { postgresAdminStore } from "./lib/bootstrapAdminStore.mjs";
-import { bootstrapBuiltinOwner } from "../lib/auth/bootstrapOwner.mjs";
+import { bootstrapBuiltinOwnerInTransaction, grantOwnerRows } from "../lib/auth/bootstrapOwner.mjs";
+
+const DATABASE_MODES = ["local", "managed", "created"];
+
+/**
+ * The installation row (migration 0072), in the caller's open transaction, so the owner and the row
+ * commit together. Without it the CMS stays in setup mode. An existing row is kept (re-running the
+ * bootstrap never changes it; the app role cannot update it anyway). Returns true when it was written.
+ */
+async function recordInstallation(client, { organisationName, workspaceSlug, adminUserId, databaseMode }) {
+  const { rowCount } = await client.query(
+    `insert into public.installation (organisation_name, owner_admin_user_id, database_mode)
+     select coalesce(nullif(btrim($1::text), ''), (select name from public.workspaces where slug = $2), 'Polynovea CMS'), $3::uuid, $4
+     on conflict (singleton) do nothing`,
+    [organisationName ?? "", workspaceSlug, adminUserId, databaseMode],
+  );
+  return rowCount === 1;
+}
+
+function reportInstallation(written) {
+  console.log(written ? "Installation recorded: the CMS leaves setup mode." : "Installation was already recorded; left unchanged.");
+}
 
 function loadLocalEnv() {
   if (!existsSync(".env.local")) return;
@@ -91,7 +111,7 @@ async function promptHidden(question) {
   });
 }
 
-async function bootstrapBuiltin({ email, username, displayName, workspaceSlug, password }) {
+async function bootstrapBuiltin({ email, username, displayName, workspaceSlug, password, organisationName, databaseMode }) {
   const connectionString = process.env.POLYNOVEA_DATABASE_URL || process.env.DATABASE_URL;
   if (!connectionString) throw new Error("POLYNOVEA_DATABASE_URL (or DATABASE_URL) is required for the built-in auth.");
   const db = new pg.Client(postgresConnectionConfig(connectionString));
@@ -110,8 +130,20 @@ async function bootstrapBuiltin({ email, username, displayName, workspaceSlug, p
         if (chosen !== again) throw new Error("The passwords do not match.");
       }
     }
-    const result = await bootstrapBuiltinOwner(db, { email, password: chosen, username, displayName, workspaceSlug });
+    // The owner and the installation row in one transaction.
+    await db.query("begin");
+    let result;
+    let installed;
+    try {
+      result = await bootstrapBuiltinOwnerInTransaction(db, { email, password: chosen, username, displayName, workspaceSlug });
+      installed = await recordInstallation(db, { organisationName, workspaceSlug, adminUserId: result.adminUserId, databaseMode });
+      await db.query("commit");
+    } catch (error) {
+      await db.query("rollback").catch(() => {});
+      throw error;
+    }
     if (!result.createdUser) console.log(result.setPassword ? `Existing sign-in for ${email} reused; its password was set.` : `Existing sign-in for ${email} reused; its password was not changed.`);
+    reportInstallation(installed);
     console.log("At first sign-in the owner is asked to add two sign-in methods (passkeys or an authenticator app) before using the CMS.");
   } finally {
     await db.end();
@@ -121,7 +153,8 @@ async function bootstrapBuiltin({ email, username, displayName, workspaceSlug, p
 loadLocalEnv();
 const args = parseArgs(process.argv.slice(2));
 if (Object.prototype.hasOwnProperty.call(args, "help")) {
-  console.log('Usage: npm run bootstrap:admin -- --email=owner@example.com [--password=change-me-now] [--username=owner] [--display-name="Owner"] [--workspace=polynovea]');
+  console.log('Usage: npm run bootstrap:admin -- --email=owner@example.com [--password=change-me-now] [--username=owner] [--display-name="Owner"] [--workspace=polynovea] [--organisation="Example Ltd"] [--database-mode=managed]');
+  console.log("Also records the installation (organisation name: --organisation, else the workspace's name; database mode: --database-mode=local|managed|created, default managed), so the CMS leaves setup mode.");
   console.log("When --password or POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD is set, a missing auth identity is created automatically.");
   console.log("With AUTH_PROVIDER=builtin the owner is created in the built-in auth; with no password given, it is asked for without echo (safer than --password, which shells keep in their history).");
   process.exit(0);
@@ -131,6 +164,8 @@ const username = String(args.username || process.env.POLYNOVEA_BOOTSTRAP_ADMIN_U
 const displayName = String(args["display-name"] || process.env.POLYNOVEA_BOOTSTRAP_ADMIN_DISPLAY_NAME || username).trim();
 const workspaceSlug = String(args.workspace || process.env.POLYNOVEA_DEFAULT_WORKSPACE_SLUG || "polynovea").trim().toLowerCase();
 const password = String(args.password || process.env.POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD || "");
+const organisationName = String(args.organisation || process.env.POLYNOVEA_BOOTSTRAP_ORGANISATION || "").trim();
+const databaseMode = String(args["database-mode"] || "managed").trim().toLowerCase();
 
 if (!email || !email.includes("@")) {
   console.error("Usage: npm run bootstrap:admin -- --email=owner@example.com [--username=owner] [--display-name=\"Owner\"]");
@@ -141,9 +176,18 @@ if (!/^[a-z0-9._-]{3,40}$/i.test(username)) {
   process.exit(2);
 }
 
+if (!DATABASE_MODES.includes(databaseMode)) {
+  console.error(`--database-mode must be one of ${DATABASE_MODES.join(", ")}.`);
+  process.exit(2);
+}
+if (organisationName.length > 200) {
+  console.error("--organisation must be 200 characters or fewer.");
+  process.exit(2);
+}
+
 if ((process.env.AUTH_PROVIDER ?? "").trim().toLowerCase() === "builtin") {
   try {
-    await bootstrapBuiltin({ email, username, displayName, workspaceSlug, password });
+    await bootstrapBuiltin({ email, username, displayName, workspaceSlug, password, organisationName, databaseMode });
     console.log(`Bootstrap complete: ${email} is the active master/owner for workspace '${workspaceSlug}'.`);
     process.exit(0);
   } catch (error) {
@@ -184,7 +228,17 @@ try {
   const db = new pg.Client(postgresConnectionConfig(connectionString));
   await db.connect();
   try {
-    await postgresAdminStore(db).grantOwner({ authUserId: authUser.id, email, username, displayName, workspaceSlug });
+    // Owner rows and the installation row in one transaction.
+    await db.query("begin");
+    try {
+      const granted = await grantOwnerRows(db, { authUserId: authUser.id, email, username, displayName, workspaceSlug });
+      const installed = await recordInstallation(db, { organisationName, workspaceSlug, adminUserId: granted.adminUserId, databaseMode });
+      await db.query("commit");
+      reportInstallation(installed);
+    } catch (error) {
+      await db.query("rollback").catch(() => {});
+      throw error;
+    }
   } finally {
     await db.end();
   }

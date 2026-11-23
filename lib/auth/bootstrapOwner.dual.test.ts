@@ -11,12 +11,16 @@ import { bootstrapBuiltinOwner, bootstrapBuiltinOwnerInTransaction } from "@/lib
 import { hashPassword } from "@/lib/auth/betterAuth/passwordHash.mjs";
 import { getBuiltinAuth, resetBuiltinAuthForTests } from "@/lib/auth/betterAuth/instance";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
+import { INSTALLATION_TEST_LOCK } from "@/lib/setup/owner/testing";
 
 const run = promisify(execFile);
 const BASE_URL = "https://cms.example.test";
 const noPwned = async () => null;
 let owner: pg.Client;
 let app: pg.Client;
+// The script writes the installation singleton: hold the shared test lock for this whole file and
+// clear the row at the end, so parallel test files never see it.
+let installationLock: pg.Client;
 const savedEnv = { ...process.env };
 
 async function workspace(): Promise<{ slug: string; ownerRoleId: string }> {
@@ -43,6 +47,9 @@ async function signIn(email: string, password: string): Promise<{ status: number
 }
 
 beforeAll(async () => {
+  installationLock = new pg.Client({ connectionString: process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL, ssl: false });
+  await installationLock.connect();
+  await installationLock.query("select pg_advisory_lock($1::bigint)", [INSTALLATION_TEST_LOCK]);
   owner = new pg.Client({ connectionString: process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL, ssl: false });
   app = new pg.Client({ connectionString: process.env.POLYNOVEA_TEST_POSTGRES_URL, ssl: false });
   await owner.connect();
@@ -57,6 +64,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await installationLock.query("delete from public.installation").catch(() => {});
+  await installationLock.end();
   process.env = { ...savedEnv };
   resetBuiltinAuthForTests();
   await owner.end();
@@ -187,5 +196,53 @@ describe("bootstrap the owner inside the caller's transaction [postgres]", () =>
     } finally {
       await app.query("rollback");
     }
+  });
+});
+
+describe("bootstrap:admin records the installation [postgres]", () => {
+  const script = (args: string[]) => run(process.execPath, ["scripts/bootstrap-admin.mjs", ...args], {
+    env: { ...process.env, AUTH_PROVIDER: "builtin", POLYNOVEA_DATABASE_URL: process.env.POLYNOVEA_TEST_POSTGRES_URL, POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD: `cli owner ${randomBytes(8).toString("hex")}` },
+  });
+
+  it("writes the installation row with the owner, in the same transaction, so the CMS leaves setup mode", async () => {
+    await owner.query("delete from public.installation");
+    const { slug } = await workspace();
+    const input = details(slug);
+    const { stdout } = await script([`--email=${input.email}`, `--workspace=${slug}`, "--organisation=Example CLI Ltd", "--database-mode=local"]);
+    expect(stdout).toMatch(/Installation recorded/);
+    const { rows } = await owner.query(
+      `select i.organisation_name, i.database_mode, a.email from public.installation i join admin_users a on a.id = i.owner_admin_user_id`,
+    );
+    expect(rows).toEqual([{ organisation_name: "Example CLI Ltd", database_mode: "local", email: input.email.toLowerCase() }]);
+
+    // Running it again keeps the row as it was.
+    const again = await script([`--email=${input.email}`, `--workspace=${slug}`, "--organisation=Changed"]);
+    expect(again.stdout).toMatch(/already recorded/);
+    expect((await owner.query("select organisation_name from public.installation")).rows).toEqual([{ organisation_name: "Example CLI Ltd" }]);
+  });
+
+  it("names the organisation after the workspace by default, with database mode managed", async () => {
+    await owner.query("delete from public.installation");
+    const { slug } = await workspace();
+    const input = details(slug);
+    await script([`--email=${input.email}`, `--workspace=${slug}`]);
+    expect((await owner.query("select organisation_name, database_mode from public.installation")).rows).toEqual([{ organisation_name: slug, database_mode: "managed" }]);
+  });
+
+  it("refuses an unknown database mode before writing anything", async () => {
+    await owner.query("delete from public.installation");
+    const { slug } = await workspace();
+    const input = details(slug);
+    await expect(script([`--email=${input.email}`, `--workspace=${slug}`, "--database-mode=cloud"])).rejects.toMatchObject({ code: 2 });
+    expect((await owner.query("select 1 from public.installation")).rows).toEqual([]);
+    expect((await owner.query(`select 1 from polynovea_auth."user" where email = $1`, [input.email.toLowerCase()])).rows).toEqual([]);
+  });
+
+  it("a failure in the same transaction leaves neither the owner nor the row", async () => {
+    await owner.query("delete from public.installation");
+    const input = details("no-such-workspace");
+    await expect(script([`--email=${input.email}`, "--workspace=no-such-workspace"])).rejects.toMatchObject({ code: 1 });
+    expect((await owner.query("select 1 from public.installation")).rows).toEqual([]);
+    expect((await owner.query(`select 1 from polynovea_auth."user" where email = $1`, [input.email.toLowerCase()])).rows).toEqual([]);
   });
 });
