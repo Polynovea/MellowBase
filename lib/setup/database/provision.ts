@@ -6,6 +6,7 @@ import {
   bootstrapInstallRoles,
   hardenPublicSchema,
   installationState,
+  rolesInUseElsewhere,
   OWNER_ROLE,
   tablesMissingAppPolicy,
 } from "@/lib/db/roles.mjs";
@@ -49,6 +50,8 @@ export const ALREADY_INSTALLED =
   "This database already belongs to a Polynovea CMS install. To keep that install, connect this server to it through its own settings; to start again, use a new, empty database.";
 export const FOREIGN_DATABASE =
   "This database already holds Polynovea tables that this installer did not create, or that it cannot inspect with this login. Use a new, empty database.";
+export const ROLES_IN_USE =
+  "Another database on this server already uses Polynovea's database users, probably for another Polynovea CMS install. Setting up here would change their passwords and lock that install out, so setup stopped. Use a separate database server for this install.";
 
 /** 32 random bytes, base64url: 43 characters. */
 export function generateRolePassword(): string {
@@ -109,6 +112,13 @@ export async function provisionDatabase(input: ProvisionInput, deps: ProvisionDe
       const state = await installationState(input.adminClient);
       if (state === "installed") throw new DatabaseSetupError(ALREADY_INSTALLED, "provision inspect");
       if (state === "foreign") throw new DatabaseSetupError(FOREIGN_DATABASE, "provision inspect");
+      // The two users are shared by every database on this server. Their passwords are only (re)set
+      // when no other database relies on them; otherwise another install would lose its login.
+      const elsewhere = await rolesInUseElsewhere(input.adminClient);
+      if (elsewhere.length) {
+        console.warn("[setup/database] Refused: %s", elsewhere.map((use) => `${use.role} is used by database ${use.database}`).join("; "));
+        throw new DatabaseSetupError(ROLES_IN_USE, "provision inspect");
+      }
       return state;
     }, "We couldn't inspect the database with this login. Check that the admin login owns the database, then try again.");
 

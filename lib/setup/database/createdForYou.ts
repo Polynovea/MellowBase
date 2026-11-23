@@ -102,3 +102,11 @@ export async function runCreatedForYouSetup(context: CreatedForYouContext): Prom
   context.emit({ type: "step", id: "read-secret", label, status: "passed" });
   return runManagedDatabaseSetup(input, { ...context, mode: "created" });
 }
+
+export const NOT_CREATED_FOR_YOU =
+  "This server wasn't set up by a Polynovea cloud template, so there is no database created for you. Choose \"Existing managed database\" instead.";
+
+/** True when the operator's environment names a template-made database secret. */
+export function createdForYouAvailable(env: Record<string, string | undefined> = process.env): boolean {
+  return parseSecretRef(env.POLYNOVEA_DB_SECRET_REF) !== null;
+}

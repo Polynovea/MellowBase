@@ -80,8 +80,9 @@ export function setupEventStream(run: (emit: (event: SetupEvent) => void) => Pro
 }
 
 /**
- * At most `maxConcurrent` database-step streams on the server, and one per setup session. Each run
- * opens sockets to a database and may run DDL, so this caps what one leaked setup code can do.
+ * At most `maxConcurrent` runs on the server, and one per setup session. The database step uses one
+ * slot for the whole install (databaseStepLimits): two provisioning runs must never interleave, even
+ * from two browsers, because both would reset the same roles and run DDL on the same database.
  */
 export function createStreamLimiter(maxConcurrent = 2) {
   const active = new Set<string>();
@@ -123,6 +124,28 @@ export function createRunRateLimiter(max = 10, windowMs = 10 * 60_000, now: () =
   };
 }
 
-/** Shared by the database-step routes. */
-export const databaseStreams = createStreamLimiter(2);
-export const databaseRuns = createRunRateLimiter(10, 10 * 60_000);
+export const SETUP_ALREADY_RUNNING =
+  "Setup is already running, in this or another browser. Wait for it to finish (its progress shows where it was started), then try again.";
+export const SETUP_RUNS_EXHAUSTED = "Too many database setup attempts in the last ten minutes. Wait a few minutes, then try again.";
+
+interface DatabaseStepLimits {
+  /** One provisioning run per install at a time, whichever setup session or option started it. */
+  runLock: ReturnType<typeof createStreamLimiter>;
+  runs: ReturnType<typeof createRunRateLimiter>;
+}
+
+const LIMITS_KEY = Symbol.for("polynovea.setup.database.limits");
+const limitsStore = globalThis as typeof globalThis & { [LIMITS_KEY]?: DatabaseStepLimits };
+
+/**
+ * Shared by every database-step route, on globalThis so separately bundled route modules still share
+ * one lock (as the setup session store does).
+ */
+export function databaseStepLimits(): DatabaseStepLimits {
+  return (limitsStore[LIMITS_KEY] ??= { runLock: createStreamLimiter(1), runs: createRunRateLimiter(10, 10 * 60_000) });
+}
+
+/** Tests only: forget the shared lock and counters, as a restart would. */
+export function resetDatabaseStepLimitsForTests(): void {
+  delete limitsStore[LIMITS_KEY];
+}

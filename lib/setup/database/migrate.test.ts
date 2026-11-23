@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { listMigrationFiles, MIGRATION_LOCK_KEY, runMigrations } from "@/scripts/run-migrations.mjs";
+import { resetKeyRingCache } from "@/lib/setup/keyRing.mjs";
+import { writeConfig } from "@/lib/setup/configStore.mjs";
+import { listMigrationFiles, MIGRATION_LOCK_KEY, migrationConnection, runMigrations } from "@/scripts/run-migrations.mjs";
+import { PUBLIC_CA_BUNDLE_ID } from "./caBundles";
 import { migrateAsOwner, MigrationLockError, type MigrationEvent } from "./migrate";
 import { fakeClient, type Route } from "./testFakes";
 
@@ -83,5 +86,58 @@ describe("runMigrations as a module", () => {
   it("lists only numbered SQL files, sorted", () => {
     const root = repo({ "0010_b.sql": "", "0002_a.sql": "", "README.md": "", "x_0003.sql": "" });
     expect(listMigrationFiles(root).map((file) => path.basename(file))).toEqual(["0002_a.sql", "0010_b.sql"]);
+  });
+});
+
+describe("migrationConnection (npm run db:migrate)", () => {
+  const key = () => `k1:${randomBytes(32).toString("base64")}`;
+  const install = {
+    v: 1 as const,
+    databaseMode: "managed" as const,
+    database: { host: "pg1.postgres.database.azure.com", port: 5432, name: "polynovea", caBundleId: PUBLIC_CA_BUNDLE_ID },
+    roles: { owner: { user: "polynovea_owner", password: "o".repeat(43) }, app: { user: "polynovea_app", password: "a".repeat(43) } },
+    authSecret: "s".repeat(43),
+    backupRepoPassword: null,
+  };
+  const dirEnv = (extra: Record<string, string> = {}) => ({ POLYNOVEA_CONFIG_DIR: mkdtempSync(path.join(tmpdir(), "polynovea-config-")), ...extra });
+
+  it("uses DATABASE_URL only when there is no config.enc", () => {
+    const env = dirEnv({ DATABASE_URL: "postgresql://u:p@localhost:5432/dev" });
+    const connection = migrationConnection(env);
+    expect(connection).toMatchObject({ source: "DATABASE_URL", connectionString: "postgresql://u:p@localhost:5432/dev", ssl: false });
+    expect(connection.file).toBe(path.join(env.POLYNOVEA_CONFIG_DIR, "config.enc"));
+  });
+
+  it("uses config.enc's owner login and CA bundle when it exists, ignoring DATABASE_URL", async () => {
+    resetKeyRingCache();
+    const env = dirEnv({ CMS_MASTER_KEY: key(), DATABASE_URL: "postgresql://someone:else@elsewhere.example.com/other" });
+    await writeConfig(install, env);
+    const connection = migrationConnection(env);
+    expect(connection.source).toBe("config.enc");
+    const url = new URL(connection.connectionString);
+    expect(url.hostname).toBe("pg1.postgres.database.azure.com");
+    expect(url.username).toBe("polynovea_owner");
+    expect(url.pathname).toBe("/polynovea");
+    expect(connection.connectionString).not.toContain("elsewhere");
+    expect(connection.ssl).toMatchObject({ rejectUnauthorized: true, servername: "pg1.postgres.database.azure.com" });
+    expect((connection.ssl as { ca: string[] }).ca).toHaveLength(2);
+  });
+
+  it("refuses, without falling back to DATABASE_URL, when config.enc exists but cannot be read", async () => {
+    resetKeyRingCache();
+    const env = dirEnv({ CMS_MASTER_KEY: key(), DATABASE_URL: "postgresql://u:p@localhost:5432/dev" });
+    await writeConfig(install, env);
+    resetKeyRingCache();
+    const wrongKey = { ...env, CMS_MASTER_KEY: key() };
+    expect(() => migrationConnection(wrongKey)).toThrow(/cannot be used .*DATABASE_URL is not used while config\.enc exists/);
+    try {
+      migrationConnection(wrongKey);
+    } catch (error) {
+      expect(String(error)).not.toContain("o".repeat(43));
+    }
+  });
+
+  it("says what is missing when there is neither", () => {
+    expect(() => migrationConnection(dirEnv())).toThrow(/no Database_URL \/ DATABASE_URL/);
   });
 });

@@ -270,3 +270,23 @@ export function createSystemLocalServerHost(options: SystemHostOptions): LocalSe
     },
   };
 }
+
+// ---------------------------------------------------------------------------------------------------
+// What this server image provides.
+
+export const LOCAL_SERVER_UNAVAILABLE =
+  "\"On this server\" needs the Polynovea server image, which includes the database and backup software. This server doesn't have it, so choose \"Existing managed database\" or \"Created for you\".";
+
+/**
+ * The bundled-database host for this server image, or null when the image has none. The Phase 5
+ * image supplies it (start command, local admin login, pgBackRest config path); until then the option
+ * is shown as unavailable rather than attempted.
+ */
+export function localServerHostForThisImage(): LocalServerHost | null {
+  return null;
+}
+
+/** Where the Phase 5 image keeps the bundled database and its local backups (on the data disk). */
+export function localServerSettings(): Pick<LocalServerContext, "dataDir" | "port" | "socketPath" | "localRepoPath"> {
+  return { dataDir: "/var/lib/polynovea-data/postgresql", port: 5432, socketPath: "/var/run/postgresql", localRepoPath: "/var/lib/polynovea-data/pgbackrest" };
+}

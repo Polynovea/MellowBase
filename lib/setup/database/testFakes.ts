@@ -46,15 +46,35 @@ export function fakeClient(routes: Route[] = [], config?: pg.ClientConfig): Fake
 }
 
 /** Routes that make a fake admin client look like a managed-database admin on PostgreSQL 16. */
-export function adminRoutes(state: { ledger?: boolean; core?: boolean; installation?: boolean; installed?: boolean; installationOwner?: string } = {}): Route[] {
+export interface FakeDatabaseState {
+  ledger?: boolean;
+  /** The workspaces table (core tables) exists. */
+  core?: boolean;
+  installation?: boolean;
+  admins?: boolean;
+  members?: boolean;
+  content?: boolean;
+  /** Result of the "installation row or any install probe" check, read as the owner. */
+  inUse?: boolean;
+  /** Owners of the Polynovea tables that exist (default polynovea_owner). */
+  owners?: readonly string[];
+  /** Other databases relying on the cluster-wide roles. */
+  rolesElsewhere?: { role: string; database: string }[];
+}
+
+export function adminRoutes(state: FakeDatabaseState = {}): Route[] {
+  const present = [
+    state.ledger && "polynovea_migration_ledger",
+    state.installation && "installation",
+    state.admins && "admin_users",
+    state.members && "workspace_members",
+    state.content && "content_entries",
+    state.core && "workspaces",
+  ].filter(Boolean);
   return [
-    [/to_regclass\('public\.installation'\) is not null as has_installation/, () => ({ rows: [{
-      has_installation: state.installation ?? false,
-      has_ledger: state.ledger ?? false,
-      has_core: state.core ?? false,
-      installation_owner: state.installation ? (state.installationOwner ?? "polynovea_owner") : null,
-    }] })],
-    [/select exists \(select 1 from public\.installation\)/, () => ({ rows: [{ installed: state.installed ?? false }] })],
+    [/as present,/, () => ({ rows: [{ present, owners: state.owners ?? (present.length ? ["polynovea_owner"] : []) }] })],
+    [/as in_use$/, () => ({ rows: [{ in_use: state.inUse ?? false }] })],
+    [/with roles as/, () => ({ rows: state.rolesElsewhere ?? [] })],
     [/as superuser, current_setting/, () => ({ rows: [{ superuser: false, member: false, version: 160000 }] })],
     [/unnest\(\$1::text\[\]\)/, () => ({ rows: [] })],
     [/rolsuper or rolcreaterole or rolcreatedb or rolbypassrls\)/, () => ({ rows: [] })],

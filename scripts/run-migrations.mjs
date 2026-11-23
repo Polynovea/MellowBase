@@ -1,6 +1,7 @@
 // Ordered PostgreSQL migration runner for installation and controlled upgrades.
 //
-// Command line: connects directly using DATABASE_URL from .env.local or the process environment.
+// Command line: connects with the install's config.enc (owner login and its CA bundle) when it exists,
+// otherwise with DATABASE_URL from .env.local or the process environment (see migrationConnection).
 //   node scripts/run-migrations.mjs --all
 //   node scripts/run-migrations.mjs <file1.sql> [file2.sql ...]
 //
@@ -21,6 +22,8 @@ import { pathToFileURL } from "node:url";
 import pg from "pg";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 import { ensureCompatibilityRoles } from "../lib/db/roles.mjs";
+import { configPath, databaseUrlFromConfig, readInstallConfigSync } from "../lib/setup/configStore.mjs";
+import { tlsConnectionFor } from "../lib/setup/installConnection.mjs";
 
 const LEDGER_TABLE = "polynovea_migration_ledger";
 /** Advisory lock key for migrations: the bytes of "PLYMIGR" as a bigint. */
@@ -198,14 +201,50 @@ function loadEnvLocal() {
   }
 }
 
+/**
+ * Where the command line connects.
+ *
+ * - On an install the setup wizard made, config.enc is the source of truth: the owner login, the
+ *   endpoint name and the CA bundle the wizard verified the database with (tlsConnectionFor). If
+ *   config.enc exists but cannot be read (wrong master key, damaged file), this refuses: falling back
+ *   to DATABASE_URL could migrate a different database than the one the CMS runs on.
+ * - Without config.enc (development, installs from before the wizard): DATABASE_URL, with the shared
+ *   TLS policy (postgresTls.mjs).
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {{ source: "config.enc" | "DATABASE_URL", file: string, connectionString: string, ssl: false | object }}
+ */
+export function migrationConnection(env = process.env) {
+  const file = configPath(env);
+  let config;
+  try {
+    config = readInstallConfigSync(env);
+  } catch (error) {
+    throw new Error(
+      `${file} exists but cannot be used (${error instanceof Error ? error.message : String(error)}). `
+      + "Fix it or restore the master key; DATABASE_URL is not used while config.enc exists.",
+    );
+  }
+  if (config) {
+    return { source: "config.enc", file, ...tlsConnectionFor(databaseUrlFromConfig(config, "owner"), config.database, env) };
+  }
+  const connectionString = env.Database_URL || env.DATABASE_URL || env.database_url;
+  if (!connectionString) throw new Error(`No ${file} and no Database_URL / DATABASE_URL in .env.local or the process environment`);
+  return { source: "DATABASE_URL", file, ...postgresConnectionConfig(connectionString, env) };
+}
+
 async function main() {
   loadEnvLocal();
 
-  const connectionString = process.env.Database_URL || process.env.DATABASE_URL || process.env.database_url;
-  if (!connectionString) {
-    console.error("No Database_URL / DATABASE_URL found in .env.local or the process environment");
+  let connection;
+  try {
+    connection = migrationConnection(process.env);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
+  console.log(connection.source === "config.enc"
+    ? `Using the install's settings in ${connection.file}, as polynovea_owner.`
+    : `No ${connection.file}; using DATABASE_URL.`);
 
   const requested = process.argv.slice(2);
   const files = requested.length === 1 && requested[0] === "--all"
@@ -217,7 +256,7 @@ async function main() {
     process.exit(1);
   }
 
-  const client = new pg.Client(postgresConnectionConfig(connectionString));
+  const client = new pg.Client({ connectionString: connection.connectionString, ssl: connection.ssl });
   let running = null;
   try {
     await client.connect();

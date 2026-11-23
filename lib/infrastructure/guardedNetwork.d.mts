@@ -21,7 +21,7 @@ export function guardedS3RequestHandler(options?: GuardOptions): { httpsAgent: H
 export function isAlwaysBlockedAddress(address: string): boolean;
 export function embeddedIPv4(address: string): string | null;
 
-export type DatabaseTargetReason = "invalid-port" | "invalid-host" | "localhost" | "blocked-address" | "private-literal" | "private-not-allowed" | "not-found" | "dns-timeout";
+export type DatabaseTargetReason = "invalid-port" | "invalid-host" | "localhost" | "blocked-address" | "ip-literal" | "private-not-allowed" | "not-found" | "dns-timeout";
 export class DatabaseTargetError extends Error {
   readonly reason: DatabaseTargetReason;
   readonly status: 422;

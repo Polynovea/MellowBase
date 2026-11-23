@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { DatabaseSetupError } from "./errors";
-import { createRunRateLimiter, createStreamLimiter, formatEvent, setupEventStream } from "./stream";
+import { isClientSafeError } from "@/lib/http/clientError";
+import { createRunRateLimiter, createStreamLimiter, databaseStepLimits, formatEvent, resetDatabaseStepLimitsForTests, SETUP_ALREADY_RUNNING, SETUP_RUNS_EXHAUSTED, setupEventStream } from "./stream";
 
 const SECRET = "Adm1n-S3cret-Pa55word!";
 
@@ -86,5 +87,24 @@ describe("createRunRateLimiter", () => {
     expect(limiter.allow("other")).toBe(true);
     now = 1_001;
     expect(limiter.allow("s")).toBe(true);
+  });
+});
+
+describe("databaseStepLimits", () => {
+  it("allows one provisioning run per install at a time, across setup sessions", () => {
+    resetDatabaseStepLimitsForTests();
+    const { runLock } = databaseStepLimits();
+    const release = runLock.acquire("session-a");
+    expect(release).toBeTypeOf("function");
+    expect(runLock.acquire("session-b")).toBeNull();
+    expect(databaseStepLimits().runLock.acquire("session-c")).toBeNull(); // same lock everywhere
+    release!();
+    expect(runLock.acquire("session-b")).toBeTypeOf("function");
+    resetDatabaseStepLimitsForTests();
+  });
+
+  it("has plain messages for a busy or exhausted step", () => {
+    expect(isClientSafeError(new DatabaseSetupError(SETUP_ALREADY_RUNNING, "x"))).toBe(true);
+    expect(isClientSafeError(new DatabaseSetupError(SETUP_RUNS_EXHAUSTED, "x"))).toBe(true);
   });
 });
