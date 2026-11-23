@@ -905,6 +905,16 @@ export interface InfrastructureApprovalRequests {
   workspace_id: string;
 }
 
+export interface Installation {
+  app_version: string | null;
+  completed_at: Generated<string>;
+  database_mode: string;
+  install_id: Generated<string>;
+  organisation_name: string;
+  owner_admin_user_id: string | null;
+  singleton: Generated<boolean>;
+}
+
 export interface LegacyContentMigrations {
   content_entry_id: string;
   migrated_at: Generated<string>;
