@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as migrationRunData from "@/lib/intelligence/migrationRunData";
 import { saveDraft } from "@/lib/content/entryService";
 import { sha256Canonical } from "@/lib/intelligence/operationalCanonical";
 import { assessDataAwareSchemaChange } from "@/lib/intelligence/migrationIntelligenceService";
@@ -7,7 +7,8 @@ import { deployAssessedCanonicalSchema, getDataAwareChangeAssessment } from "@/l
 import type { OperationalDeterministicClassification } from "@/lib/intelligence/operationalTypes";
 import { getModel, getVersion } from "@/lib/schema/modelService";
 import type { CanonicalSchema, FieldDefinition } from "@/lib/schema/fields/types";
-import { logPlatformEvent } from "@/lib/platform/audit";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const MIGRATION_STRATEGIES = [
   "direct_metadata_change",
@@ -139,23 +140,12 @@ async function targetSchemaForAssessment(workspaceId: string, assessment: any) {
 }
 
 async function existingOrCreateRun(params: { workspaceId: string; environmentId: string; actorId: string; assessment: any; strategyKey: MigrationStrategyKey; input: MigrationStrategyInput; schema: CanonicalSchema }) {
-  const db = createServiceRoleClient();
   const descriptor = safeInputDescriptor(params.strategyKey, params.input, params.schema);
   const inputHash = sha256Canonical({ strategyKey: params.strategyKey, input: params.input });
-  const { data: existing } = await db.from("operational_migration_runs")
-    .select("*")
-    .eq("workspace_id", params.workspaceId)
-    .eq("environment_id", params.environmentId)
-    .eq("assessment_id", params.assessment.id)
-    .eq("strategy_key", params.strategyKey)
-    .eq("input_hash_sha256", inputHash)
-    .in("status", ["planned", "running", "paused", "blocked", "succeeded"])
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const existing = await migrationRunData.reusableRun(params.workspaceId, params.environmentId, params.assessment.id, params.strategyKey, inputHash);
   if (existing) return { run: existing, inputHash, created: false };
   const correlationId = randomUUID();
-  const { data: run, error } = await db.from("operational_migration_runs").insert({
+  const run = await migrationRunData.insertRun({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     content_model_id: params.assessment.content_model_id,
@@ -176,8 +166,7 @@ async function existingOrCreateRun(params: { workspaceId: string; environmentId:
     plan_json: { strategyKey: params.strategyKey, descriptor, resumable: ["staged_backfill", "copy_transform_verify"].includes(params.strategyKey) },
     correlation_id: correlationId,
     created_by: params.actorId,
-  }).select().single();
-  if (error || !run) throw new Error(error?.message || "Could not create migration strategy run");
+  });
   return { run, inputHash, created: true };
 }
 
@@ -210,40 +199,17 @@ function transformedValue(value: unknown, operator: MigrationTransformOperator) 
   throw new Error(`Unsupported deterministic transform operator ${operator}`);
 }
 
-async function loadCurrentEntryBatch(params: { workspaceId: string; modelId: string; cursorId?: string | null; batchSize: number }) {
-  const db = createServiceRoleClient();
-  let query = db.from("content_entries")
-    .select("id,current_draft_version_id,published_version_id")
-    .eq("workspace_id", params.workspaceId)
-    .eq("content_model_id", params.modelId)
-    .is("archived_at", null)
-    .order("id", { ascending: true })
-    .limit(params.batchSize);
-  if (params.cursorId) query = query.gt("id", params.cursorId);
-  const { data: entries, error } = await query;
-  if (error) throw new Error(error.message);
-  const versionIds = (entries ?? []).map((entry) => entry.current_draft_version_id ?? entry.published_version_id).filter(Boolean);
-  const { data: versions, error: versionError } = versionIds.length
-    ? await db.from("content_entry_versions").select("id,entry_id,version_number,locale,data_jsonb").in("id", versionIds)
-    : { data: [], error: null };
-  if (versionError) throw new Error(versionError.message);
-  const versionById = new Map((versions ?? []).map((version) => [version.id, version]));
-  return (entries ?? []).map((entry) => ({ entry, version: versionById.get(entry.current_draft_version_id ?? entry.published_version_id) ?? null }));
-}
-
 async function executeDataBatch(params: { workspaceId: string; actorId: string; modelId: string; run: any; strategyKey: MigrationStrategyKey; input: MigrationStrategyInput; schema: CanonicalSchema; batchSize: number }) {
-  const db = createServiceRoleClient();
   const cursorBefore = params.run.cursor_json ?? {};
-  const rows = await loadCurrentEntryBatch({ workspaceId: params.workspaceId, modelId: params.modelId, cursorId: cursorBefore.lastEntryId ?? null, batchSize: params.batchSize });
+  const rows = await migrationRunData.entryBatch(params.workspaceId, params.modelId, cursorBefore.lastEntryId ?? null, params.batchSize);
   const batchNumber = Number(params.run.progress_json?.batches ?? 0) + 1;
-  const { data: batch, error: batchError } = await db.from("operational_migration_batches").insert({
+  const batch = await migrationRunData.startBatch({
     workspace_id: params.workspaceId,
     migration_run_id: params.run.id,
     batch_number: batchNumber,
     status: "running",
     cursor_before_json: cursorBefore,
-  }).select().single();
-  if (batchError || !batch) throw new Error(batchError?.message || "Could not start migration batch");
+  });
 
   const byField = fieldByKey(params.schema);
   const requiredBackfillKeys = params.strategyKey === "staged_backfill"
@@ -312,7 +278,7 @@ async function executeDataBatch(params: { workspaceId: string; actorId: string; 
 
   const cursorAfter = { lastEntryId, endReached: rows.length < params.batchSize || fatal !== null };
   const status = fatal ? (succeeded ? "partial" : "failed") : "succeeded";
-  await db.from("operational_migration_batches").update({
+  await migrationRunData.finishBatch(params.workspaceId, batch.id, {
     status,
     cursor_after_json: cursorAfter,
     processed_count: processed,
@@ -321,7 +287,7 @@ async function executeDataBatch(params: { workspaceId: string; actorId: string; 
     safe_results_json: safeResults,
     error_json: fatal ? { message: fatal.message.slice(0, 1000) } : {},
     completed_at: new Date().toISOString(),
-  }).eq("id", batch.id);
+  });
 
   const previous = params.run.progress_json ?? {};
   const progress = {
@@ -330,14 +296,14 @@ async function executeDataBatch(params: { workspaceId: string; actorId: string; 
     succeeded: Number(previous.succeeded ?? 0) + succeeded,
     failed: Number(previous.failed ?? 0) + failed,
   };
-  const { data: updated, error: updateError } = await db.from("operational_migration_runs").update({
+  const updated = await migrationRunData.updateRun(params.workspaceId, params.run.id, {
     status: fatal ? "blocked" : "running",
     cursor_json: cursorAfter,
     progress_json: progress,
     last_error: fatal ? fatal.message.slice(0, 2000) : null,
     updated_at: new Date().toISOString(),
-  }).eq("id", params.run.id).select().single();
-  if (updateError || !updated) throw new Error(updateError?.message || "Could not persist migration progress");
+  });
+  if (!updated) throw new Error("Could not persist migration progress");
   return { run: updated, batch, endReached: Boolean(cursorAfter.endReached), fatal };
 }
 
@@ -363,7 +329,6 @@ export async function executeAssessedMigrationStrategy(params: {
   if (assessment.environment_id !== params.environmentId) throw Object.assign(new Error("Assessment belongs to a different environment"), { status: 409 });
   const { model, schema } = await targetSchemaForAssessment(params.workspaceId, assessment);
   validateStrategy(assessment, params.strategyKey, schema, input);
-  const db = createServiceRoleClient();
   const { run: initialRun, inputHash } = await existingOrCreateRun({ workspaceId: params.workspaceId, environmentId: params.environmentId, actorId: params.actorId, assessment, strategyKey: params.strategyKey, input, schema });
   if (initialRun.input_hash_sha256 !== inputHash) throw Object.assign(new Error("Migration resume input hash mismatch"), { status: 409 });
   if (initialRun.status === "succeeded") return { run: initialRun, resumed: true, alreadySucceeded: true };
@@ -375,15 +340,15 @@ export async function executeAssessedMigrationStrategy(params: {
     if (params.strategyKey === "staged_backfill") {
       planPatch.requiredBackfillKeys = (Array.isArray(assessment.hard_blockers_json) ? assessment.hard_blockers_json : []).filter((item: any) => String(item?.code ?? "") === "REQUIRED_BACKFILL").map((item: any) => String(item?.fieldKey ?? ""));
     }
-    const { data: started, error } = await db.from("operational_migration_runs").update({ status: "running", started_at: now, updated_at: now, plan_json: planPatch }).eq("id", run.id).select().single();
-    if (error || !started) throw new Error(error?.message || "Could not start migration run");
+    const started = await migrationRunData.updateRun(params.workspaceId, run.id, { status: "running", started_at: now, updated_at: now, plan_json: planPatch });
+    if (!started) throw new Error("Could not start migration run");
     run = started;
   }
 
   if (params.strategyKey === "maintenance_window") {
     const notBefore = new Date(input.maintenanceWindow!.notBefore);
     if (Date.now() < notBefore.getTime()) {
-      const { data: paused } = await db.from("operational_migration_runs").update({ status: "paused", postcondition_json: { notBefore: notBefore.toISOString(), ready: false }, updated_at: new Date().toISOString() }).eq("id", run.id).select().single();
+      const paused = await migrationRunData.updateRun(params.workspaceId, run.id, { status: "paused", postcondition_json: { notBefore: notBefore.toISOString(), ready: false }, updated_at: new Date().toISOString() });
       return { run: paused ?? run, pausedUntil: notBefore.toISOString() };
     }
     throw Object.assign(new Error("maintenance_window is a scheduling wrapper; execute a concrete assessed migration strategy once the window opens"), { status: 409 });
@@ -392,9 +357,8 @@ export async function executeAssessedMigrationStrategy(params: {
   if (params.strategyKey === "direct_metadata_change" || params.strategyKey === "deprecate_retain") {
     const deployment = await deployAssessedCanonicalSchema({ workspaceId: params.workspaceId, environmentId: params.environmentId, modelId: model.id, actorId: params.actorId, assessmentId: assessment.id, strategyKey: params.strategyKey });
     const completedAt = new Date().toISOString();
-    const { data: completed, error } = await db.from("operational_migration_runs").update({ status: "succeeded", completed_at: completedAt, updated_at: completedAt, postcondition_json: { deployed: true, schemaVersion: deployment.schemaVersion, schemaHash: deployment.schemaHash, retainedRemovedFieldData: params.strategyKey === "deprecate_retain" } }).eq("id", run.id).select().single();
-    if (error || !completed) throw new Error(error?.message || "Could not finalize migration run");
-    await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.migration.succeeded", entityType: "operational_migration_run", entityId: run.id, metadata: { environmentId: params.environmentId, modelId: model.id, strategyKey: params.strategyKey, assessmentId: assessment.id } });
+    const completed = await migrationRunData.completeRun(params.workspaceId, run.id, { status: "succeeded", completed_at: completedAt, updated_at: completedAt, postcondition_json: { deployed: true, schemaVersion: deployment.schemaVersion, schemaHash: deployment.schemaHash, retainedRemovedFieldData: params.strategyKey === "deprecate_retain" } },
+      { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.migration.succeeded", entityType: "operational_migration_run", entityId: run.id, metadata: { environmentId: params.environmentId, modelId: model.id, strategyKey: params.strategyKey, assessmentId: assessment.id } });
     return { run: completed, deployment };
   }
 
@@ -414,29 +378,20 @@ export async function executeAssessedMigrationStrategy(params: {
   }
 
   if (!endReached) {
-    const { data: paused, error } = await db.from("operational_migration_runs").update({ status: "paused", updated_at: new Date().toISOString(), postcondition_json: { complete: false, reason: "batch_execution_cap_reached", resumeRequired: true } }).eq("id", run.id).select().single();
-    if (error || !paused) throw new Error(error?.message || "Could not pause resumable migration run");
+    const paused = await migrationRunData.updateRun(params.workspaceId, run.id, { status: "paused", updated_at: new Date().toISOString(), postcondition_json: { complete: false, reason: "batch_execution_cap_reached", resumeRequired: true } });
+    if (!paused) throw new Error("Could not pause resumable migration run");
     return { run: paused, resumeRequired: true };
   }
 
   const verification = await refreshAndDeploy({ workspaceId: params.workspaceId, environmentId: params.environmentId, actorId: params.actorId, modelId: model.id, targetSchema: schema, strategyKey: params.strategyKey, originalAssessmentId: assessment.id });
   const completedAt = new Date().toISOString();
-  const { data: completed, error } = await db.from("operational_migration_runs").update({
-    status: "succeeded",
-    completed_at: completedAt,
-    updated_at: completedAt,
-    postcondition_json: { complete: true, reassessmentId: verification.reassessment.id, deploymentId: verification.deployment.deployment.id, schemaVersion: verification.deployment.schemaVersion, schemaHash: verification.deployment.schemaHash },
-  }).eq("id", run.id).select().single();
-  if (error || !completed) throw new Error(error?.message || "Could not finalize migration run");
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.migration.succeeded", entityType: "operational_migration_run", entityId: run.id, metadata: { environmentId: params.environmentId, modelId: model.id, strategyKey: params.strategyKey, assessmentId: assessment.id, reassessmentId: verification.reassessment.id, processed: completed.progress_json?.processed ?? null } });
+  const postcondition = { complete: true, reassessmentId: verification.reassessment.id, deploymentId: verification.deployment.deployment.id, schemaVersion: verification.deployment.schemaVersion, schemaHash: verification.deployment.schemaHash };
+  const completed = await migrationRunData.completeRun(params.workspaceId, run.id, { status: "succeeded", completed_at: completedAt, updated_at: completedAt, postcondition_json: postcondition },
+    { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.migration.succeeded", entityType: "operational_migration_run", entityId: run.id, metadata: { environmentId: params.environmentId, modelId: model.id, strategyKey: params.strategyKey, assessmentId: assessment.id, reassessmentId: verification.reassessment.id, processed: run.progress_json?.processed ?? null } });
   return { run: completed, verification };
 }
 
 export async function listMigrationRuns(workspaceId: string, environmentId: string, modelId?: string | null) {
-  const db = createServiceRoleClient();
-  let query = db.from("operational_migration_runs").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId);
-  if (modelId) query = query.eq("content_model_id", modelId);
-  const { data, error } = await query.order("created_at", { ascending: false }).limit(100);
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  if (!UUID.test(environmentId) || (modelId && !UUID.test(modelId))) return [];
+  return migrationRunData.listRuns(workspaceId, environmentId, modelId);
 }

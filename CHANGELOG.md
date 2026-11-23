@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 4: migration strategy runs and batches on the direct path. Run and batch updates are scoped to the workspace, a completed run commits with its audit event, and entry versions are read through the entry's workspace.
 Phase 1 wave 4: data-aware change assessments on the direct path. An assessment, its operational event and its audit event commit together, and the target schema version is read through its model's workspace.
 Phase 1 wave 4: deterministic remediation on the direct path. A remediation can no longer be linked to another workspace's drift item, and a run's completion, outcome event and audit event commit together.
 Phase 1 wave 4 begins: intelligence discovery reads, canonical schema deployment and the operational overview's run lists on the direct path. A schema deployment, the environment's deployed-schema marker and its audit event now commit together.
