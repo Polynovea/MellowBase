@@ -223,7 +223,7 @@ try {
         testMethod: 'GET',
       },
       credentials: [
-        { purpose: 'bearer_token', locator: 'NEXT_PUBLIC_SUPABASE_ANON_KEY' },
+        { purpose: 'bearer_token', locator: 'POLYNOVEA_CERT_CONNECTION_TOKEN' },
       ],
     },
   });

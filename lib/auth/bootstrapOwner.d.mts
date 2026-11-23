@@ -22,3 +22,9 @@ export function bootstrapBuiltinOwner(
   client: ClientBase,
   details: OwnerDetails & { password?: string | null; pwnedLookup?: PwnedRangeFetch },
 ): Promise<GrantedOwner & { authUserId: string; createdUser: boolean; setPassword: boolean }>;
+
+/** Creates a built-in auth user (confirmed address, password checked and hashed) inside the caller's open transaction. */
+export function createBuiltinUser(
+  client: ClientBase,
+  details: { email: string; password: string; name?: string; hasMfa?: boolean; pwnedLookup?: PwnedRangeFetch },
+): Promise<{ authUserId: string; email: string }>;

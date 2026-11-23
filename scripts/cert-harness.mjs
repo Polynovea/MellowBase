@@ -1,35 +1,40 @@
 /**
- * Real Certification Test Harness.
+ * Real Certification Test Harness, on the built-in auth (no Supabase services).
  *
  * Provides:
- * - Real Supabase Auth user creation & JWT token acquisition
+ * - Real users in the built-in auth, created with the app's own password rules and Argon2id hasher
+ *   (lib/auth/bootstrapOwner.mjs), then signed in over HTTP like the admin UI: session cookie, and
+ *   the CSRF token on every request. Admin actors register an authenticator app first (as the app
+ *   requires), and sign in with its code.
  * - Real Workspace scoping (x-workspace-id header & DB isolation)
- * - Real Cleanup with 0 leakage guarantees (deletes auth users, admin_users, and workspace)
+ * - Real Cleanup with 0 leakage guarantees (deletes built-in users, admin_users, and the workspace)
+ *
+ * The app under test runs with AUTH_PROVIDER=builtin, POLYNOVEA_PUBLIC_URL equal to
+ * CMS_CERT_BASE_URL, and POLYNOVEA_TRUSTED_PROXIES=127.0.0.1. Each actor signs in from its own
+ * test address (X-Forwarded-For in 198.18.0.0/15, the benchmarking range), so a long run of scripts
+ * does not trip the per-address sign-in limit.
  */
-import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { createClient } from "@supabase/supabase-js";
+import { randomBytes, randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import pg from "pg";
+import { createOTP } from "@better-auth/utils/otp";
+import { base32 } from "@better-auth/utils/base32";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
+import { createBuiltinUser } from "../lib/auth/bootstrapOwner.mjs";
 
 // Load environment variables from .env.local
-for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
-  const match = raw.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-  if (match && !process.env[match[1]]) {
-    process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, "");
+if (existsSync(".env.local")) {
+  for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
+    const match = raw.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (match && !process.env[match[1]]) {
+      process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, "");
+    }
   }
 }
 
-export const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-export const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-export const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !ANON_KEY) {
-  throw new Error("Missing Supabase configuration in .env.local");
-}
-
-export const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-export const anonClient = createClient(SUPABASE_URL, ANON_KEY);
+export const BASE_URL = (process.env.CMS_CERT_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+const ORIGIN = new URL(BASE_URL).origin;
+const ADMIN_ROLES = new Set(["master", "admin"]);
 
 export async function createPgClient() {
   const connectionString =
@@ -52,86 +57,126 @@ export async function createDisposableWorkspace(client, prefix = "cert") {
   return rows[0];
 }
 
+/** A cookie jar for one actor, speaking to /api/auth the way the browser does. */
+function authSession(clientAddress) {
+  const cookies = new Map();
+  const cookieHeader = () => [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
+  async function call(method, path, body) {
+    const response = await fetch(`${BASE_URL}/api/auth${path}`, {
+      method,
+      headers: {
+        origin: ORIGIN,
+        "x-forwarded-for": clientAddress,
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+        ...(cookies.size ? { cookie: cookieHeader() } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    for (const setCookie of response.headers.getSetCookie()) {
+      const [pair, ...attributes] = setCookie.split(";");
+      const eq = pair.indexOf("=");
+      const name = pair.slice(0, eq).trim();
+      const value = pair.slice(eq + 1).trim();
+      if (!value || attributes.some((attribute) => /max-age=0\b/i.test(attribute.trim()))) cookies.delete(name);
+      else cookies.set(name, value);
+    }
+    const text = await response.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* not JSON */ }
+    if (!response.ok) throw new Error(`${method} /api/auth${path} failed with ${response.status}: ${text.slice(0, 300)}`);
+    return json;
+  }
+  return { call, cookieHeader };
+}
+
+async function csrfToken(cookieHeader) {
+  const response = await fetch(`${BASE_URL}/api/auth/csrf`, { headers: { cookie: cookieHeader } });
+  const json = await response.json().catch(() => null);
+  if (!response.ok || !json?.data?.token) throw new Error(`Could not get a CSRF token (${response.status}): ${JSON.stringify(json)}`);
+  return json.data.token;
+}
+
 export async function createAuthenticatedActor(client, workspaceId, {
   role = "editor",
   permissions = [],
   emailPrefix = "cert-actor",
 } = {}) {
   const email = `${emailPrefix}-${Date.now()}-${randomUUID().slice(0, 6)}@polynovea.local`;
-  const password = `P@ss-${Date.now()}-${randomUUID().slice(0, 8)}!`;
-
-  // 1. Create real Supabase Auth user
-  const { data: createData, error: createError } = await adminClient.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-  });
-  if (createError || !createData.user) {
-    throw new Error(`Failed to create auth user: ${createError?.message}`);
-  }
-  const authUserId = createData.user.id;
-
-  // 2. Sign in via anon client to get real JWT access token
-  const { data: signInData, error: signInError } = await anonClient.auth.signInWithPassword({
-    email,
-    password,
-  });
-  if (signInError || !signInData.session) {
-    await adminClient.auth.admin.deleteUser(authUserId);
-    throw new Error(`Failed to sign in auth user: ${signInError?.message}`);
-  }
-  const token = signInData.session.access_token;
-
-  // 3. Insert matching admin_users record (role must be in master, admin, editor, viewer)
+  const password = `cert passphrase ${randomBytes(12).toString("base64url")}`;
   const validAdminRoles = ["master", "admin", "editor", "viewer"];
   const dbAdminRole = validAdminRoles.includes(role) ? role : "editor";
-  const { rows: adminRows } = await client.query(`
-    insert into admin_users (auth_user_id, username, email, display_name, role, is_active, surface_access, module_access, module_write_access)
-    values ($1, $2, $3, $4, $5, true, array['cms'], array['*'], array['*'])
-    returning id, email
-  `, [authUserId, email, email, `Cert User ${email}`, dbAdminRole]);
-  const adminUserId = adminRows[0].id;
+  if (dbAdminRole === "master") throw new Error("The harness does not create master actors (they need two authenticators); use admin with explicit permissions.");
 
-  // 4. Add to workspace_members
-  const { rows: memberRows } = await client.query(`
-    insert into workspace_members (workspace_id, admin_user_id, status)
-    values ($1, $2, 'active')
-    returning id
-  `, [workspaceId, adminUserId]);
-  const memberId = memberRows[0].id;
+  // 1. Real built-in auth user and its CMS profile, membership and permissions, in one transaction.
+  let authUserId;
+  let adminUserId;
+  await client.query("begin");
+  try {
+    ({ authUserId } = await createBuiltinUser(client, { email, password, name: `Cert User ${email}`, pwnedLookup: async () => null }));
 
-  // 5. If specific permissions requested, create role and assign
-  if (permissions.length > 0) {
-    const roleKey = `role_${Date.now().toString().slice(-6)}_${randomUUID().slice(0, 4)}`;
-    const { rows: roleRows } = await client.query(`
-      insert into roles (workspace_id, key, name, is_system)
-      values ($1, $2, 'Cert Custom Role', false)
+    const { rows: adminRows } = await client.query(`
+      insert into admin_users (auth_user_id, username, email, display_name, role, is_active, surface_access, module_access, module_write_access)
+      values ($1, $2, $3, $4, $5, true, array['cms'], array['*'], array['*'])
+      returning id, email
+    `, [authUserId, email, email, `Cert User ${email}`, dbAdminRole]);
+    adminUserId = adminRows[0].id;
+
+    const { rows: memberRows } = await client.query(`
+      insert into workspace_members (workspace_id, admin_user_id, status)
+      values ($1, $2, 'active')
       returning id
-    `, [workspaceId, roleKey]);
-    const roleId = roleRows[0].id;
+    `, [workspaceId, adminUserId]);
+    const memberId = memberRows[0].id;
 
-    for (const perm of permissions) {
-      await client.query(`
-        insert into role_permissions (role_id, permission_key)
-        values ($1, $2)
-        on conflict do nothing
-      `, [roleId, perm]);
+    if (permissions.length > 0) {
+      const roleKey = `role_${Date.now().toString().slice(-6)}_${randomUUID().slice(0, 4)}`;
+      const { rows: roleRows } = await client.query(`
+        insert into roles (workspace_id, key, name, is_system)
+        values ($1, $2, 'Cert Custom Role', false)
+        returning id
+      `, [workspaceId, roleKey]);
+      const roleId = roleRows[0].id;
+      for (const perm of permissions) {
+        await client.query("insert into role_permissions (role_id, permission_key) values ($1, $2) on conflict do nothing", [roleId, perm]);
+      }
+      await client.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2) on conflict do nothing", [memberId, roleId]);
     }
-
-    await client.query(`
-      insert into member_roles (workspace_member_id, role_id)
-      values ($1, $2)
-      on conflict do nothing
-    `, [memberId, roleId]);
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
   }
 
+  // 2. Sign in over HTTP, as the admin UI does.
+  const clientAddress = `198.18.${randomBytes(1)[0]}.${(randomBytes(1)[0] % 254) + 1}`;
+  const session = authSession(clientAddress);
+  try {
+    await session.call("POST", "/sign-in/email", { email, password });
+    if (ADMIN_ROLES.has(dbAdminRole)) {
+      // Admins must have a second factor: register an authenticator app, then sign in again with its code.
+      const enabled = await session.call("POST", "/two-factor/enable", { password });
+      const secret = new URL(enabled.totpURI).searchParams.get("secret");
+      const code = () => createOTP(base32.decode(secret)).totp();
+      await session.call("POST", "/two-factor/verify-totp", { code: await code() });
+      const again = await session.call("POST", "/sign-in/email", { email, password });
+      if (!again?.twoFactorRedirect) throw new Error("Sign-in did not ask for the second factor");
+      await session.call("POST", "/two-factor/verify-totp", { code: await code() });
+    }
+  } catch (error) {
+    await client.query('delete from polynovea_auth."user" where id = $1', [authUserId]).catch(() => {});
+    await client.query("delete from admin_users where id = $1", [adminUserId]).catch(() => {});
+    throw error;
+  }
+
+  const cookie = session.cookieHeader();
   return {
     authUserId,
     adminUserId,
     email,
-    token,
     headers: {
-      Authorization: `Bearer ${token}`,
+      cookie,
+      origin: ORIGIN,
+      "x-polynovea-csrf": await csrfToken(cookie),
       "x-workspace-id": workspaceId,
       "Content-Type": "application/json",
     },
@@ -184,10 +229,10 @@ export async function teardownCertification({
     }
   }
 
-  // 4. Delete Supabase Auth users
+  // 4. Delete the built-in auth users (their sessions, passwords and second factors cascade).
   for (const uid of authUserIds) {
     try {
-      await adminClient.auth.admin.deleteUser(uid);
+      await client.query('delete from polynovea_auth."user" where id = $1', [uid]);
     } catch (err) {
       leaks.push({ type: "auth_user", id: uid, error: err.message });
     }

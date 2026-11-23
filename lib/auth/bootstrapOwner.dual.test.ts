@@ -50,7 +50,6 @@ beforeAll(async () => {
     AUTH_PROVIDER: "builtin",
     POLYNOVEA_AUTH_SECRET: randomBytes(32).toString("hex"),
     POLYNOVEA_PUBLIC_URL: BASE_URL,
-    POLYNOVEA_DATA_BACKEND: "postgres",
     POLYNOVEA_HIBP_DISABLED: "true",
   });
   resetBuiltinAuthForTests();
