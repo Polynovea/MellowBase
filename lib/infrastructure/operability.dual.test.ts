@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 
 const { ensureEnvironmentComponents, listOperabilityOverview, runProvisioning, runSystemDoctor } = await import("@/lib/infrastructure/operabilityService");
 const { createEnvironment } = await import("@/lib/infrastructure/environmentService");
-
-const recorder = createRecorder();
 
 async function rejection(promise: Promise<unknown>): Promise<{ message: string; status?: number }> {
   try {
@@ -22,7 +19,7 @@ async function environment(backend: BackendFixtures, kind: "development" | "prod
   return { workspaceId, actorId: adminUserId, environmentId: environment.id as string };
 }
 
-describeBothBackends(["infrastructure"], "environment components, System Doctor and the operability overview", (backend) => {
+describeWithDatabase("environment components, System Doctor and the operability overview", (backend) => {
   it("infers components, runs the doctor and lists the overview inside the workspace", async () => {
     const s = await environment(backend, "development", null);
     const components = await ensureEnvironmentComponents(s.workspaceId, s.environmentId);
@@ -51,7 +48,6 @@ describeBothBackends(["infrastructure"], "environment components, System Doctor 
     expect(await rejection(ensureEnvironmentComponents(s.workspaceId, "nope"))).toEqual({ message: "Environment not found", status: 404 });
     expect(await rejection(runSystemDoctor({ ...s, workspaceId: other.workspaceId }))).toEqual({ message: "Environment not found", status: 404 });
     expect((await listOperabilityOverview(other.workspaceId, s.environmentId)).doctorRuns).toEqual([]);
-    recorder.record(backend.name, "doctor", { component: Object.keys(components[0]).sort(), run: Object.keys(run).sort(), overview: Object.keys(overview).sort() });
   });
 
   it("runs provisioning once per hour, gates production changes on approval and marks the approval executed", async () => {
@@ -73,10 +69,5 @@ describeBothBackends(["infrastructure"], "environment components, System Doctor 
 
     const other = await backend.createWorkspace();
     expect(await rejection(runProvisioning({ workspaceId: other.workspaceId, actorId: other.adminUserId, environmentId: dev.environmentId, providerKind: "local", operation: "verify" }))).toEqual({ message: "Environment not found", status: 404 });
-    recorder.record(backend.name, "provisioning", { run: Object.keys(done).sort(), checks: done.checks_json.map((c: { key: string }) => c.key) });
   });
-});
-
-describe("operability backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

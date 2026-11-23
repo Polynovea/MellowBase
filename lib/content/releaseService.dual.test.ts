@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import {
   assignRelease,
@@ -16,9 +15,6 @@ import {
 } from "@/lib/content/releaseService";
 import { createCalendarEvent, listCalendarEvents } from "@/lib/content/calendarService";
 import { createModel } from "@/lib/schema/modelService";
-
-// Releases pin entry versions and read their models: content and schema switch together.
-const recorder = createRecorder();
 
 async function approvedEntries(backend: BackendFixtures, count: number) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -40,7 +36,7 @@ async function approvedEntries(backend: BackendFixtures, count: number) {
 
 const stable = (value: unknown) => JSON.parse(JSON.stringify(value), (key, v) => (["created_at", "updated_at", "scheduled_for", "approved_at", "published_at", "execution_started_at"].includes(key) && v ? "<t>" : v));
 
-describeBothBackends(["content", "schema"], "content releases and the editorial calendar", (backend) => {
+describeWithDatabase("content releases and the editorial calendar", (backend) => {
   it("creates a release and reads it back with every child relation in the same shape", async () => {
     const { workspaceId, adminUserId, versions, entries } = await approvedEntries(backend, 2);
     await backend.query("insert into workspace_locales (workspace_id, locale, enabled, required, is_default) values ($1, 'en', true, true, true)", [workspaceId]);
@@ -68,7 +64,6 @@ describeBothBackends(["content", "schema"], "content releases and the editorial 
     expect(await getRelease(workspaceId, "not-a-uuid")).toBeNull();
 
     const sortItems = (r: { release_items: Array<{ entry_id: string }> }) => ({ ...r, release_items: [...r.release_items].sort((x, y) => x.entry_id.localeCompare(y.entry_id)) });
-    recorder.record(backend.name, "release detail", { keys: Object.keys(release).sort(), itemKeys: Object.keys(release.release_items[0]).sort(), entryKeys: Object.keys(release.release_items[0].content_entries).sort(), versionKeys: Object.keys(release.release_items[0].content_entry_versions).sort(), listedKeys: Object.keys(listed[0]).sort(), detail: stable(sortItems(release)).release_locale_targets });
   });
 
   it("checks readiness, approves, schedules, publishes due releases and refuses bad input", async () => {
@@ -82,7 +77,6 @@ describeBothBackends(["content", "schema"], "content releases and the editorial 
     const readiness = await getReleaseReadiness(workspaceId, releaseId);
     if (!readiness.ok) throw new Error(readiness.error);
     expect(readiness.data.itemReports).toEqual([expect.objectContaining({ entryId: entries[0], versionId: versions[0], locale: "en", drifted: false })]);
-    recorder.record(backend.name, "readiness", { ...readiness.data, itemReports: readiness.data.itemReports.map((report) => ({ ...report, preflight: report.preflight?.status })) });
 
     if (readiness.data.status === "ready") {
       expect(await transitionRelease({ workspaceId, actorId: adminUserId, releaseId, action: "schedule", scheduledFor: "nope" })).toMatchObject({ ok: false });
@@ -91,11 +85,10 @@ describeBothBackends(["content", "schema"], "content releases and the editorial 
       await backend.query("update releases set scheduled_for = now() - interval '1 minute' where id = $1", [releaseId]);
       const processed = await processDueReleases({ workspaceId, actorId: adminUserId });
       expect(processed).toMatchObject({ processed: 1 });
-      recorder.record(backend.name, "processed", processed);
     } else {
       expect(await publishRelease({ workspaceId, actorId: adminUserId, releaseId })).toMatchObject({ ok: false, status: 409 });
     }
-    // Errors from the lifecycle functions are mapped to the same statuses on both paths.
+    // Errors from the lifecycle functions are mapped to HTTP statuses.
     expect(await transitionRelease({ workspaceId, actorId: adminUserId, releaseId: "00000000-0000-0000-0000-000000000000", action: "cancel" })).toMatchObject({ ok: false, status: 404 });
   });
 
@@ -119,8 +112,4 @@ describeBothBackends(["content", "schema"], "content releases and the editorial 
     expect(await listCalendarEvents(b.workspaceId)).toEqual([]);
     expect(await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'editorial.calendar.scheduled'", [a.workspaceId])).toHaveLength(1);
   });
-});
-
-describe("release backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

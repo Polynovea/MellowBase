@@ -1,10 +1,7 @@
-// Media area, collections: types, the shared tree builder, and the backend dispatcher.
+// Media area, collections: types, the shared tree builder.
 //
-// Each function runs on Supabase (collectionService.supabase.ts) or directly on PostgreSQL
-// (collectionService.postgres.ts), chosen per call by the `media` switch in POLYNOVEA_DATA_BACKEND.
-import { usesDirectPostgres } from "@/lib/db/backend";
+// The queries run on PostgreSQL in collectionService.postgres.ts.
 import * as postgres from "@/lib/media/collectionService.postgres";
-import * as supabase from "@/lib/media/collectionService.supabase";
 
 export interface MediaCollectionRow {
   id: string;
@@ -20,7 +17,7 @@ export interface MediaCollectionRow {
   assetCount?: number;
 }
 
-/** Nests collections under their parents and attaches each one's asset count (shared by both paths). */
+/** Nests collections under their parents and attaches each one's asset count. */
 export function buildCollectionTree(collections: MediaCollectionRow[], assetCollectionIds: string[]): MediaCollectionRow[] {
   const counts = new Map<string, number>();
   for (const id of assetCollectionIds) {
@@ -46,15 +43,12 @@ export function buildCollectionTree(collections: MediaCollectionRow[], assetColl
   return rootCollections;
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("media") ? direct : supabase);
 
-export const listCollections: typeof supabase.listCollections = (...args) => impl().listCollections(...args);
-export const getCollection: typeof supabase.getCollection = (...args) => impl().getCollection(...args);
-export const createCollection: typeof supabase.createCollection = (...args) => impl().createCollection(...args);
-export const updateCollection: typeof supabase.updateCollection = (...args) => impl().updateCollection(...args);
-export const deleteCollection: typeof supabase.deleteCollection = (...args) => impl().deleteCollection(...args);
-export const addAssetToCollection: typeof supabase.addAssetToCollection = (...args) => impl().addAssetToCollection(...args);
-export const removeAssetFromCollection: typeof supabase.removeAssetFromCollection = (...args) => impl().removeAssetFromCollection(...args);
-export const listCollectionAssets: typeof supabase.listCollectionAssets = (...args) => impl().listCollectionAssets(...args);
+export const listCollections = postgres.listCollections;
+export const getCollection = postgres.getCollection;
+export const createCollection = postgres.createCollection;
+export const updateCollection = postgres.updateCollection;
+export const deleteCollection = postgres.deleteCollection;
+export const addAssetToCollection = postgres.addAssetToCollection;
+export const removeAssetFromCollection = postgres.removeAssetFromCollection;
+export const listCollectionAssets = postgres.listCollectionAssets;

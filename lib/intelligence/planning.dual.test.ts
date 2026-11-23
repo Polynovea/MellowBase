@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 
 // Environment components belong to infrastructure, which moves in a later wave.
 vi.mock("@/lib/infrastructure/operabilityService", async (importOriginal) => ({
@@ -13,15 +12,13 @@ const { createOperationalPlan, getAutonomyPolicy, getOperationalPlan, listOperat
 const { createDesiredStateRevision, reconcileOperationalState } = await import("@/lib/intelligence/reconciliationService");
 const { refreshOperationalWorldModel } = await import("@/lib/intelligence/worldModelService");
 
-const recorder = createRecorder();
-
 async function setup(backend: BackendFixtures, kind = "staging") {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
   const [environment] = await backend.query<{ id: string }>("insert into workspace_environments (workspace_id, key, name, kind, status) values ($1, $2, 'Env', $2, 'ready') returning id", [workspaceId, kind]);
   return { workspaceId, adminUserId, environmentId: environment.id };
 }
 
-describeBothBackends(["intelligence"], "autonomy policy and operational plans", (backend) => {
+describeWithDatabase("autonomy policy and operational plans", (backend) => {
   it("creates the default policy once and validates policy updates", async () => {
     const s = await setup(backend, "production");
     const policy = await getAutonomyPolicy(s.workspaceId, s.environmentId);
@@ -39,7 +36,6 @@ describeBothBackends(["intelligence"], "autonomy policy and operational plans", 
     await expect(updateAutonomyPolicy({ workspaceId: other.workspaceId, environmentId: s.environmentId, actorId: other.adminUserId, mode: "recommend" })).rejects.toThrow("Environment not found");
     await expect(getAutonomyPolicy(s.workspaceId, "nope")).rejects.toThrow("Environment not found");
     expect(await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'operational.autonomy_policy.updated'", [s.workspaceId])).toHaveLength(1);
-    recorder.record(backend.name, "policy", { keys: Object.keys(updated).sort() });
   });
 
   it("plans from drift, persists the plan graph and marks its drift planned", async () => {
@@ -74,10 +70,5 @@ describeBothBackends(["intelligence"], "autonomy policy and operational plans", 
     const lists = await listOperationalPlans(s.workspaceId, s.environmentId);
     expect(lists.plans.map((p) => p.id)).toEqual([created.plan.id]);
     expect(await listOperationalPlans(other.workspaceId, s.environmentId)).toEqual({ plans: [], simulations: [], executions: [], evidencePackages: [] });
-    recorder.record(backend.name, "plan", { plan: Object.keys(created.plan).sort(), nodes: created.nodes.map((n: { operation: string }) => n.operation).sort(), edgeCount: created.edges.length });
   });
-});
-
-describe("planning backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

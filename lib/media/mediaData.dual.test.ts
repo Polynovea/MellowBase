@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import {
   activeStorageConnections,
   defaultEnvironment,
@@ -16,8 +15,6 @@ import {
 } from "@/lib/media/mediaData";
 import { checkWorkspaceQuota } from "@/lib/media/uploadLimits";
 import type { NewAssetRow } from "@/lib/media/mediaData";
-
-const recorder = createRecorder();
 
 function newAsset(workspaceId: string, adminUserId: string, name: string, size = 100): NewAssetRow {
   return {
@@ -44,7 +41,7 @@ async function connection(backend: BackendFixtures, workspaceId: string, environ
   return row.id;
 }
 
-describeBothBackends("media", "media data primitives (assets, replacement, quota, storage resolution)", (backend) => {
+describeWithDatabase("media data primitives (assets, replacement, quota, storage resolution)", (backend) => {
   afterEach(() => { delete process.env.MEDIA_WORKSPACE_QUOTA_BYTES; });
 
   it("registers assets with their audit event, finds them by checksum and lists active ones", async () => {
@@ -67,7 +64,6 @@ describeBothBackends("media", "media data primitives (assets, replacement, quota
     const failed = await insertAsset({ ...newAsset(workspaceId, adminUserId, "c.png"), created_by: "00000000-0000-0000-0000-000000000000" }, audit);
     expect(failed.ok).toBe(false);
     expect(await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'media.asset.uploaded'", [workspaceId])).toHaveLength(2);
-    recorder.record(backend.name, "asset", first.asset);
   });
 
   it("replaces a file, keeps the history and refuses a foreign asset", async () => {
@@ -89,7 +85,6 @@ describeBothBackends("media", "media data primitives (assets, replacement, quota
     expect(foreign.ok).toBe(false);
     expect(await listAssetReplacements(other.workspaceId, inserted.asset.id)).toEqual([]);
     expect((await findAsset(workspaceId, inserted.asset.id))?.filename).toBe("logo-v2.png");
-    recorder.record(backend.name, "replacement", { asset: replaced.asset, replacement: replaced.replacement });
   });
 
   it("enforces the workspace quota from the sum of active asset sizes", async () => {
@@ -129,8 +124,4 @@ describeBothBackends("media", "media data primitives (assets, replacement, quota
     expect(await activeStorageConnections(other.workspaceId, production)).toEqual([]);
     expect(await exactStorageConnection(workspaceId, "not-a-uuid")).toBeNull();
   });
-});
-
-describe("media data backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

@@ -1,18 +1,13 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { poolConfigFromEnv } from "@/lib/db/pool";
-import { adminBackend, postgresAdminStore, supabaseAdminStore } from "../../scripts/lib/bootstrapAdminStore.mjs";
-
-const recorder = createRecorder();
+import { adminBackend, postgresAdminStore } from "../../scripts/lib/bootstrapAdminStore.mjs";
 const clients: pg.Client[] = [];
 afterAll(async () => { await Promise.all(clients.map((client) => client.end())); });
 
-async function storeFor(backend: BackendFixtures) {
-  if (backend.name === "supabase") return supabaseAdminStore(createServiceRoleClient());
+async function storeFor(_backend: BackendFixtures) {
   // The app's own runtime connection, as the script makes it from POLYNOVEA_DATABASE_URL / DATABASE_URL.
   const client = new pg.Client(poolConfigFromEnv(process.env));
   await client.connect();
@@ -38,7 +33,7 @@ describe("bootstrap admin backend choice", () => {
   });
 });
 
-describeBothBackends(["admin"], "bootstrap admin writes", (backend) => {
+describeWithDatabase("bootstrap admin writes", (backend) => {
   it("makes an identity the master admin and the only-system-role owner, idempotently", async () => {
     const w = await workspaceWithRoles(backend);
     const store = await storeFor(backend);
@@ -61,10 +56,5 @@ describeBothBackends(["admin"], "bootstrap admin writes", (backend) => {
     expect(updated.display_name).toBe("Owner 2");
 
     await expect(store.grantOwner({ ...input, workspaceSlug: `missing-${suffix}` })).rejects.toThrow();
-    recorder.record(backend.name, "bootstrap", { keys: Object.keys(first).sort() });
   });
-});
-
-describe("bootstrap admin backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

@@ -1,11 +1,11 @@
-// Direct PostgreSQL implementation of the agent and extension governance primitives (phase 1, wave 2).
+// PostgreSQL implementation of the agent and extension governance primitives (phase 1, wave 2).
 //
-// Same signatures and return shapes as governanceData.supabase.ts. Differences that are deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Binding a token to an agent locks both rows and re-checks them in the transaction that binds and
-//   audits, so a token revoked (or an agent suspended) a moment earlier can never be bound.
+// audits, so a token revoked (or an agent suspended) a moment earlier can never be bound.
 // - Installing an extension writes the installation, every permission grant and the audit event in
-//   one transaction. The Supabase path ignored errors from the grant upserts, so an install could
-//   succeed with grant rows missing.
+// one transaction. The Supabase path ignored errors from the grant upserts, so an install could
+// succeed with grant rows missing.
 // - Creating an agent or registering a manifest commits with its audit event.
 // - Malformed IDs are "not found"; every statement is scoped by workspace_id.
 import { DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne, withTransaction } from "@/lib/db/index";

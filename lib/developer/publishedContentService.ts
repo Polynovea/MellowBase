@@ -1,8 +1,5 @@
-// Published-content delivery API (GET /api/v1/content): types, the shared ordering rule and the
-// backend dispatcher (the `developer` switch in POLYNOVEA_DATA_BACKEND).
-import { usesDirectPostgres } from "@/lib/db/backend";
+// Published-content delivery API (GET /api/v1/content): types, the shared ordering rule.
 import * as postgres from "@/lib/developer/publishedContentService.postgres";
-import * as supabase from "@/lib/developer/publishedContentService.supabase";
 
 export interface PublishedContentRecord {
   id: string;
@@ -25,9 +22,6 @@ export function orderLikeEntries(records: PublishedContentRecord[], entries: { i
   return [...records].sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0));
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("developer") ? direct : supabase);
 
-export const listPublishedContent: typeof supabase.listPublishedContent = (...args) => impl().listPublishedContent(...args);
-export const getPublishedContent: typeof supabase.getPublishedContent = (...args) => impl().getPublishedContent(...args);
+export const listPublishedContent = postgres.listPublishedContent;
+export const getPublishedContent = postgres.getPublishedContent;

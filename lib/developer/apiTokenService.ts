@@ -1,10 +1,7 @@
-// Developer API tokens: scopes, token generation and validation (shared), and the backend
-// dispatcher (the `developer` switch in POLYNOVEA_DATA_BACKEND). Tokens are random 256-bit values
-// with a `pnv_` prefix; only their SHA-256 hash is stored, and lookups are by that hash.
+// Developer API tokens: scopes, token generation and validation (shared). Tokens are random 256-bit
+// values with a `pnv_` prefix; only their SHA-256 hash is stored, and lookups are by that hash.
 import { createHash, randomBytes } from "node:crypto";
-import { usesDirectPostgres } from "@/lib/db/backend";
 import * as postgres from "@/lib/developer/apiTokenService.postgres";
-import * as supabase from "@/lib/developer/apiTokenService.supabase";
 
 export const DEVELOPER_API_SCOPES = [
   "content.read",
@@ -59,14 +56,11 @@ export interface PreparedDeveloperApiToken {
 
 export interface RateLimitResult { allowed: boolean; limit: number; remaining: number; resetAt: string }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("developer") ? direct : supabase);
 
-export const listDeveloperApiTokens: typeof supabase.listDeveloperApiTokens = (...args) => impl().listDeveloperApiTokens(...args);
-export const revokeDeveloperApiToken: typeof supabase.revokeDeveloperApiToken = (...args) => impl().revokeDeveloperApiToken(...args);
-export const consumeDeveloperApiRateLimit: typeof supabase.consumeDeveloperApiRateLimit = (...args) => impl().consumeDeveloperApiRateLimit(...args);
-export const touchDeveloperApiToken: typeof supabase.touchDeveloperApiToken = (...args) => impl().touchDeveloperApiToken(...args);
+export const listDeveloperApiTokens = postgres.listDeveloperApiTokens;
+export const revokeDeveloperApiToken = postgres.revokeDeveloperApiToken;
+export const consumeDeveloperApiRateLimit = postgres.consumeDeveloperApiRateLimit;
+export const touchDeveloperApiToken = postgres.touchDeveloperApiToken;
 
 export async function createDeveloperApiToken(params: {
   workspaceId: string;
@@ -89,10 +83,10 @@ export async function createDeveloperApiToken(params: {
   const rawToken = `pnv_${randomBytes(32).toString("base64url")}`;
   const tokenPrefix = rawToken.slice(0, 12);
   const prepared: PreparedDeveloperApiToken = { name, scopes, allowedModels, rateLimit, expiresAt: params.expiresAt ?? null, tokenPrefix, tokenHash: digest(rawToken) };
-  const data = await impl().insertDeveloperApiToken({ workspaceId: params.workspaceId, actorId: params.actorId, token: prepared });
+  const data = await postgres.insertDeveloperApiToken({ workspaceId: params.workspaceId, actorId: params.actorId, token: prepared });
   return { token: data, secret: rawToken };
 }
 
 export async function resolveDeveloperApiToken(rawToken: string) {
-  return impl().findDeveloperApiTokenByHash(digest(rawToken));
+  return postgres.findDeveloperApiTokenByHash(digest(rawToken));
 }

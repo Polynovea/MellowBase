@@ -1,7 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
 
 // The delivery request itself is not under test: the endpoint answers with whatever status is queued here.
 const responses: number[] = [];
@@ -13,15 +12,13 @@ vi.mock("@/lib/infrastructure/guardedNetwork", async (importOriginal) => ({
 const {
   createWebhookSubscription, dispatchWebhookDelivery, listWebhookDeliveries, listWebhookSubscriptions, queueWebhookEvent, rotateWebhookSecret, setWebhookSubscriptionActive,
 } = await import("@/lib/content/webhookService");
-
-const recorder = createRecorder();
 const ENDPOINT = "https://93.184.215.14/hooks/cms"; // a public address literal, so no DNS lookup
 
 beforeAll(() => {
   vi.stubEnv("CMS_CONFIG_ENCRYPTION_KEY", randomBytes(32).toString("base64"));
 });
 
-describeBothBackends(["content", "schema"], "webhook subscriptions and deliveries", (backend) => {
+describeWithDatabase("webhook subscriptions and deliveries", (backend) => {
   it("creates, lists, disables, enables and rotates subscriptions inside the workspace", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     await expect(createWebhookSubscription({ workspaceId, actorId: adminUserId, name: "Bad", endpointUrl: "https://127.0.0.1/hook", eventFilters: [] })).rejects.toThrow("Private network destinations");
@@ -57,7 +54,6 @@ describeBothBackends(["content", "schema"], "webhook subscriptions and deliverie
 
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and entity_type = 'webhook_subscription' order by created_at, action", [workspaceId]);
     expect(events.map((e) => e.action).sort()).toEqual(["webhook.secret_rotated", "webhook.subscription_created", "webhook.subscription_disabled", "webhook.subscription_enabled"]);
-    recorder.record(backend.name, "subscription", { created: Object.keys(created.subscription).sort(), listed: Object.keys(listed[0]).sort(), disabled: Object.keys(disabled).sort(), rotated: Object.keys(rotated.subscription).sort() });
   });
 
   it("queues matching events once, lists deliveries per workspace and records delivery outcomes", async () => {
@@ -94,11 +90,5 @@ describeBothBackends(["content", "schema"], "webhook subscriptions and deliverie
     expect((await listWebhookSubscriptions(workspaceId))[0]).toMatchObject({ consecutive_failures: 0, active: true });
     expect(await dispatchWebhookDelivery(deliveries[0].id)).toBeNull(); // already delivered
     expect(await dispatchWebhookDelivery("nope")).toBeNull();
-
-    recorder.record(backend.name, "delivery", { keys: Object.keys(row).sort(), subscriptionKeys: Object.keys(row.webhook_subscriptions).sort() });
   });
-});
-
-describe("webhook backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

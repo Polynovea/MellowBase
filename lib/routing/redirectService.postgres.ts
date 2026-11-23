@@ -1,16 +1,16 @@
-// Direct PostgreSQL implementation of the routing area's redirect service (phase 1, wave 1).
+// PostgreSQL implementation of the routing area's redirect service (phase 1, wave 1).
 //
-// Same signatures and return shapes as redirectService.supabase.ts. Differences that are deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Updating a redirect (history row, update, audit) and deleting one (delete, audit) are each one
-//   transaction; the old path wrote the history row even when the update then failed.
+// transaction; the old path wrote the history row even when the update then failed.
 // - Bulk import writes the rows and the audit row in one transaction, and loads each locale's
-//   active redirects once for the loop checks instead of once per row.
+// active redirects once for the loop checks instead of once per row.
 // - Locale filters are bound parameters. The old path built a PostgREST `or` filter from the
-//   locale string; it stayed inside the workspace filter, but a crafted locale could change it.
+// locale string; it stayed inside the workspace filter, but a crafted locale could change it.
 // - Loop detection reads locale-specific rules after the locale-less ones, so a locale-specific
-//   rule for the same source path is the one followed (the old order was undefined).
+// rule for the same source path is the one followed (the old order was undefined).
 // - Malformed IDs in reads are "not found"; explicit list limits; every statement is scoped by
-//   workspace_id.
+// workspace_id.
 import { DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne, withTransaction, type DbExecutor } from "@/lib/db/index";
 import { recordPlatformEvent } from "@/lib/platform/audit.postgres";
 import { detectRedirectLoopWith, validateImportItems } from "@/lib/routing/redirectRules";

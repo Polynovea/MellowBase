@@ -1,6 +1,6 @@
 import * as mlData from "@/lib/intelligence/mlData";
 import { sha256Canonical } from "@/lib/intelligence/operationalCanonical";
-import { logPlatformEventFor } from "@/lib/platform/audit";
+import { logPlatformEvent } from "@/lib/platform/audit";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -331,7 +331,7 @@ export async function trainSupportedOperationalModels(params: { workspaceId: str
     });
     trained.push({ modelKey: model.model_key, family: model.model_family, modelVersionId: version.id, version: version.version, status: version.status, support: relevant.length, technique });
   }
-  await logPlatformEventFor("intelligence", { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.training.completed", entityType: "workspace_environment", entityId: params.environmentId, metadata: { trained: trained.map((item) => ({ modelKey: item.modelKey, version: item.version, status: item.status, support: item.support })), insufficientCount: insufficient.length } });
+  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.training.completed", entityType: "workspace_environment", entityId: params.environmentId, metadata: { trained: trained.map((item) => ({ modelKey: item.modelKey, version: item.version, status: item.status, support: item.support })), insufficientCount: insufficient.length } });
   return { status: trained.some((item) => item.status === "deployed") ? "models_available" : "insufficient_data", trained, insufficient };
 }
 
@@ -416,7 +416,7 @@ export async function predictOperationalPlan(params: { workspaceId: string; envi
       }
     }
   }
-  if (params.actorId) await logPlatformEventFor("intelligence", { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.plan_predicted", entityType: "operational_change_plan", entityId: plan.id, metadata: { predictionIds: results.map((item) => item.id), statuses: results.map((item) => item.status), deterministicClassification: plan.deterministic_classification } });
+  if (params.actorId) await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.plan_predicted", entityType: "operational_change_plan", entityId: plan.id, metadata: { predictionIds: results.map((item) => item.id), statuses: results.map((item) => item.status), deterministicClassification: plan.deterministic_classification } });
   return { plan: { id: plan.id, deterministicClassification: plan.deterministic_classification, requiresApproval: plan.requires_approval, checksum: plan.plan_checksum_sha256 }, featureSnapshot: snapshot, predictions: results, deterministicSafetyAuthority: true };
 }
 

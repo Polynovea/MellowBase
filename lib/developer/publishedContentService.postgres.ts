@@ -1,10 +1,9 @@
-// Direct PostgreSQL implementation of the published-content delivery API (phase 1, wave 2).
+// PostgreSQL implementation of the published-content delivery API (phase 1, wave 2).
 //
-// Same signatures and return shapes as publishedContentService.supabase.ts. Differences that are
-// deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Routes are loaded only for the entries on the page. The Supabase path loaded every canonical
-//   route in the workspace (capped at 1000 by PostgREST), so a large site served some entries with
-//   route: null.
+// route in the workspace (capped at 1000 by PostgREST), so a large site served some entries with
+// route: null.
 // - A malformed entry ID is "not found"; the model lookup is strict about a single active model.
 // Every query is scoped by workspace_id; versions are reached only through the workspace's entries.
 import { getDb, maybeOne } from "@/lib/db/index";

@@ -1,11 +1,11 @@
 // Direct PostgreSQL path of the admin user profile writes (phase 1, wave 2).
 //
-// Same signatures and return shapes as adminUserService.supabase.ts. Differences that are deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Creating or updating a profile and syncing its default workspace membership (membership row,
-//   system role) run in one transaction. The Supabase path wrote them one by one and, when the
-//   membership failed, deleted the profile again; here nothing is left half-written. The one
-//   compensation kept is the auth trigger's provisioned viewer profile, which existed before the
-//   request: if taking it over fails, it is removed, as before, because the route deletes its auth user.
+// system role) run in one transaction. The Supabase path wrote them one by one and, when the
+// membership failed, deleted the profile again; here nothing is left half-written. The one
+// compensation kept is the auth trigger's provisioned viewer profile, which existed before the
+// request: if taking it over fails, it is removed, as before, because the route deletes its auth user.
 // - Membership errors carry fixed messages, never database text.
 // - Lists have explicit limits and tie-breaks; malformed IDs are "not found".
 import { DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne, withTransaction, type DbExecutor } from "@/lib/db/index";

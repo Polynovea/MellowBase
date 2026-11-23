@@ -1,6 +1,6 @@
-// Direct PostgreSQL implementation of the editorial workflow primitives (phase 1, wave 3).
+// PostgreSQL implementation of the editorial workflow primitives (phase 1, wave 3).
 //
-// Same signatures and return shapes as workflowData.supabase.ts. The embeds become explicit queries:
+// The embeds become explicit queries:
 // - workflow_instances has no workspace_id: the instance is read through its entry's workspace;
 // - workflow_actions and workflow_stage_approvals have none either: read through that instance;
 // - the definition is joined on (id) and must be in the same workspace;

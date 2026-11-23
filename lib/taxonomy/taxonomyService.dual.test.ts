@@ -1,6 +1,5 @@
-import { afterAll, describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import type { DataBackend } from "@/lib/db/backend";
+import { expect, it, vi } from "vitest";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import {
   assignVersionTerms,
   createTaxonomy,
@@ -33,31 +32,6 @@ vi.mock("@/lib/platform/permissions", () => ({
 const TAXONOMY_KEYS = ["created_at", "description", "hierarchical", "id", "model_restrictions", "name", "slug", "updated_at", "workspace_id"];
 const TERM_KEYS = ["created_at", "deprecated_by_term_id", "description", "id", "is_deprecated", "metadata_json", "name", "order_index", "parent_term_id", "slug", "taxonomy_id", "updated_at", "workspace_id"];
 const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?\+00:00$/;
-const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
-
-const sortKeys = (value: unknown): unknown =>
-  Array.isArray(value) ? value.map(sortKeys)
-  : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, sortKeys(v)]))
-  : value;
-
-/** Replaces IDs by first-seen order and timestamps by a marker, so both backends' results compare equal. */
-function normalize(value: unknown): unknown {
-  const ids = new Map<string, string>();
-  return JSON.parse(JSON.stringify(sortKeys(value)), (_key, v) => {
-    if (typeof v !== "string") return v;
-    if (ISO.test(v)) return "<timestamp>";
-    return v.replace(UUID, (id) => {
-      if (!ids.has(id)) ids.set(id, `<id${ids.size + 1}>`);
-      return ids.get(id)!;
-    });
-  });
-}
-
-const recorded: Partial<Record<DataBackend, Record<string, unknown>>> = {};
-const record = (backend: DataBackend, name: string, value: unknown) => {
-  recorded[backend] ??= {};
-  recorded[backend]![name] = normalize(value);
-};
 
 async function seedTerms(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -71,7 +45,7 @@ async function seedTerms(backend: BackendFixtures) {
   return { workspaceId, adminUserId, taxonomy, parent, child, sibling };
 }
 
-describeBothBackends("taxonomy", "taxonomy service", (backend) => {
+describeWithDatabase("taxonomy service", (backend) => {
   it("creates, lists, reads, updates and deletes taxonomies with identical shapes", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const created = await createTaxonomy({ workspaceId, actorAdminUserId: adminUserId, name: "  Regions ", slug: "World Regions!", description: " Where ", modelRestrictions: ["article"] });
@@ -91,7 +65,6 @@ describeBothBackends("taxonomy", "taxonomy service", (backend) => {
 
     expect(await deleteTaxonomy({ workspaceId, actorAdminUserId: adminUserId, id: created.id })).toEqual({ ok: true });
     expect(await getTaxonomy(workspaceId, created.id)).toBeNull();
-    record(backend.name, "taxonomy lifecycle", { created, list, updated });
   });
 
   it("writes an audit event and a webhook delivery for each change", async () => {
@@ -139,7 +112,6 @@ describeBothBackends("taxonomy", "taxonomy service", (backend) => {
     expect(tree[1].children?.map((t) => t.id)).toEqual([child.id]);
     expect(tree[1].localizations).toHaveLength(1);
     expect(tree[1].aliases).toHaveLength(1);
-    record(backend.name, "term tree", tree);
   });
 
   it("updates a term and replaces its localizations and aliases", async () => {
@@ -155,7 +127,6 @@ describeBothBackends("taxonomy", "taxonomy service", (backend) => {
     expect(untouched.localizations).toHaveLength(1);
     expect(untouched.aliases).toHaveLength(1);
     expect(await getTerm(workspaceId, child.id)).toEqual(updated);
-    record(backend.name, "term update", { updated, untouched });
   });
 
   it("merges terms through the SQL function and refuses invalid merges", async () => {
@@ -172,7 +143,6 @@ describeBothBackends("taxonomy", "taxonomy service", (backend) => {
     const other = await createTaxonomy({ workspaceId, actorAdminUserId: adminUserId, name: "Other", slug: "other" });
     const foreign = await createTerm({ workspaceId, actorAdminUserId: adminUserId, taxonomyId: other.id, name: "Foreign", slug: "foreign" });
     await expect(mergeTerms({ workspaceId, actorAdminUserId: adminUserId, sourceTermId: foreign.id, targetTermId: sibling.id })).rejects.toThrow("Cannot merge terms from different taxonomies");
-    record(backend.name, "merge", { result, source, target });
   });
 
   it("assigns terms to a version and reports usage", async () => {
@@ -192,7 +162,6 @@ describeBothBackends("taxonomy", "taxonomy service", (backend) => {
     await assignVersionTerms({ workspaceId, entryId, versionId: versionIds[0], termIds: [] });
     expect(await getVersionTerms(workspaceId, versionIds[0])).toEqual([]);
     expect((await getTermUsage(workspaceId, child.id)).usageCount).toBe(0);
-    record(backend.name, "usage", { usage: { ...usage, entries: [...usage.entries].sort((a, b) => a.versionId.localeCompare(b.versionId)) }, versionTerms: [...versionTerms].sort((a, b) => a.name.localeCompare(b.name)) });
   });
 
   it("serves the six taxonomy routes with the same envelope and safe errors", async () => {
@@ -242,13 +211,5 @@ describeBothBackends("taxonomy", "taxonomy service", (backend) => {
     }
 
     expect((await json(await deleteTaxonomyRoute(req(), params({ id }))))).toMatchObject({ status: 200, body: { data: { ok: true } } });
-  });
-});
-
-describe("taxonomy backends agree", () => {
-  afterAll(() => vi.restoreAllMocks());
-  it("returns identical shapes and values on supabase and postgres", () => {
-    expect(recorded.supabase).toBeDefined();
-    expect(recorded.postgres).toEqual(recorded.supabase);
   });
 });

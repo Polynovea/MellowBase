@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder, ISO_TIMESTAMP, jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
+import { ISO_TIMESTAMP, jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/http";
 import {
   createRedirect,
   deleteRedirect,
@@ -22,9 +22,8 @@ vi.mock("@/lib/platform/permissions", () => ({
 }));
 
 const REDIRECT_KEYS = ["created_at", "created_by", "description", "id", "is_active", "locale", "source_path", "status_code", "target_path", "updated_at", "workspace_id"];
-const recorder = createRecorder();
 
-describeBothBackends("routing", "redirect service", (backend) => {
+describeWithDatabase("redirect service", (backend) => {
   it("creates, lists, updates and deletes redirects with identical shapes and history", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const created = await createRedirect({ workspaceId, actorAdminUserId: adminUserId, sourcePath: "Old/", targetPath: " /new ", description: " moved " });
@@ -48,8 +47,6 @@ describeBothBackends("routing", "redirect service", (backend) => {
     expect(await getRedirect(workspaceId, french.id)).toBeNull();
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and entity_type = 'redirect' order by action", [workspaceId]);
     expect(events.map((e) => e.action)).toEqual(["redirect.created", "redirect.created", "redirect.deleted", "redirect.updated"]);
-
-    recorder.record(backend.name, "redirect lifecycle", { created, french, updated });
   });
 
   it("detects self, circular and over-long redirect chains", async () => {
@@ -70,7 +67,6 @@ describeBothBackends("routing", "redirect service", (backend) => {
 
     for (let i = 0; i < 12; i += 1) await createRedirect({ workspaceId, actorAdminUserId: adminUserId, sourcePath: `/hop${i}`, targetPath: `/hop${i + 1}` });
     expect(await detectRedirectLoop(workspaceId, "/start", "/hop0")).toMatchObject({ isLoop: true, error: "Redirect chain exceeds 10 hops" });
-    recorder.record(backend.name, "loops", { loop });
   });
 
   it("validates targets against live routes", async () => {
@@ -101,7 +97,6 @@ describeBothBackends("routing", "redirect service", (backend) => {
     expect(real.imported.map((r) => [r.source_path, r.status_code, r.description]).sort()).toEqual([["/one", 302, null], ["/three", 301, "d"]]);
     const again = await importRedirects({ workspaceId, actorAdminUserId: adminUserId, items: [{ sourcePath: "/one", targetPath: "/uno", locale: "en" }], dryRun: false });
     expect(again.imported[0]).toMatchObject({ id: real.imported.find((r) => r.source_path === "/one")!.id, target_path: "/uno", status_code: 301 });
-    recorder.record(backend.name, "import", { dry, errors: real.errors, validCount: real.validCount });
   });
 
   it("keeps workspaces isolated", async () => {
@@ -140,8 +135,4 @@ describeBothBackends("routing", "redirect service", (backend) => {
     }
     expect(await readJson(await deleteHandler(jsonRequest(), routeParams({ id })))).toMatchObject({ status: 200 });
   });
-});
-
-describe("redirect service backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

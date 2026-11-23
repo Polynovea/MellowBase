@@ -1,12 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import { createModel, getVersion } from "@/lib/schema/modelService";
 import { executeAssessedMigrationStrategy, listMigrationRuns } from "@/lib/intelligence/migrationStrategyService";
 import * as migrationRunData from "@/lib/intelligence/migrationRunData";
-
-const recorder = createRecorder();
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -33,7 +30,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, modelId, environmentId: environment.id, assess, entries: entries.sort() };
 }
 
-describeBothBackends(["intelligence", "schema", "content"], "migration strategy runs", (backend) => {
+describeWithDatabase("migration strategy runs", (backend) => {
   it("runs a direct metadata change once, then reports it as already done", async () => {
     const s = await setup(backend);
     const assessmentId = await s.assess("safe", []);
@@ -49,7 +46,6 @@ describeBothBackends(["intelligence", "schema", "content"], "migration strategy 
     expect((await listMigrationRuns(s.workspaceId, s.environmentId)).map((r) => r.id)).toEqual([first.run.id]);
     expect(await listMigrationRuns(other.workspaceId, s.environmentId)).toEqual([]);
     expect(await listMigrationRuns(s.workspaceId, "nope")).toEqual([]);
-    recorder.record(backend.name, "direct", { keys: Object.keys(first.run).sort() });
   });
 
   it("transforms entries in batches, records each batch and stops at verification without a database connection", async () => {
@@ -73,10 +69,5 @@ describeBothBackends(["intelligence", "schema", "content"], "migration strategy 
     const other = await setup(backend);
     expect(await migrationRunData.entryBatch(other.workspaceId, s.modelId, null, 10)).toEqual([]);
     expect((await migrationRunData.entryBatch(s.workspaceId, s.modelId, s.entries[0], 10)).map((row) => row.entry.id)).toEqual(s.entries.slice(1));
-    recorder.record(backend.name, "batches", { batches, run: { status: run.status, progress: run.progress_json } });
   });
-});
-
-describe("migration strategy backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

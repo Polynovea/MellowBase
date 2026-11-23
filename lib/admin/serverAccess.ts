@@ -1,9 +1,7 @@
 import type { RequestIdentity, User } from "@/lib/auth/provider";
 import { hasModuleAccess, hasModuleWriteAccess, normalizeAdminUser, type AdminModule } from "@/lib/admin/access";
 import type { AdminUser } from "@/lib/admin/types";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { postgresAdminProfileStore, resolveAdminProfile, supabaseAdminProfileStore } from "@/lib/admin/profileResolution";
-import { usesDirectPostgres } from "@/lib/db/backend";
+import { postgresAdminProfileStore, resolveAdminProfile } from "@/lib/admin/profileResolution";
 import { getServerIdentityProvider } from "@/lib/auth/server";
 import { csrfProblem, needsStepUp, requiredAuthenticators, securityResponse } from "@/lib/auth/requestSecurity";
 
@@ -73,7 +71,7 @@ export async function requireAdminRequest(
   let profile: AdminUser | null = null;
 
   try {
-    const store = usesDirectPostgres("admin") ? postgresAdminProfileStore() : supabaseAdminProfileStore(createServiceRoleClient());
+    const store = postgresAdminProfileStore();
     const resolved = await resolveAdminProfile(store, user);
     profile = resolved ? normalizeAdminUser(resolved) : null;
   } catch {

@@ -1,15 +1,15 @@
-// Direct PostgreSQL implementation of the media area's database primitives (phase 1, wave 2).
+// PostgreSQL implementation of the media area's database primitives (phase 1, wave 2).
 //
-// Same signatures and return shapes as mediaData.supabase.ts. Differences that are deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Registering an asset writes the row and its audit event in one transaction.
 // - Replacing a file runs cms_replace_asset_file and reads the history row it wrote in the same
-//   transaction; the function's own messages pass through, database internals do not.
+// transaction; the function's own messages pass through, database internals do not.
 // - The quota sums sizes in SQL. The Supabase path loaded one row per asset (capped at 1000 by
-//   PostgREST), so a large workspace's usage was undercounted and the quota could be exceeded.
+// PostgREST), so a large workspace's usage was undercounted and the quota could be exceeded.
 // - A duplicate checksum is resolved deterministically (oldest asset first) instead of failing as
-//   "more than one row" and reading as "no duplicate".
+// "more than one row" and reading as "no duplicate".
 // - Malformed IDs are "not found"; lists have explicit limits and id tie-breaks; every statement is
-//   scoped by workspace_id.
+// scoped by workspace_id.
 import { sql } from "kysely";
 import { callFunction, DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne, SqlFunctionError, withTransaction } from "@/lib/db/index";
 import { clientErrorMessage } from "@/lib/http/clientError";

@@ -1,14 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
 
 const routeData = await import("@/lib/http/routeData");
-
-const recorder = createRecorder();
 const SHA = "a".repeat(64);
 
-describeBothBackends(["routes"], "queries made directly in API routes", (backend) => {
+describeWithDatabase("queries made directly in API routes", (backend) => {
   it("creates, lists, updates and deletes platforms", async () => {
     const name = `Platform ${randomUUID().slice(0, 8)}`;
     const created = await routeData.createPlatform({ name, for_social: false, for_ads: true });
@@ -26,7 +23,6 @@ describeBothBackends(["routes"], "queries made directly in API routes", (backend
     await routeData.deletePlatform(created.id);
     await routeData.deletePlatform(second.id);
     expect((await routeData.listPlatforms(null)).map((p) => p.id)).not.toContain(created.id);
-    recorder.record(backend.name, "platforms", { keys: Object.keys(created).sort() });
   });
 
   it("reads entries, search documents, members and assets only inside the workspace", async () => {
@@ -52,7 +48,6 @@ describeBothBackends(["routes"], "queries made directly in API routes", (backend
     expect(await routeData.versionModelKeys(other.workspaceId, versionIds)).toEqual([]);
     expect(await routeData.entryModelKeys(other.workspaceId, [entryId])).toEqual([]);
     expect(await routeData.entryIdsInModels(workspaceId, [])).toEqual([]);
-    recorder.record(backend.name, "reads", { search: Object.keys((await routeData.searchDocuments(workspaceId, [entryId]))[0]).sort(), member: Object.keys((await routeData.activeMemberProfiles(workspaceId))[0]).sort() });
   });
 
   it("lists extension installations with their manifests, and import and schema runs", async () => {
@@ -74,10 +69,5 @@ describeBothBackends(["routes"], "queries made directly in API routes", (backend
     expect(await routeData.extensionInstallations(other.workspaceId)).toEqual([]);
     expect(await routeData.importRuns(other.workspaceId)).toEqual([]);
     expect(await routeData.schemaRuns(other.workspaceId)).toEqual([]);
-    recorder.record(backend.name, "runs", { installation: Object.keys(installations[0]).sort(), imports: Object.keys((await routeData.importRuns(workspaceId))[0]).sort(), schema: Object.keys((await routeData.schemaRuns(workspaceId))[0]).sort() });
   });
-});
-
-describe("route query backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

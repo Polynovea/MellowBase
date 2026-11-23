@@ -1,18 +1,42 @@
-// Workspace export reads (lib/developer/exportService.ts), with the backend dispatcher (the
-// `developer` switch in POLYNOVEA_DATA_BACKEND). The export decides which tables and columns are
-// portable; these helpers only read them.
-//
-// Behaviour change on the direct path: no row cap. Over PostgREST each read returned at most 1000
-// rows, so an export of a workspace with more than 1000 rows in any table (entries, versions, audit
-// events, ...) was silently incomplete.
-import { usesDirectPostgres } from "@/lib/db/backend";
-import * as postgres from "@/lib/developer/exportData.postgres";
-import * as supabase from "@/lib/developer/exportData.supabase";
+// Direct PostgreSQL path of the workspace export reads (phase 1, wave 2). without PostgREST's
+// 1000-row cap. Table and column names come from the export's own constants; they are still checked
+// against a plain-identifier pattern and always quoted, never concatenated.
+import { sql } from "kysely";
+import { getDb, maybeOne } from "@/lib/db/index";
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("developer") ? direct : supabase);
+const IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
 
-export const rowsForWorkspace: typeof supabase.rowsForWorkspace = (...args) => impl().rowsForWorkspace(...args);
-export const rowsByIds: typeof supabase.rowsByIds = (...args) => impl().rowsByIds(...args);
-export const exportedWorkspace: typeof supabase.exportedWorkspace = (...args) => impl().exportedWorkspace(...args);
+function identifier(name: string): string {
+  if (!IDENTIFIER.test(name)) throw new Error(`Export refused an unexpected identifier: ${JSON.stringify(name)}`);
+  return name;
+}
+
+function columns(select: string) {
+  if (select.trim() === "*") return sql`*`;
+  return sql.join(select.split(",").map((column) => sql.ref(identifier(column.trim()))));
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any -- export rows are passed through as they are */
+export async function rowsForWorkspace(table: string, workspaceId: string, select = "*"): Promise<any[]> {
+  try {
+    const { rows } = await sql`select ${columns(select)} from ${sql.table(identifier(table))} where workspace_id = ${workspaceId}`.execute(getDb());
+    return rows as any[];
+  } catch (error) {
+    throw Object.assign(new Error(`Export failed for ${table}`), { cause: error });
+  }
+}
+
+export async function rowsByIds(table: string, column: string, ids: string[], select = "*"): Promise<any[]> {
+  if (!ids.length) return [];
+  try {
+    const { rows } = await sql`select ${columns(select)} from ${sql.table(identifier(table))} where ${sql.ref(identifier(column))} = any(${ids}::uuid[])`.execute(getDb());
+    return rows as any[];
+  } catch (error) {
+    throw Object.assign(new Error(`Export failed for ${table}`), { cause: error });
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+export async function exportedWorkspace(workspaceId: string): Promise<{ id: string; slug: string; name: string; created_at: string | null; updated_at: string | null } | null> {
+  return maybeOne(await getDb().selectFrom("workspaces").select(["id", "slug", "name", "created_at", "updated_at"]).where("id", "=", workspaceId).execute());
+}

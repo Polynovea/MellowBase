@@ -18,7 +18,7 @@ MellowBase is becoming a backend that you deploy into your own AWS or Azure acco
 - **Built-in auth.** No external auth service. The owner account, MFA and sessions are created in a first-run setup wizard, protected by a one-time setup code.
 - **Your choice of database.** PostgreSQL on the server's own disk with automatic backups, an existing managed database (Amazon RDS or Azure Database for PostgreSQL), or one created for you by a one-click template in your own cloud account.
 
-The work is in phases; see the [implementation plan](docs/Upgrade%20Plans/Polynovea%20CMS%20Upgrade%20Implementation%20Plan.md) and the [design](docs/Upgrade%20Plans/Polynovea%20CMS%20Self-Hosted%20Platform%20Upgrade%20Design.md). Phase 0 is merged: a direct PostgreSQL data layer behind the `POLYNOVEA_DATA_BACKEND` switch, with tests that run on both Supabase and plain PostgreSQL. Until the later phases land, the supported runtime is the one below.
+The work is in phases; see the [implementation plan](docs/Upgrade%20Plans/Polynovea%20CMS%20Upgrade%20Implementation%20Plan.md) and the [design](docs/Upgrade%20Plans/Polynovea%20CMS%20Self-Hosted%20Platform%20Upgrade%20Design.md). Phase 0 is merged, and in phase 1 every data area moved to a direct PostgreSQL data layer, tested on plain PostgreSQL; the per-area switch that kept Supabase as a fallback during the move is gone. Until the later phases land, the supported runtime is the one below.
 
 ## Supported V1 runtime
 
@@ -173,7 +173,7 @@ The configured PostgreSQL role must be allowed to create and drop the disposable
 ## Current limitations
 
 - built-in authentication (replacing Supabase Auth) is in progress in phase 1 of the upgrade plan;
-- the direct PostgreSQL data path is in progress area by area and is not yet certified; keep `POLYNOVEA_DATA_BACKEND=supabase` in production;
+- every data area now runs directly on PostgreSQL (`POLYNOVEA_DATABASE_URL`); the phase 1 certification runs on PostgreSQL 15, 16 and 17 are still to come;
 - the R2 adapter is the first-class supplied media adapter; other S3-compatible providers may require configuration/adapter work;
 - operators must provide a managed or independently operated Supabase-compatible backend and an external worker process.
 

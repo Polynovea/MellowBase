@@ -1,11 +1,7 @@
-// Navigation area: types and the backend dispatcher.
+// Navigation area: types.
 //
-// Each function runs on Supabase (navigationService.supabase.ts) or directly on PostgreSQL
-// (navigationService.postgres.ts), chosen per call by POLYNOVEA_DATA_BACKEND (see lib/db/backend.ts).
-// Both implementations keep the same signatures and return shapes, so the routes do not change.
-import { usesDirectPostgres } from "@/lib/db/backend";
+// The queries run on PostgreSQL in navigationService.postgres.ts.
 import * as postgres from "@/lib/navigation/navigationService.postgres";
-import * as supabase from "@/lib/navigation/navigationService.supabase";
 
 export interface NavigationMenuRow {
   id: string;
@@ -59,18 +55,15 @@ export interface ResolvedNavigationNode {
   children: ResolvedNavigationNode[];
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("navigation") ? direct : supabase);
 
-export const listMenus: typeof supabase.listMenus = (...args) => impl().listMenus(...args);
-export const getMenu: typeof supabase.getMenu = (...args) => impl().getMenu(...args);
-export const createMenu: typeof supabase.createMenu = (...args) => impl().createMenu(...args);
-export const syncMenuRelations: typeof supabase.syncMenuRelations = (...args) => impl().syncMenuRelations(...args);
-export const saveMenuDraft: typeof supabase.saveMenuDraft = (...args) => impl().saveMenuDraft(...args);
-export const publishMenu: typeof supabase.publishMenu = (...args) => impl().publishMenu(...args);
-export const listMenuVersions: typeof supabase.listMenuVersions = (...args) => impl().listMenuVersions(...args);
-export const getResolvedNavigationTree: typeof supabase.getResolvedNavigationTree = (...args) => impl().getResolvedNavigationTree(...args);
-export const getNavigationWhereUsed: typeof supabase.getNavigationWhereUsed = (...args) => impl().getNavigationWhereUsed(...args);
-export const updateMenuDetails: typeof supabase.updateMenuDetails = (...args) => impl().updateMenuDetails(...args);
-export const deleteMenu: typeof supabase.deleteMenu = (...args) => impl().deleteMenu(...args);
+export const listMenus = postgres.listMenus;
+export const getMenu = postgres.getMenu;
+export const createMenu = postgres.createMenu;
+export const syncMenuRelations = postgres.syncMenuRelations;
+export const saveMenuDraft = postgres.saveMenuDraft;
+export const publishMenu = postgres.publishMenu;
+export const listMenuVersions = postgres.listMenuVersions;
+export const getResolvedNavigationTree = postgres.getResolvedNavigationTree;
+export const getNavigationWhereUsed = postgres.getNavigationWhereUsed;
+export const updateMenuDetails = postgres.updateMenuDetails;
+export const deleteMenu = postgres.deleteMenu;

@@ -1,11 +1,8 @@
 // Command Center snapshot: the counts and recent rows behind the admin home page.
 //
-// The data is gathered on Supabase (commandCenterService.supabase.ts) or directly on PostgreSQL
-// (commandCenterService.postgres.ts), chosen by the `admin` switch in POLYNOVEA_DATA_BACKEND. The
-// readiness and attention rules below are shared, so both paths report the same thing.
-import { usesDirectPostgres } from "@/lib/db/backend";
+// The data come from PostgreSQL in commandCenterService.postgres.ts. The readiness and attention
+// rules are below.
 import * as postgres from "@/lib/admin/commandCenterService.postgres";
-import * as supabase from "@/lib/admin/commandCenterService.supabase";
 
 interface AttentionItem {
   key: string;
@@ -38,12 +35,9 @@ export interface CommandCenterData {
   recentReleases: any[];
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("admin") ? direct : supabase);
 
 export async function getCommandCenterSnapshot(workspaceId: string, actorId: string) {
-  const data = await impl().gatherCommandCenterData(workspaceId, actorId);
+  const data = await postgres.gatherCommandCenterData(workspaceId, actorId);
   const {
     models, entries, draftEntries, reviewEntries, approvedEntries, scheduledEntries, publishedEntries, assets,
     releasesOpen, releasesScheduled, releasesFailed, jobsQueued, jobsRunning, jobsDead,

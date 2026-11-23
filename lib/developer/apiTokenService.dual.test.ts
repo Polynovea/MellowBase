@@ -1,16 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder, ISO_TIMESTAMP } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
+import { ISO_TIMESTAMP } from "@/lib/db/testing/http";
 import { requireDeveloperApi } from "@/lib/developer/apiAuth";
 import { createDeveloperApiToken, listDeveloperApiTokens, resolveDeveloperApiToken, revokeDeveloperApiToken } from "@/lib/developer/apiTokenService";
-
-const recorder = createRecorder();
 const TOKEN_KEYS = ["allowed_models", "created_at", "expires_at", "id", "name", "rate_limit_per_minute", "scopes", "token_prefix"];
 
 const call = (secret: string | null, path = "/api/v1/entries", method = "GET") =>
   new Request(`http://cms.test${path}`, { method, headers: secret ? { authorization: `Bearer ${secret}`, "x-request-id": "req-1" } : {} });
 
-describeBothBackends("developer", "developer API tokens and API authentication", (backend) => {
+describeWithDatabase("developer API tokens and API authentication", (backend) => {
   it("creates, lists, resolves and revokes tokens with identical shapes; stores only the hash", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const { token, secret } = await createDeveloperApiToken({ workspaceId, actorId: adminUserId, name: " CI ", scopes: ["content.read", "content.read", "schema.read"], allowedModels: [" blog ", ""], rateLimitPerMinute: 60 });
@@ -32,9 +30,7 @@ describeBothBackends("developer", "developer API tokens and API authentication",
     expect(revoked.revoked_at).toMatch(ISO_TIMESTAMP);
     expect(await revokeDeveloperApiToken({ workspaceId, actorId: adminUserId, tokenId: token.id })).toMatchObject({ id: token.id }); // idempotent
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and entity_type = 'developer_api_token' order by action", [workspaceId]);
-    expect(events.map((e) => e.action)).toEqual(["developer.api_token.created", "developer.api_token.revoked"]); // revoked once
-
-    recorder.record(backend.name, "token", { token: { ...token, token_prefix: "<prefix>" }, revokedKeys: Object.keys(revoked).sort() });
+    expect(events.map((e) => e.action)).toEqual(["developer.api_token.created", "developer.api_token.revoked"]);
   });
 
   it("refuses invalid scopes, rate limits and expiry dates before writing anything", async () => {
@@ -89,8 +85,4 @@ describeBothBackends("developer", "developer API tokens and API authentication",
     // A token always authenticates into its own workspace.
     expect((await requireDeveloperApi(call(secret), { scope: "content.read" })).data?.workspaceId).toBe(a.workspaceId);
   });
-});
-
-describe("developer token backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

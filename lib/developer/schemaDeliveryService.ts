@@ -6,7 +6,7 @@ import { applyChange, computeSchemaHash, createModel, getVersion, listModels, ty
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
 import { logDeveloperApiMutation } from "@/lib/developer/developerAudit";
-import { logPlatformEventFor } from "@/lib/platform/audit";
+import { logPlatformEvent } from "@/lib/platform/audit";
 
 export interface SchemaDeliveryContext {
   workspaceId: string;
@@ -125,7 +125,7 @@ async function logSchemaDeliveryMutation(context:SchemaDeliveryContext,action:st
     return logDeveloperApiMutation(context as DeveloperApiContext,action,"developer_schema_run",runId,metadata);
   }
   if(!context.actorAdminUserId) throw new Error("An audited admin actor is required for schema delivery mutations");
-  return logPlatformEventFor("developer", {workspaceId:context.workspaceId,actorAdminUserId:context.actorAdminUserId,action:action.replace(/^developer\./,"schema."),entityType:"developer_schema_run",entityId:runId,metadata:{...metadata,channel:"admin_ui"}});
+  return logPlatformEvent({workspaceId:context.workspaceId,actorAdminUserId:context.actorAdminUserId,action:action.replace(/^developer\./,"schema."),entityType:"developer_schema_run",entityId:runId,metadata:{...metadata,channel:"admin_ui"}});
 }
 
 export async function dryRunSchemaPromotion(context: SchemaDeliveryContext, input: unknown, targetEnvironment?: string | null) {

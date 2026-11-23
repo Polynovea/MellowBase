@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder, ISO_TIMESTAMP, jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
+import { ISO_TIMESTAMP, jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/http";
 import {
   addAssetToCollection,
   createCollection,
@@ -20,7 +20,6 @@ vi.mock("@/lib/platform/permissions", () => ({
 }));
 
 const COLLECTION_KEYS = ["created_at", "created_by", "description", "id", "name", "parent_collection_id", "slug", "updated_at", "workspace_id"];
-const recorder = createRecorder();
 
 async function asset(backend: BackendFixtures, workspaceId: string, name: string) {
   const [row] = await backend.query<{ id: string }>(
@@ -30,7 +29,7 @@ async function asset(backend: BackendFixtures, workspaceId: string, name: string
   return row.id;
 }
 
-describeBothBackends("media", "media collection service", (backend) => {
+describeWithDatabase("media collection service", (backend) => {
   it("creates, nests, counts, updates and deletes collections with identical shapes", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const root = await createCollection({ workspaceId, actorAdminUserId: adminUserId, name: " Brand ", slug: "Brand Kit!", description: " Logos " });
@@ -60,8 +59,6 @@ describeBothBackends("media", "media collection service", (backend) => {
     expect(await getCollection(workspaceId, child.id)).toBeNull(); // cascades to the child
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and entity_type = 'media_collection' order by action", [workspaceId]);
     expect(events.map((e) => e.action)).toEqual(["media.collection.created", "media.collection.created", "media.collection.deleted", "media.collection.updated"]);
-
-    recorder.record(backend.name, "collections", { root, child, tree, updated });
   });
 
   it("rejects a duplicate slug and keeps workspaces isolated", async () => {
@@ -108,8 +105,4 @@ describeBothBackends("media", "media collection service", (backend) => {
     }
     expect((await readJson(await deleteHandler(jsonRequest(), routeParams({ id })))).status).toBe(200);
   });
-});
-
-describe("media collection backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

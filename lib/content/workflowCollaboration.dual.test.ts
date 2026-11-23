@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import { getWorkflow, transitionWorkflow } from "@/lib/content/workflowService";
 import { listWorkflowDefinitions, saveWorkflowDefinition } from "@/lib/content/workflowDefinitionService";
 import { addComment, assignEntry, getEntryCollaboration, getMyEditorialQueue, markEditorialNotificationsRead, resolveComment, setWatch } from "@/lib/content/collaborationService";
 import { createModel } from "@/lib/schema/modelService";
-
-const recorder = createRecorder();
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -21,7 +18,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, colleagueId: colleague.id, modelId: model.data.model.id, entryId: entry.data.entry.id };
 }
 
-describeBothBackends(["content", "schema"], "editorial workflow and collaboration", (backend) => {
+describeWithDatabase("editorial workflow and collaboration", (backend) => {
   it("saves workflow definitions and runs a workflow, read back with its actions and definition", async () => {
     const { workspaceId, adminUserId, modelId, entryId } = await setup(backend);
     const saved = await saveWorkflowDefinition({ workspaceId, actorId: adminUserId, name: " Review ", contentModelId: modelId, definition: { self_approval: true, approval_stages: [{ label: "Editor", required_approvals: 1 }] } });
@@ -43,7 +40,6 @@ describeBothBackends(["content", "schema"], "editorial workflow and collaboratio
     const other = await backend.createWorkspace();
     expect(await getWorkflow(other.workspaceId, entryId)).toBeNull();
     expect(await listWorkflowDefinitions(other.workspaceId)).toEqual([]);
-    recorder.record(backend.name, "workflow", { keys: Object.keys(workflow).sort(), definitionKeys: Object.keys(definitions[0]).sort(), againStatus: again.ok ? null : again.status });
   });
 
   it("assigns, comments with mentions of members only, resolves, watches and serves the editorial queue", async () => {
@@ -78,15 +74,10 @@ describeBothBackends(["content", "schema"], "editorial workflow and collaboratio
     expect(q.notifications.map((n) => n.kind).sort()).toEqual(["assignment", "mention"]);
     expect(await markEditorialNotificationsRead({ workspaceId, actorId: colleagueId })).toMatchObject({ ok: false, status: 400 });
     expect(await markEditorialNotificationsRead({ workspaceId, actorId: colleagueId, all: true })).toEqual({ ok: true, data: { updated: 2 } });
-    recorder.record(backend.name, "collaboration", { assigned: assigned.ok && Object.keys(assigned.data as object).sort(), queueKeys: Object.keys(q.assignments[0]).sort(), comment: { ...(comment.data as object), id: "<id>" } });
 
     // Another workspace cannot read or act on the entry.
     expect(await getEntryCollaboration(outsider.workspaceId, entryId)).toMatchObject({ ok: false, status: 404 });
     expect(await addComment({ workspaceId: outsider.workspaceId, entryId, actorId: outsider.adminUserId, body: "x" })).toMatchObject({ ok: false, status: 404 });
     expect(await resolveComment({ workspaceId: outsider.workspaceId, entryId, commentId, actorId: outsider.adminUserId })).toMatchObject({ ok: false, status: 404 });
   });
-});
-
-describe("workflow and collaboration backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });
