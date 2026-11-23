@@ -2,6 +2,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import process from "node:process";
 import { createClient } from "@supabase/supabase-js";
+import pg from "pg";
+import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
+import { adminBackend, postgresAdminStore, supabaseAdminStore } from "./lib/bootstrapAdminStore.mjs";
 
 function loadLocalEnv() {
   if (!existsSync(".env.local")) return;
@@ -89,102 +92,20 @@ try {
     authUser = data.user;
   }
 
-  const { data: existing, error: existingError } = await client
-    .from("admin_users")
-    .select("*")
-    .eq("email", email)
-    .maybeSingle();
-  if (existingError) throw existingError;
-
-  let adminUser;
-  if (existing) {
-    const { data, error } = await client
-      .from("admin_users")
-      .update({
-        auth_user_id: authUser.id,
-        username,
-        display_name: displayName,
-        role: "master",
-        is_active: true,
-        surface_access: ["cms", "content"],
-        module_access: ["*"],
-        module_write_access: ["*"],
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", existing.id)
-      .select("*")
-      .single();
-    if (error) throw error;
-    adminUser = data;
+  // The admin, membership and owner-role writes follow the `admin` area of POLYNOVEA_DATA_BACKEND.
+  if (adminBackend(process.env.POLYNOVEA_DATA_BACKEND) === "postgres") {
+    const connectionString = process.env.POLYNOVEA_DATABASE_URL || process.env.DATABASE_URL;
+    if (!connectionString) throw new Error("POLYNOVEA_DATABASE_URL (or DATABASE_URL) is required when the admin area uses PostgreSQL.");
+    const db = new pg.Client(postgresConnectionConfig(connectionString));
+    await db.connect();
+    try {
+      await postgresAdminStore(db).grantOwner({ authUserId: authUser.id, email, username, displayName, workspaceSlug });
+    } finally {
+      await db.end();
+    }
   } else {
-    const { data, error } = await client
-      .from("admin_users")
-      .insert({
-        auth_user_id: authUser.id,
-        username,
-        email,
-        display_name: displayName,
-        role: "master",
-        is_active: true,
-        surface_access: ["cms", "content"],
-        module_access: ["*"],
-        module_write_access: ["*"],
-        created_by: "bootstrap:admin",
-      })
-      .select("*")
-      .single();
-    if (error) throw error;
-    adminUser = data;
+    await supabaseAdminStore(client).grantOwner({ authUserId: authUser.id, email, username, displayName, workspaceSlug });
   }
-
-  const { data: workspace, error: workspaceError } = await client
-    .from("workspaces")
-    .select("id, slug")
-    .eq("slug", workspaceSlug)
-    .single();
-  if (workspaceError || !workspace) {
-    throw workspaceError || new Error(`Workspace '${workspaceSlug}' does not exist. Apply migrations before bootstrapping the first admin.`);
-  }
-
-  const { data: member, error: memberError } = await client
-    .from("workspace_members")
-    .upsert(
-      { workspace_id: workspace.id, admin_user_id: adminUser.id, status: "active", updated_at: new Date().toISOString() },
-      { onConflict: "workspace_id,admin_user_id" },
-    )
-    .select("id")
-    .single();
-  if (memberError || !member) throw memberError || new Error("Failed to create workspace membership.");
-
-  const { data: ownerRole, error: roleError } = await client
-    .from("roles")
-    .select("id")
-    .eq("workspace_id", workspace.id)
-    .eq("key", "owner")
-    .single();
-  if (roleError || !ownerRole) throw roleError || new Error("Default owner role is missing. Apply workspace migrations first.");
-
-  const { data: systemRoles, error: systemRoleError } = await client
-    .from("roles")
-    .select("id")
-    .eq("workspace_id", workspace.id)
-    .eq("is_system", true);
-  if (systemRoleError) throw systemRoleError;
-
-  const systemRoleIds = (systemRoles || []).map((role) => role.id);
-  if (systemRoleIds.length) {
-    const { error } = await client
-      .from("member_roles")
-      .delete()
-      .eq("workspace_member_id", member.id)
-      .in("role_id", systemRoleIds);
-    if (error) throw error;
-  }
-
-  const { error: memberRoleError } = await client
-    .from("member_roles")
-    .upsert({ workspace_member_id: member.id, role_id: ownerRole.id }, { onConflict: "workspace_member_id,role_id" });
-  if (memberRoleError) throw memberRoleError;
 
   console.log(`Bootstrap complete: ${email} is the active master/owner for workspace '${workspaceSlug}'.`);
 } catch (error) {
