@@ -6,7 +6,7 @@ export { canonicalJson, hashCanonical, hashModelSchema, hashShape } from "@/lib/
 export { KEY_PATTERN, COLUMN_NAME_PATTERN, STORAGE_COLUMNS, nameProblem, columnNameFor, tableNameCandidates, derivedName, assertIdentifier } from "@/lib/schema/engine/names";
 export { DEFAULT_SCHEMA_LIMITS, SCHEMA_LIMIT_ENV, schemaLimitsFromEnv, type SchemaLimits } from "@/lib/schema/engine/limits";
 export { columnForField, columnOfField, shapeForSchema, isLosslessTypeChange, FOREIGN_KEY_ACTIONS } from "@/lib/schema/engine/columns";
-export { buildMigrationPlan, applyStepToShape, computePlanHash, type FieldRename, type PlanInput } from "@/lib/schema/engine/planner";
+export { buildMigrationPlan, applyStepToShape, computePlanHash, computeStageHash, type FieldRename, type PlanInput } from "@/lib/schema/engine/planner";
 export { describeStep, describePlan, describeContextFor, confirmationPrompt, type DescribeContext } from "@/lib/schema/engine/describe";
 export { renderStep, CONTENT_SCHEMA, type RenderOptions } from "@/lib/schema/engine/render";
 export { countDestructiveImpact } from "@/lib/schema/engine/impact";
@@ -16,4 +16,4 @@ export {
   applyDestructiveStage, applyExpandStage, applyStageBookkeeping, assertStageCurrent, chooseTableName, loadModelTable, loadReservedNames,
   prepareMigrationPlan, expectedConfirmation, NAME_RESERVATION_DAYS, type ExpandResult, type ModelTableState, type PrepareInput,
 } from "@/lib/schema/engine/apply";
-export { buildPlanFromTrustedState, assertRequestedPlan, type TrustedPlanInput } from "@/lib/schema/engine/trusted";
+export { buildPlanFromTrustedState, assertRequestedPlan, buildPlanForLedgerRequest, type TrustedPlanInput, type LedgerPlanRequest } from "@/lib/schema/engine/trusted";

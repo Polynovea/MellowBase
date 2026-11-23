@@ -6,8 +6,8 @@ import type { DB } from "@/lib/db/generated/database";
 import { getDb } from "@/lib/db/index";
 import { describeWithDatabase } from "@/lib/db/testing/database";
 import { applyDestructiveStage, applyExpandStage, expectedConfirmation, loadModelTable } from "@/lib/schema/engine/apply";
-import { computePlanHash } from "@/lib/schema/engine/planner";
-import { assertRequestedPlan, buildPlanFromTrustedState } from "@/lib/schema/engine/trusted";
+import { computePlanHash, computeStageHash } from "@/lib/schema/engine/planner";
+import { assertRequestedPlan, buildPlanForLedgerRequest, buildPlanFromTrustedState } from "@/lib/schema/engine/trusted";
 import type { MigrationPlan, PlanStep } from "@/lib/schema/engine/plan";
 import { ownerDb, TEST_LIMITS, uniqueKey } from "@/lib/schema/engine/testing";
 import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
@@ -39,7 +39,7 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
   it("an honest request: the worker's rebuilt plan hashes exactly as the request's, through both stages", async () => {
     const m = await model();
     const request = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: m.v1, stage: "expand" });
-    const rebuilt = await workerCheck({ contentModelId: m.modelId, targetVersionId: m.v1, stage: "expand", requestedPlanHash: request.planHash });
+    const rebuilt = await workerCheck({ contentModelId: m.modelId, targetVersionId: m.v1, stage: "expand", requestedPlanHash: computeStageHash(request, "expand") });
     expect(rebuilt.planHash).toBe(request.planHash);
     await applyExpandStage(owner, { plan: rebuilt, requestedBy: m.adminUserId, limits: TEST_LIMITS });
     expect((await loadModelTable(getDb(), m.modelId))?.appliedVersionId).toBe(m.v1);
@@ -55,14 +55,21 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
 
     const request2 = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: v2, renames, stage: "expand" });
     expect(request2.steps.map((s) => s.kind)).toEqual(["rename_column", "add_column", "drop_column"]);
-    const rebuilt2 = await workerCheck({ contentModelId: m.modelId, targetVersionId: v2, renames, stage: "expand", requestedPlanHash: request2.planHash });
+    // The request stores one stage hash per ledger row, both computed from the full plan now.
+    const expandHash = computeStageHash(request2, "expand");
+    const destructiveHash = computeStageHash(request2, "destructive");
+    const rebuilt2 = await owner.transaction().execute((trx) => buildPlanForLedgerRequest(trx, {
+      content_model_id: m.modelId, target_version_id: v2, stage: "expand", plan_hash: expandHash, renames,
+    }, { limits: TEST_LIMITS }));
     const { awaitingConfirmationId } = await applyExpandStage(owner, { plan: rebuilt2, requestedBy: m.adminUserId, limits: TEST_LIMITS });
 
     // The destructive stage is planned again from the table as it is now, on both sides.
     const request3 = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: v2, stage: "destructive" });
     expect(request3.steps.map((s) => [s.stage, s.kind])).toEqual([["destructive", "drop_column"]]);
-    const rebuilt3 = await workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "destructive", requestedPlanHash: request3.planHash });
+    const rebuilt3 = await workerCheck({ contentModelId: m.modelId, targetVersionId: v2, renames, stage: "destructive", requestedPlanHash: destructiveHash });
     expect(rebuilt3.planHash).toBe(request3.planHash);
+    // The stage hash taken from the full plan before expand equals the one rebuilt after it.
+    expect(computeStageHash(rebuilt3, "destructive")).toBe(destructiveHash);
     expect(await expectedConfirmation(getDb(), m.modelId)).toBe(m.apiKey);
     await applyDestructiveStage(owner, { ledgerId: awaitingConfirmationId!, confirmation: m.apiKey, confirmedBy: m.adminUserId });
     expect(Object.values((await loadModelTable(getDb(), m.modelId))!.shape.columns).map((c) => c.field).sort()).toEqual(["body", "headline"]);
@@ -76,8 +83,8 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     const planA = await rebuild(getDb(), { contentModelId: a.modelId, targetVersionId: a.v1, stage: "expand" });
 
     const pointed = forge(planA, (copy) => { copy.table = planB.table; for (const step of copy.steps) step.table = planB.table; });
-    expect(await errorOf(workerCheck({ contentModelId: a.modelId, targetVersionId: a.v1, stage: "expand", requestedPlanHash: pointed.planHash }))).toMatchObject({ code: "stale_plan" });
-    expect(await errorOf(workerCheck({ contentModelId: a.modelId, targetVersionId: b.v1, stage: "expand", requestedPlanHash: planA.planHash }))).toMatchObject({ code: "not_found" });
+    expect(await errorOf(workerCheck({ contentModelId: a.modelId, targetVersionId: a.v1, stage: "expand", requestedPlanHash: computeStageHash(pointed, "expand") }))).toMatchObject({ code: "stale_plan" });
+    expect(await errorOf(workerCheck({ contentModelId: a.modelId, targetVersionId: b.v1, stage: "expand", requestedPlanHash: computeStageHash(planA, "expand") }))).toMatchObject({ code: "not_found" });
     expect(await loadModelTable(getDb(), a.modelId)).toBeNull();
   });
 
@@ -87,8 +94,8 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     await applyExpandStage(owner, { plan, requestedBy: null, limits: TEST_LIMITS });
 
     const dropped = forge(plan, (copy) => { copy.steps = [{ kind: "drop_table", stage: "destructive", table: copy.table, summary: "" } as PlanStep]; copy.requiresConfirmation = true; });
-    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: m.v1, stage: "destructive", requestedPlanHash: dropped.planHash }))).toMatchObject({ code: "stale_plan" });
-    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: null, stage: "destructive", requestedPlanHash: dropped.planHash }))).toMatchObject({ code: "invalid_plan" });
+    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: m.v1, stage: "destructive", requestedPlanHash: computeStageHash(dropped, "destructive") }))).toMatchObject({ code: "stale_plan" });
+    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: null, stage: "destructive", requestedPlanHash: computeStageHash(dropped, "destructive") }))).toMatchObject({ code: "invalid_plan" });
     expect(await loadModelTable(getDb(), m.modelId)).not.toBeNull();
   });
 
