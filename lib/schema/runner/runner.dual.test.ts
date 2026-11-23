@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { derivedName } from "@/lib/schema/engine/names";
 import { assertOwnerSession } from "@/lib/schema/runner/ownerPool";
 import { claimNextStage, RUNNER_LOCK_CLASS, lockKey, tryLockModel, unlockModel } from "@/lib/schema/runner/ledger";
@@ -7,6 +7,10 @@ import { connect, RunnerHarness } from "@/lib/schema/runner/testing/dualFixtures
 
 // The migration runner against a real database: owner-only execution, the ledger, refusing tampered
 // rows, NOT VALID → VALIDATE, CONCURRENTLY, and resuming after a crash at each kind of statement.
+
+// Index builds CONCURRENTLY wait for every older transaction in the database, including the
+// 30-second ones lockWait.dual.test.ts opens in parallel: give each test room for that wait.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 60_000 });
 
 const h = new RunnerHarness();
 beforeAll(() => h.open());

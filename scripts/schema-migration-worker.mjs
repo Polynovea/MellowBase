@@ -21,7 +21,9 @@
  * transaction, and both need every statement of a run on the same server connection.
  *
  * Other settings: POLYNOVEA_MIGRATION_STATEMENT_TIMEOUT_MS (default 30 minutes; lock waits are always
- * 3 seconds), POLYNOVEA_MIGRATION_ALLOW_ROLE (another login that owns the content schema, e.g.
+ * 3 seconds, except CREATE/DROP INDEX CONCURRENTLY: POLYNOVEA_MIGRATION_CONCURRENT_LOCK_TIMEOUT_MS,
+ * default 10 minutes, as those wait for every older transaction but never block reads or writes),
+ * POLYNOVEA_MIGRATION_ALLOW_ROLE (another login that owns the content schema, e.g.
  * `postgres` on an existing Supabase install), POLYNOVEA_RELEASE_ID (default: the package version;
  * renames and type changes drop their old column once a worker of a newer release runs, or after
  * 7 days), SCHEMA_WORKER_POLL_MS.

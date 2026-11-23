@@ -29,6 +29,8 @@ export interface RunnerOptions {
   retry?: LockRetryOptions;
   hooks?: RunnerHooks;
   batchSize?: number;
+  /** Lock wait for CONCURRENTLY statements (default 10 minutes; see lockRetry.ts). */
+  concurrentLockTimeoutMs?: number;
   /** Structured log line: an event name and codes/ids only. */
   log?: (event: string, fields: Record<string, string | number | boolean | null>) => void;
 }
@@ -68,7 +70,9 @@ export async function runClaimedStage(client: pg.ClientBase, row: LedgerRow, opt
       throw error instanceof RunnerError ? error : new RefusedError(errorCode(error) === "internal_error" ? "stage_not_current" : errorCode(error));
     }
 
-    const context = { client, engine: options.engine, runId, table: plan.table, retry: options.retry, hooks: options.hooks };
+    const context = {
+      client, engine: options.engine, runId, table: plan.table, retry: options.retry, hooks: options.hooks, concurrentLockTimeoutMs: options.concurrentLockTimeoutMs,
+    };
     for (let index = run.next_step; index < steps.length; index += 1) {
       const { planIndex, step } = steps[index];
       const stepStarted = new Date();
