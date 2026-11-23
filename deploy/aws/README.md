@@ -76,7 +76,7 @@ The stack's **Outputs** tab has `SetupAddress`, `SetupCode`, `PublicIp`, `SshTun
 
 These templates were validated offline only (cfn-lint, checkov, and the unit tests in `deploy/templates.test.ts`). Nothing has been deployed. The first real launch should confirm:
 
-- RDS accepts `EngineVersion: "16"` and picks the current 16.x minor version.
+- RDS creates the database at `EngineVersion: "16.15"`, the newest 16.x when this was written (supported until September 2027). RDS no longer accepts the bare `"16"` for new databases (cfn-lint W3691). Each release should bump it to the newest 16.x; automatic minor upgrades handle running databases.
 - The release package's data-disk script finds the attached EBS volume (CloudFormation attaches it just after the server starts) and the first-boot script finishes on plain Ubuntu.
 - `rds.force_ssl` is on by default for PostgreSQL 16 on RDS, so TLS is required without a custom parameter group.
 - Actual prices in the chosen region.
