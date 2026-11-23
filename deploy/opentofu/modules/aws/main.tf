@@ -3,8 +3,8 @@
 # (see deploy/opentofu/examples/aws).
 
 locals {
-  managed = var.database_mode == "managed"
-  tags    = merge({ "polynovea:stack" = var.name }, var.tags)
+  managed          = var.database_mode == "managed"
+  tags             = merge({ "polynovea:stack" = var.name }, var.tags)
   ubuntu_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/${var.architecture}/hvm/ebs-gp3/ami-id"
 }
 
@@ -198,33 +198,35 @@ resource "aws_db_subnet_group" "database" {
 }
 
 resource "aws_db_instance" "database" {
-  count                     = local.managed ? 1 : 0
-  identifier                = "${var.name}-database"
-  engine                    = "postgres"
-  engine_version            = "16"
+  count                      = local.managed ? 1 : 0
+  identifier                 = "${var.name}-database"
+  engine                     = "postgres"
+  engine_version             = "16.15" # a current 16.x minor; minor upgrades then install automatically
   auto_minor_version_upgrade = true
-  instance_class            = var.database_instance_class
-  db_name                   = "polynovea"
-  username                  = "polynovea_admin"
-  password                  = random_password.database_admin[0].result
-  allocated_storage         = var.database_storage_gb
-  max_allocated_storage     = 200
-  storage_type              = "gp3"
-  storage_encrypted         = true
-  multi_az                  = false
-  publicly_accessible       = false
-  db_subnet_group_name      = aws_db_subnet_group.database[0].name
-  vpc_security_group_ids    = [aws_security_group.database[0].id]
-  backup_retention_period   = 7
-  backup_window             = "03:00-04:00"
-  deletion_protection       = true
-  skip_final_snapshot       = false
-  final_snapshot_identifier = "${var.name}-database-final"
-  copy_tags_to_snapshot     = true
-  tags                      = merge(local.tags, { Name = "${var.name}-database" })
+  instance_class             = var.database_instance_class
+  db_name                    = "polynovea"
+  username                   = "polynovea_admin"
+  password                   = random_password.database_admin[0].result
+  allocated_storage          = var.database_storage_gb
+  max_allocated_storage      = 200
+  storage_type               = "gp3"
+  storage_encrypted          = true
+  multi_az                   = false
+  publicly_accessible        = false
+  db_subnet_group_name       = aws_db_subnet_group.database[0].name
+  vpc_security_group_ids     = [aws_security_group.database[0].id]
+  backup_retention_period    = 7
+  backup_window              = "03:00-04:00"
+  deletion_protection        = true
+  skip_final_snapshot        = false
+  final_snapshot_identifier  = "${var.name}-database-final"
+  copy_tags_to_snapshot      = true
+  tags                       = merge(local.tags, { Name = "${var.name}-database" })
 
+  # Automatic minor upgrades move the instance past 16.15; don't try to "downgrade" it back.
   lifecycle {
     prevent_destroy = true
+    ignore_changes  = [engine_version]
   }
 }
 

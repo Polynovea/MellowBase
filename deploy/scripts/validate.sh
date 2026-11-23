@@ -15,8 +15,7 @@ DEPLOY="$ROOT/deploy"
 LANE="${POLYNOVEA_LOCK_LANE:-p5-w2}"
 PREFIX="polynovea-validate-$$"
 TOFU_VERSION="${TOFU_VERSION:-1.13.10}"
-STEPS=("${@:-cfn bicep tofu shellcheck checkov}")
-STEPS=(${STEPS[*]})
+read -r -a STEPS <<< "${*:-cfn bicep tofu shellcheck checkov}"
 
 # Docker Desktop's tools may be missing from PATH in Git Bash.
 if ! command -v docker >/dev/null 2>&1 && [ -x "/c/Program Files/Docker/Docker/resources/bin/docker" ]; then
@@ -93,9 +92,12 @@ for s in "${STEPS[@]}"; do
         -S warning scripts/vm-bootstrap.sh scripts/validate.sh scripts/build-azure.sh
       ;;
     checkov)
-      step "checkov (CloudFormation, ARM, OpenTofu)" run checkov bridgecrew/checkov:3.2.495 \
-        --config-file /deploy/scripts/checkov.yaml \
-        -f /deploy/aws/polynovea.yaml -f /deploy/azure/azuredeploy.json \
+      # Two scans: given a directory, checkov ignores -f files.
+      step "checkov (CloudFormation + ARM)" run checkov-templates bridgecrew/checkov:3.2.495 \
+        --config-file /deploy/scripts/checkov.yaml --framework cloudformation arm \
+        -f /deploy/aws/polynovea.yaml -f /deploy/azure/azuredeploy.json
+      step "checkov (OpenTofu)" run checkov-tofu bridgecrew/checkov:3.2.495 \
+        --config-file /deploy/scripts/checkov.yaml --framework terraform \
         -d /deploy/opentofu
       ;;
     *) echo "unknown step: $s" >&2; FAILED+=("$s") ;;

@@ -1,8 +1,40 @@
-# Checkov settings for bash deploy/scripts/validate.sh. Each skipped check has its reason.
-framework:
-  - cloudformation
-  - arm
-  - terraform
+# Checkov settings for bash deploy/scripts/validate.sh. Every skipped check is a deliberate trade-off
+# for a small, cheap, single-server install (the brief: single zone, small sizes, expected cost shown
+# in each template). The security properties the templates promise (IMDSv2, private database,
+# encryption at rest, deletion protection, one secret + one bucket, no secrets in user data) are NOT
+# skipped, and deploy/templates.test.ts checks them as well.
 compact: true
 quiet: true
-skip-check: []
+skip-check:
+  # --- Cost: paid extras a one-server install doesn't need (each would raise the monthly bill)
+  - CKV_AWS_157   # RDS Multi-AZ: the brief says single zone (doubles the database cost)
+  - CKV_AZURE_136 # Flexible Server geo-redundant backups: extra cost; 7-day local backups kept
+  - CKV_AWS_144   # S3 cross-region replication: doubles storage cost
+  - CKV_AZURE_206 # Storage replication beyond LRS: extra cost
+  - CKV2_AZURE_32 # Key Vault private endpoint: about US$7/month; firewall admits only the VM subnet
+  - CKV2_AZURE_33 # Storage private endpoint: about US$7/month; firewall admits only the VM subnet
+  - CKV2_AZURE_57 # Flexible Server private endpoint: it already has no public access (VNet-integrated, delegated subnet)
+  - CKV_AZURE_59  # Storage "public network access" off needs a private endpoint; default-deny firewall used instead
+  - CKV_AWS_126   # EC2 detailed monitoring: paid; the CMS's System page monitors the server
+  - CKV_AWS_118   # RDS enhanced monitoring: paid, needs another role
+  - CKV_AWS_353   # RDS Performance Insights: not needed for a small site
+  - CKV2_AWS_11   # VPC flow logs: CloudWatch ingestion cost
+  - CKV_AWS_129   # RDS log export to CloudWatch: ingestion cost; logs stay on RDS
+  - CKV2_AWS_30   # RDS query logging: cost and noise
+  - CKV_AWS_18    # S3 access logging: needs a second bucket
+  - CKV2_AWS_62   # S3 event notifications: nothing consumes them
+  - CKV_AZURE_33  # Storage Queue logging: the account has no queues
+  - CKV2_AZURE_21 # Blob read logging: cost and noise
+  # --- Provider-managed encryption keys (encryption at rest is on everywhere)
+  - CKV_AWS_149   # Secrets Manager CMK: AWS-managed key; a CMK costs US$1/month and widens the role
+  - CKV_AWS_189   # EBS CMK: AWS-managed key, encrypted
+  - CKV_AWS_145   # S3 KMS: SSE-S3 (AES-256) encryption, no KMS request costs
+  - CKV2_AZURE_1  # Storage CMK: Microsoft-managed keys plus infrastructure encryption
+  - CKV_AZURE_93  # Managed disk CMK (disk encryption set): Microsoft-managed keys
+  # --- By design
+  - CKV_AWS_260   # Port 80 open: only when a domain is set, for Let's Encrypt HTTP-01 and the HTTPS redirect
+  - CKV_AZURE_119 # NIC public IP: the site is served from this VM
+  - CKV_AWS_161   # RDS IAM auth: the CMS uses password roles (polynovea_owner / polynovea_app) made by the wizard
+  - CKV2_AWS_57   # Secret rotation: the admin login is read once by the wizard, then unused
+  - CKV_AZURE_41  # Key Vault secret expiry: an expired secret can't be read, which would break re-running setup
+  - CKV_AZURE_43  # Storage account naming: false positive, the name is computed (prefix + hash, 3-24 lowercase)

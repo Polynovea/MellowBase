@@ -338,7 +338,9 @@ Resources:
     UpdateReplacePolicy: Snapshot
     Properties:
       Engine: postgres
-      EngineVersion: "16"
+      # A current 16.x minor: RDS no longer creates instances from the bare "16". Minor upgrades then
+      # install automatically; each release bumps this to the newest supported 16.x.
+      EngineVersion: "16.15"
       AutoMinorVersionUpgrade: true
       DBInstanceClass: !Ref DatabaseInstanceClass
       DBName: polynovea
