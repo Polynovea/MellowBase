@@ -113,54 +113,69 @@ comment on function public.polynovea_canonical_json(jsonb) is
   'Canonical JSON text (keys sorted by UTF-8 bytes, no whitespace, JavaScript number form) matching canonicalJson() in lib/schema/engine/hash.ts; null when it cannot match exactly.';
 
 -- rehash:start
-create temporary table polynovea_schema_rehash on commit drop as
-select v.id, v.content_model_id, v.version_number, v.schema_hash as old_hash,
-       pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(public.polynovea_canonical_json(v.schema_json), 'UTF8')), 'hex') as new_hash
-from public.content_model_versions v;
+-- No temporary table: the owner role may not have TEMP on the database. A helper function lists each
+-- version's old and new hash; it is dropped at the end. Copies are rewritten first (they match on the
+-- old hash), the versions themselves last.
+create function public.polynovea_schema_rehash_map()
+returns table (content_model_id uuid, version_number integer, old_hash text, new_hash text)
+language sql
+stable
+set search_path = ''
+as $$
+  select v.content_model_id, v.version_number, v.schema_hash,
+         pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(public.polynovea_canonical_json(v.schema_json), 'UTF8')), 'hex')
+  from public.content_model_versions v
+$$;
 
 do $$
 declare
   kept bigint;
 begin
-  select count(*) into kept from polynovea_schema_rehash where new_hash is null;
+  select count(*) into kept from public.polynovea_schema_rehash_map() r where r.new_hash is null;
   raise notice 'schema hash re-hash: % schema version(s) keep their previous hash', kept;
 end;
 $$;
 
-delete from polynovea_schema_rehash where new_hash is null or new_hash = old_hash;
-
-update public.content_model_versions v
-set schema_hash = r.new_hash
-from polynovea_schema_rehash r
-where v.id = r.id;
-
 update public.environment_schema_deployments d
 set schema_hash = r.new_hash
-from polynovea_schema_rehash r
-where d.content_model_id = r.content_model_id and d.schema_version = r.version_number and d.schema_hash = r.old_hash;
+from public.polynovea_schema_rehash_map() r
+where r.new_hash is not null and r.new_hash <> r.old_hash
+  and d.content_model_id = r.content_model_id and d.schema_version = r.version_number and d.schema_hash = r.old_hash;
 
 update public.operational_change_assessments a
 set proposed_schema_hash = r.new_hash
-from polynovea_schema_rehash r
-where a.content_model_id = r.content_model_id and a.target_schema_version = r.version_number and a.proposed_schema_hash = r.old_hash;
+from public.polynovea_schema_rehash_map() r
+where r.new_hash is not null and r.new_hash <> r.old_hash
+  and a.content_model_id = r.content_model_id and a.target_schema_version = r.version_number and a.proposed_schema_hash = r.old_hash;
 
 update public.operational_change_assessments a
 set target_schema_hash = r.new_hash
-from polynovea_schema_rehash r
-where a.content_model_id = r.content_model_id and a.target_schema_version = r.version_number and a.target_schema_hash = r.old_hash;
+from public.polynovea_schema_rehash_map() r
+where r.new_hash is not null and r.new_hash <> r.old_hash
+  and a.content_model_id = r.content_model_id and a.target_schema_version = r.version_number and a.target_schema_hash = r.old_hash;
 
 update public.operational_change_assessments a
 set source_schema_hash = r.new_hash
-from polynovea_schema_rehash r
-where a.content_model_id = r.content_model_id and a.source_schema_version = r.version_number and a.source_schema_hash = r.old_hash;
+from public.polynovea_schema_rehash_map() r
+where r.new_hash is not null and r.new_hash <> r.old_hash
+  and a.content_model_id = r.content_model_id and a.source_schema_version = r.version_number and a.source_schema_hash = r.old_hash;
 
 update public.workspace_environments e
 set deployed_schema_hash = r.new_hash
-from polynovea_schema_rehash r
+from public.polynovea_schema_rehash_map() r
 join public.content_models m on m.id = r.content_model_id
-where e.workspace_id = m.workspace_id
+where r.new_hash is not null and r.new_hash <> r.old_hash
+  and e.workspace_id = m.workspace_id
   and e.deployed_schema_revision = m.api_key || ':v' || r.version_number
   and e.deployed_schema_hash = r.old_hash;
+
+update public.content_model_versions v
+set schema_hash = r.new_hash
+from public.polynovea_schema_rehash_map() r
+where r.new_hash is not null and r.new_hash <> r.old_hash
+  and v.content_model_id = r.content_model_id and v.version_number = r.version_number;
+
+drop function public.polynovea_schema_rehash_map();
 -- rehash:end
 
 -- EXECUTE for polynovea_app on the new function, never for PUBLIC (0067/0068/0072 helper).

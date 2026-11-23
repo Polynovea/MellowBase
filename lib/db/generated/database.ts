@@ -393,18 +393,6 @@ export interface ContentEntryWatchers {
   workspace_id: string;
 }
 
-export interface ContentFields {
-  configuration_json: Generated<Json>;
-  content_model_id: string;
-  created_at: Generated<string | null>;
-  field_key: string;
-  field_type: string;
-  id: Generated<string>;
-  label: string;
-  position: Generated<number>;
-  updated_at: Generated<string | null>;
-}
-
 export interface ContentFieldPermissions {
   can_read: Generated<boolean>;
   can_write: Generated<boolean>;
@@ -415,6 +403,18 @@ export interface ContentFieldPermissions {
   role_id: string;
   updated_at: Generated<string>;
   workspace_id: string;
+}
+
+export interface ContentFields {
+  configuration_json: Generated<Json>;
+  content_model_id: string;
+  created_at: Generated<string | null>;
+  field_key: string;
+  field_type: string;
+  id: Generated<string>;
+  label: string;
+  position: Generated<number>;
+  updated_at: Generated<string | null>;
 }
 
 export interface ContentHealthFindings {
@@ -2199,8 +2199,8 @@ export interface DB {
   content_entry_version_terms: ContentEntryVersionTerms;
   content_entry_versions: ContentEntryVersions;
   content_entry_watchers: ContentEntryWatchers;
-  content_fields: ContentFields;
   content_field_permissions: ContentFieldPermissions;
+  content_fields: ContentFields;
   content_health_findings: ContentHealthFindings;
   content_health_profiles: ContentHealthProfiles;
   content_model_tables: ContentModelTables;
