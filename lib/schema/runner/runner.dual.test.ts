@@ -194,17 +194,13 @@ describe("security review: what a stolen app login can no longer do", () => {
     expect(Object.keys(await h.columns(attacker)).sort()).toEqual(["_entry_id", "_locale", "_variant", "title"]);
   });
 
-  // The worker rebuilds every plan from content_model_tables + the target content_model_versions row
-  // (wave 1's buildPlanFromTrustedState); a drop_table that version does not imply has a different
-  // hash and is refused. Until that builder is merged, the production worker refuses every stage
-  // (trusted_plan_builder_unavailable, tested below) and these tests stand in for the builder.
-  it.todo("(e) a drop_table the target version does not imply is refused (needs wave 1's buildPlanFromTrustedState)");
-
-  it("(e, until then) the production worker refuses every stage while the trusted plan builder is missing", async () => {
+  // (e) with the real rebuild (a correctly hashed drop_table the target version does not imply) is in
+  // trustedRunner.dual.test.ts. Here: the production worker never runs a hand-built plan.
+  it("the production worker refuses a hand-built request with no trusted version behind it; nothing runs", async () => {
     const model = await h.newModel();
     const columns = [column("title", "text")];
     const ledgerId = await h.request(model, h.plan(model, shape(model.table, columns), [{ kind: "create_table", stage: "expand", columns }]));
-    expect(await h.run(model, { engine: productionEngine() })).toEqual({ ledgerId, outcome: "refused", code: "trusted_plan_builder_unavailable" });
+    expect(await h.run(model, { engine: productionEngine() })).toEqual({ ledgerId, outcome: "refused", code: "invalid_plan" });
     const { rows } = await h.owner.query("select to_regclass($1) as found", [`content.${model.table}`]);
     expect(rows[0].found).toBeNull();
   });
