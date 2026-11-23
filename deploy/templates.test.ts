@@ -183,7 +183,7 @@ describe("policy: AWS CloudFormation", () => {
 
   it("keeps the database private, encrypted, protected from deletion and backed up for 7 days", () => {
     const db = cfnResource("Database");
-    for (const line of ["PubliclyAccessible: false", "StorageEncrypted: true", "DeletionProtection: true", "BackupRetentionPeriod: 7", "MultiAZ: false", 'EngineVersion: "16"', "DeletionPolicy: Snapshot"]) expect(db).toContain(line);
+    for (const line of ["PubliclyAccessible: false", "StorageEncrypted: true", "DeletionProtection: true", "BackupRetentionPeriod: 7", "MultiAZ: false", 'EngineVersion: "16.15"', "DeletionPolicy: Snapshot"]) expect(db).toContain(line);
     const dbSg = cfnResource("DatabaseSecurityGroup");
     expect(dbSg).toContain("SourceSecurityGroupId: !Ref ServerSecurityGroup");
     expect(dbSg).not.toContain("0.0.0.0/0");
