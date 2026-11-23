@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-// @ts-expect-error: plain-Node release script without type declarations
-import { parseArgs, TOOLS } from "./build-and-sign.mjs";
+import * as release from "./build-and-sign.mjs";
+
+const parseArgs = release.parseArgs as (argv: string[]) => Record<string, unknown>;
+const TOOLS = release.TOOLS as Record<string, string>;
 
 const base = ["--image", "ghcr.io/polynovea/cms", "--version", "0.4.0", "--key", "/secure/release.key"];
 
@@ -35,7 +37,7 @@ describe("release script options", () => {
   });
 
   it("runs syft and cosign from images pinned by digest", () => {
-    for (const image of Object.values(TOOLS) as string[]) expect(image).toMatch(/@sha256:[0-9a-f]{64}$/);
+    for (const image of Object.values(TOOLS)) expect(image).toMatch(/@sha256:[0-9a-f]{64}$/);
   });
 });
 
