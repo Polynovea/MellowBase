@@ -1,7 +1,6 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { localizationRows, workspaceLocales } from "@/lib/content/assuranceData";
 import { getEntry } from "@/lib/content/entryService";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import * as siteData from "@/lib/content/siteData";
 
 export type LocalizationStatus = "current" | "stale" | "missing" | "draft" | "in_review" | "needs_review";
 
@@ -50,7 +49,7 @@ export async function configureLocale(params: {
   if (params.fallbackLocale && !/^[a-z]{2,3}(-[A-Z]{2})?$/i.test(params.fallbackLocale)) {
     throw new Error("Fallback must be a BCP-47 locale such as en, en-IN, or hi");
   }
-  const { data, error } = await createServiceRoleClient().rpc("cms_configure_locale", {
+  return siteData.callConfigureLocale({
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_locale: params.locale,
@@ -59,8 +58,6 @@ export async function configureLocale(params: {
     p_is_default: params.isDefault ?? false,
     p_fallback_locale: params.fallbackLocale ?? null,
   });
-  if (error || !data) throw new Error(error?.message || "Could not configure locale");
-  return data;
 }
 
 export async function setTranslation(params: {
@@ -89,47 +86,34 @@ export async function setTranslation(params: {
       throw new Error("Translated entry has no content version");
     }
     const versionId = translated.current_draft_version_id ?? translated.published_version_id!;
-    const { data: translatedVersion } = await createServiceRoleClient()
-      .from("content_entry_versions")
-      .select("locale")
-      .eq("id", versionId)
-      .eq("entry_id", translated.id)
-      .maybeSingle();
-    if (!translatedVersion || translatedVersion.locale !== params.locale) {
+    const translatedLocale = await siteData.versionLocale(params.workspaceId, translated.id, versionId);
+    if (translatedLocale !== params.locale) {
       throw new Error(`Translated entry must be authored in locale ${params.locale}`);
     }
   }
 
   const now = new Date().toISOString();
   const markReviewed = Boolean(params.translatedEntryId && (params.markReviewed ?? true));
-  const { data, error } = await createServiceRoleClient()
-    .from("content_entry_translations")
-    .upsert(
-      {
-        workspace_id: params.workspaceId,
-        source_entry_id: source.id,
-        locale: params.locale,
-        translated_entry_id: params.translatedEntryId ?? null,
-        source_version_id: params.translatedEntryId ? source.current_draft_version_id : null,
-        reviewed_at: markReviewed ? now : null,
-        stale_at: null,
-        updated_at: now,
-      },
-      { onConflict: "source_entry_id,locale" }
-    )
-    .select()
-    .single();
-  if (error) throw new Error(error.message);
-
-  await logPlatformEvent({
-    workspaceId: params.workspaceId,
-    actorAdminUserId: params.actorId,
-    action: params.translatedEntryId ? "localization.translation_linked" : "localization.translation_unlinked",
-    entityType: "content_entry",
-    entityId: source.id,
-    metadata: { locale: params.locale, translatedEntryId: params.translatedEntryId ?? null, reviewed: markReviewed },
-  });
-  return data;
+  return siteData.upsertTranslationLink(
+    {
+      workspace_id: params.workspaceId,
+      source_entry_id: source.id,
+      locale: params.locale,
+      translated_entry_id: params.translatedEntryId ?? null,
+      source_version_id: params.translatedEntryId ? source.current_draft_version_id : null,
+      reviewed_at: markReviewed ? now : null,
+      stale_at: null,
+      updated_at: now,
+    },
+    {
+      workspaceId: params.workspaceId,
+      actorAdminUserId: params.actorId,
+      action: params.translatedEntryId ? "localization.translation_linked" : "localization.translation_unlinked",
+      entityType: "content_entry",
+      entityId: source.id,
+      metadata: { locale: params.locale, translatedEntryId: params.translatedEntryId ?? null, reviewed: markReviewed },
+    },
+  );
 }
 
 export async function reviewTranslation(params: {
@@ -140,14 +124,7 @@ export async function reviewTranslation(params: {
 }) {
   const source = await getEntry(params.workspaceId, params.sourceEntryId);
   if (!source?.current_draft_version_id) throw new Error("Source entry draft not found");
-  const db = createServiceRoleClient();
-  const { data: relation } = await db
-    .from("content_entry_translations")
-    .select("id, translated_entry_id")
-    .eq("workspace_id", params.workspaceId)
-    .eq("source_entry_id", source.id)
-    .eq("locale", params.locale)
-    .maybeSingle();
+  const relation = await siteData.findTranslationLink(params.workspaceId, source.id, params.locale);
   if (!relation?.translated_entry_id) throw new Error("Translation is not linked");
   const translated = await getEntry(params.workspaceId, relation.translated_entry_id);
   if (!translated || !["approved", "published"].includes(translated.status)) {
@@ -155,14 +132,7 @@ export async function reviewTranslation(params: {
   }
 
   const now = new Date().toISOString();
-  const { data, error } = await db
-    .from("content_entry_translations")
-    .update({ source_version_id: source.current_draft_version_id, reviewed_at: now, stale_at: null, updated_at: now })
-    .eq("id", relation.id)
-    .select()
-    .single();
-  if (error) throw new Error(error.message);
-  await logPlatformEvent({
+  return siteData.updateTranslationLink(params.workspaceId, relation.id, { source_version_id: source.current_draft_version_id, reviewed_at: now, stale_at: null, updated_at: now }, {
     workspaceId: params.workspaceId,
     actorAdminUserId: params.actorId,
     action: "localization.translation_reviewed",
@@ -170,7 +140,6 @@ export async function reviewTranslation(params: {
     entityId: source.id,
     metadata: { locale: params.locale, translatedEntryId: relation.translated_entry_id, sourceVersionId: source.current_draft_version_id },
   });
-  return data;
 }
 
 export async function getLocalizationStatus(workspaceId: string, sourceEntryId: string): Promise<LocalizationStatusRow[] | null> {
@@ -233,13 +202,7 @@ export async function getLocalizationStatus(workspaceId: string, sourceEntryId: 
 export async function markTranslationsStale(workspaceId: string, sourceEntryId: string) {
   const source = await getEntry(workspaceId, sourceEntryId);
   if (!source?.current_draft_version_id) return;
-  const now = new Date().toISOString();
-  await createServiceRoleClient()
-    .from("content_entry_translations")
-    .update({ stale_at: now, updated_at: now })
-    .eq("workspace_id", workspaceId)
-    .eq("source_entry_id", sourceEntryId)
-    .neq("source_version_id", source.current_draft_version_id);
+  await siteData.markStale(workspaceId, sourceEntryId, source.current_draft_version_id);
 }
 
 export async function resolveLocaleFallback(workspaceId: string, requestedLocale: string): Promise<string[]> {
