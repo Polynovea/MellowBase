@@ -146,7 +146,7 @@ describe("plain fixes", () => {
     ...["ENOTLS", "ETIMEDOUT", "EPROTOCOL", "ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED", "OTHER"].map((code) => tlsFix(new ProbeError(code), HOST, ROOTS)),
     tlsFix(new ProbeError("OTHER"), "db.example.com", ROOTS),
     ...["28P01", "28000", "3D000", "53300", "x"].map((code) => loginFix({ code })),
-    CANNOT_CREATE_ROLES, versionFix(14), versionFix(null),
+    CANNOT_CREATE_ROLES, versionFix(14), versionFix(null), dnsFix(new Error("POLYNOVEA_SETUP_DB_ALLOWLIST has an entry that is not a valid network: x")),
   ];
 
   it.each(messages)("passes clientErrorMessage unchanged: %s", (message) => {
@@ -157,4 +157,12 @@ describe("plain fixes", () => {
 describe("parseServerVersionNum", () => {
   it.each([["150000", 150000], ["170002", 170002], ["90624", 90624], ["16.4", null], [" 160000", null], [160000, null], ["1600000", null]])(
     "%j -> %j", (value, expected) => expect(parseServerVersionNum(value)).toBe(expected));
+});
+
+describe("operator allowlist mistakes", () => {
+  it("say so plainly instead of claiming the database was not found", async () => {
+    const h = harness();
+    const error = await runDatabaseChecks(input({ hostname: "db.example.com" }), { ...h.context, allowlist: "10.0.0.0/99" }).then(() => new Error("did not fail"), (e: Error) => e);
+    expect(error.message).toMatch(/POLYNOVEA_SETUP_DB_ALLOWLIST\) has an entry it can't read/);
+  });
 });

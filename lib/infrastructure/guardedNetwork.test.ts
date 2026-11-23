@@ -211,7 +211,7 @@ describe("resolveDatabaseTarget", () => {
     expect(await reason(resolveDatabaseTarget("db.example.com", port as number))).toBe("invalid-port");
   });
 
-  it.each(["", "user@db.example.com", "db.example.com:5432", "db.example.com/x", "-db.example.com", "db..example.com", "postgres://db.example.com"])(
+  it.each(["", "user@db.example.com", "db.example.com:5432", "db.example.com/x", "-db.example.com", "db..example.com", "postgres://db.example.com", "fe80::1%eth0", "2606:4700::1%25eth0"])(
     "refuses the malformed host %j", async (host) => {
       expect(await reason(resolveDatabaseTarget(host, 5432, { resolve: dns({}).resolve }))).toBe("invalid-host");
     });

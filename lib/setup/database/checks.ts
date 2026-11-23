@@ -133,6 +133,9 @@ export const tlsProbe: TlsProbe = (endpoint, timeoutMs) =>
 const SECURITY_GROUP = "allow this server in the database's security group or network rules";
 
 export function dnsFix(error: unknown): string {
+  if (!(error instanceof DatabaseTargetError) && error instanceof Error && error.message.includes("POLYNOVEA_SETUP_DB_ALLOWLIST")) {
+    return "This server's database allowlist setting (POLYNOVEA_SETUP_DB_ALLOWLIST) has an entry it can't read. Ask the server's operator to fix it, then try again.";
+  }
   const reason = error instanceof DatabaseTargetError ? error.reason : "not-found";
   switch (reason) {
     case "localhost":
