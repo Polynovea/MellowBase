@@ -123,7 +123,10 @@ writeFileSync(
   { mode: 0o600 },
 );
 
-const compose = (...args) => execFileSync("docker", ["compose", "-p", project, "-f", composeFile, "--env-file", envFile, ...args], { stdio: "inherit" });
+// Compose lets variables in the calling environment override --env-file, so a shell that sourced an
+// older .env.test.local would start the wrong PostgreSQL version or ports. This run's values win.
+const composeEnv = { ...process.env, ...env, ...stack };
+const compose = (...args) => execFileSync("docker", ["compose", "-p", project, "-f", composeFile, "--env-file", envFile, ...args], { stdio: "inherit", env: composeEnv });
 // Every profile, so --down and --reset also stop Supabase services started by an earlier run.
 const composeAll = (...args) => compose("--profile", "supabase", ...args);
 if (down) {
@@ -221,7 +224,10 @@ if (withSupabase) {
   await waitForPostgrest();
 }
 
-console.log(`\nLocal test stack ready (PostgreSQL ${pgVersion}${withSupabase ? ", with the Supabase compatibility services" : ""}). Test settings written to .env.test.local.`);
+// The version the server actually reports, so a run can never silently test another version.
+const serverVersion = await withClient(adminUrl, async (client) => (await client.query("select version() as version")).rows[0].version);
+if (!serverVersion.startsWith(`PostgreSQL ${pgVersion}.`)) throw new Error(`Asked for PostgreSQL ${pgVersion} but the server reports: ${serverVersion}`);
+console.log(`\nLocal test stack ready: ${serverVersion}${withSupabase ? ", with the Supabase compatibility services" : ""}. Test settings written to .env.test.local.`);
 
 // PostgREST reloads its schema cache asynchronously after a restart; a test that reads through it
 // before that finishes can see errors or stale tables. Wait until it serves the newest migration.

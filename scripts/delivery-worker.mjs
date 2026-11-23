@@ -34,6 +34,11 @@ const once = process.argv.includes("--once");
 const maintenanceEnabled = !process.argv.includes("--no-maintenance") && process.env.DELIVERY_WORKER_MAINTENANCE !== "0";
 const SUPPORTED_KINDS = ["publish", "scheduled_release", "webhook", "search_index", "image_processing", "health_scan", "analytics_sync"];
 const queueArg = process.argv.find((arg) => arg.startsWith("--queues="));
+// Local certification and development only: lets deliveries reach loopback and private addresses
+// (a receiver on 127.0.0.1). Off by default, and only whoever starts the worker can turn it on; never
+// pass it to a production worker, where it would reopen the SSRF hole the guard closes.
+const allowPrivateDestinations = process.argv.includes("--allow-private-destinations");
+if (allowPrivateDestinations) console.warn("[delivery-worker] --allow-private-destinations: deliveries may reach loopback and private addresses. Local use only.");
 const SUPPORTED_QUEUES = ((queueArg ? queueArg.slice("--queues=".length) : null) || process.env.DELIVERY_WORKER_QUEUES || "default,intelligence,media").split(",").map((value) => value.trim()).filter(Boolean);
 let stopping = false;
 
@@ -78,7 +83,7 @@ async function resolveWorkerConnectionCredentials(client, workspaceId, connectio
 
 // Every delivery goes through the SSRF guard; addresses are validated at connect time.
 function deliveryFetch(url, allowPrivate, init) {
-  return guardedFetch(url, init, { allowPrivate });
+  return guardedFetch(url, init, { allowPrivate: allowPrivate || allowPrivateDestinations });
 }
 
 async function resolvePublicationTargetConfig(client, workspaceId, target) {
