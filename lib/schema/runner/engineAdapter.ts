@@ -1,8 +1,9 @@
 // Wires the schema engine (phase 3 wave 1) into the runner for the worker process: the runner never
-// renders SQL, hashes plans or records shapes itself.
+// renders SQL, hashes plans or records shapes itself. (".../engine/index": the worker's module loader
+// does not resolve a bare directory import.)
 import {
   applyStageBookkeeping, assertStageCurrent, computePlanHash, renderStep, schemaLimitsFromEnv, validatePlan, type SchemaLimits,
-} from "@/lib/schema/engine";
+} from "@/lib/schema/engine/index";
 import type { SchemaEngine } from "@/lib/schema/runner/engine";
 
 export function productionEngine(limits: SchemaLimits = schemaLimitsFromEnv()): SchemaEngine {
