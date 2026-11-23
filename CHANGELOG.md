@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 3: publication targets and jobs on the direct path. Dispatching a job no longer returns the target's encrypted config, a target's own headers can no longer replace the delivery's signature or idempotency headers, target config from the request is validated (HTTPS, public address, plain single-line headers), and each publication job commits with its delivery job.
 Phase 1 wave 3: webhook subscriptions and deliveries on the direct path. Subscription writes commit with their audit events, each queued delivery commits with its job, and an attempt's outcome commits as one. Event filters from the request are validated, and another workspace's subscription id now reads as not found on both paths.
 Phase 1 wave 3: dependency, impact and asset-usage graph reads on the direct path; every lookup is scoped by workspace and a widely used entry's or asset's blast radius is no longer cut off at 1000 relations.
 Phase 1 wave 3: content health (scan, findings, remediation tasks, health profiles) on the direct path. Migration 0069 keeps remediation tasks inside their workspace: a task can no longer reference another workspace's finding, entry or asset, or be assigned to a non-member. Scans and the health overview no longer stop at 1000 rows.
