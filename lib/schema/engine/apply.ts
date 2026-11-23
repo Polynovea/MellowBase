@@ -195,6 +195,13 @@ async function deleteFieldPermissions(trx: Transaction<DB>, plan: MigrationPlan,
  */
 export async function applyStageBookkeeping(trx: Transaction<DB>, plan: MigrationPlan, stage: PlanStage): Promise<void> {
   const steps = stageSteps(plan, stage);
+  if (stage === "expand") {
+    // A field whose column waits for the destructive stage has already left the schema: its permission
+    // rows go now, so nothing can grant access to it while it waits (the name is reserved on deletion).
+    for (const step of stageSteps(plan, "destructive")) {
+      if (step.kind === "drop_column") await deleteFieldPermissions(trx, plan, step.field);
+    }
+  }
   for (const step of steps) {
     switch (step.kind) {
       case "rename_column":

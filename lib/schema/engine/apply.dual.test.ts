@@ -109,6 +109,11 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     const { awaitingConfirmationId } = await applyExpandStage(owner, { plan, requestedBy: m.adminUserId, limits: TEST_LIMITS });
     expect(awaitingConfirmationId).toBeTruthy();
     expect(Object.keys((await physicalShape(backend.query, table))!)).toContain("secret");
+    // The field left the schema: its permission rows went with the expand stage.
+    expect((await backend.query("select field_key from content_field_permissions where content_model_id = $1", [m.modelId])).map((r) => r.field_key)).toEqual(["title"]);
+    // Re-adding it before the deletion is confirmed would bring its old values back: refused.
+    m.setCurrent(m.schema(f("title")));
+    expect(String(await errorOf(m.prepare(m.schema(f("title"), f("secret")))))).toMatch(/waiting to be deleted; confirm or cancel that first/);
 
     for (const confirmation of ["", "Post", `${m.apiKey}x`]) {
       expect(await errorOf(applyDestructiveStage(owner, { ledgerId: awaitingConfirmationId!, confirmation, confirmedBy: m.adminUserId }))).toMatchObject({ code: "confirmation_mismatch" });
@@ -130,16 +135,23 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     expect(await errorOf(m.prepare(m.schema(f("title"), f("secret"))))).toBeInstanceOf(Error);
   });
 
-  it("rolls the permission clean-up back with the DDL when a later step fails", async () => {
+  it("rolls the permission clean-up and reservations back with the DDL when a step fails", async () => {
     const m = await newModel();
     await m.apply(m.schema(f("keep"), f("alpha"), f("beta")));
     const table = (await m.table())!;
+    const perms = async () => (await backend.query("select field_key from content_field_permissions where content_model_id = $1 order by field_key", [m.modelId])).map((r) => r.field_key);
     for (const field of ["alpha", "beta"]) {
       await backend.query("insert into content_field_permissions (workspace_id, content_model_id, field_key, role_id) values ($1, $2, $3, $4)", [m.workspaceId, m.modelId, field, m.roleId]);
     }
-    const plan = await m.prepare(m.schema(f("keep")));
-    expect(plan.steps.map((s) => s.kind)).toEqual(["drop_column", "drop_column"]);
+    const plan = await m.prepare(m.schema(f("keep"), f("gamma")));
+    expect(plan.steps.map((s) => s.kind)).toEqual(["add_column", "drop_column", "drop_column"]);
+    // Expand fails (sabotage: the column it adds already exists): the permission clean-up rolls back too.
+    await backend.query(`alter table content.${table} add column gamma text`);
+    expect(await errorOf(applyExpandStage(owner, { plan, requestedBy: null, limits: TEST_LIMITS }))).toMatchObject({ code: "apply_failed" });
+    expect(await perms()).toEqual(["alpha", "beta"]);
+    await backend.query(`alter table content.${table} drop column gamma`);
     const { awaitingConfirmationId } = await applyExpandStage(owner, { plan, requestedBy: null, limits: TEST_LIMITS });
+    expect(await perms()).toEqual([]);
     // Sabotage behind the engine's back: the second drop will fail after the first drop and its clean-up ran.
     await backend.query(`alter table content.${table} drop column beta`);
 
@@ -148,7 +160,6 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     expect((error as SchemaEngineError).code).toBe("apply_failed");
     expect((error as Error).message).toMatch(/nothing was changed\. Reference: [0-9a-f-]{36}$/);
     expect(Object.keys((await physicalShape(backend.query, table))!)).toContain("alpha");
-    expect((await backend.query("select field_key from content_field_permissions where content_model_id = $1 order by field_key", [m.modelId])).map((r) => r.field_key)).toEqual(["alpha", "beta"]);
     expect(await backend.query("select 1 from schema_name_reservations where content_model_id = $1", [m.modelId])).toEqual([]);
     expect((await backend.query("select status, error_ref from schema_migration_ledger where id = $1", [awaitingConfirmationId]))[0])
       .toMatchObject({ status: "awaiting_confirmation", error_ref: expect.stringMatching(/^[0-9a-f-]{36}$/) });

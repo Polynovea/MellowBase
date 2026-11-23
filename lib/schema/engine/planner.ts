@@ -179,6 +179,18 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
     problems.push({ code: "cap_exceeded", message: `A model can have at most ${limits.maxIndexesPerModel} indexed fields (unique, indexed or relation); this one has ${indexes}.` });
   }
 
+  // A column whose field is no longer in the schema the table was last planned to is waiting for its
+  // deletion to be confirmed. Re-adding the field now would bring back its old values: refuse.
+  if (input.currentSchema && input.currentShape) {
+    const inSchema = new Set(input.currentSchema.fields.map((f) => f.key));
+    const pending = new Set(Object.values(input.currentShape.columns).map((c) => c.field).filter((key) => !inSchema.has(key)));
+    for (const field of target.fields) {
+      if (pending.has(field.key)) {
+        problems.push({ code: "pending_deletion", message: `The field "${field.key}" is waiting to be deleted; confirm or cancel that first.` });
+      }
+    }
+  }
+
   const deleted = new Set(input.reservedFieldNames ?? []);
   const renamedAway = new Set(input.renamedFieldNames ?? []);
   const currentFieldKeys = new Set([...Object.values(input.currentShape?.columns ?? {}).map((c) => c.field), ...(input.currentSchema?.fields.map((f) => f.key) ?? [])]);

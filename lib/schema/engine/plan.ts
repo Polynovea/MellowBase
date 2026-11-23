@@ -138,7 +138,7 @@ export interface MigrationPlan {
 
 /** Why a plan could not be built: a name rule, a cap, or a reserved name. Plain words, safe to show. */
 export interface PlanProblem {
-  code: "invalid_name" | "reserved_word" | "system_name" | "reserved_name" | "cap_exceeded" | "invalid_rename" | "invalid_schema";
+  code: "invalid_name" | "reserved_name" | "pending_deletion" | "cap_exceeded" | "invalid_rename" | "invalid_schema";
   message: string;
 }
 

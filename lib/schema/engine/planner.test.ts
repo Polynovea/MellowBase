@@ -207,3 +207,15 @@ describe("migration plan: hash and plain words", () => {
     ]);
   });
 });
+
+describe("migration plan: a field waiting to be deleted", () => {
+  it("cannot be re-added until its deletion is confirmed or cancelled", () => {
+    // The table still has `body`, but the schema it was last planned to no longer does.
+    const table = model(f("title"), f("body", "long_text"));
+    const result = buildMigrationPlan({
+      workspaceId: "ws", modelId: "model-1", modelApiKey: "post", table: TABLE,
+      currentShape: shapeForSchema(TABLE, table), currentSchema: model(f("title")), targetSchema: model(f("title"), f("body", "long_text")),
+    });
+    expect(result.ok ? [] : result.problems).toEqual([{ code: "pending_deletion", message: 'The field "body" is waiting to be deleted; confirm or cancel that first.' }]);
+  });
+});
