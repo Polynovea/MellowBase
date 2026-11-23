@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Editorial workflow and collaboration (assignments, comments, watchers, the editorial queue) can run on the direct PostgreSQL path (`content=postgres`). **Security:** comment mentions are limited to active workspace members on both paths (a mention notifies its recipient about the entry), and an entry's workflow is read only through the entry's workspace. Fixed: the "My work" queue never listed entry assignments on Supabase (ambiguous relationship).
 - Content releases and the editorial calendar can run on the direct PostgreSQL path (`content=postgres`). The release detail and list read their items, entries, versions and history with explicit queries scoped by workspace on every table, return child lists in a fixed order, and never pass database text to the browser.
 - Content preflight and destination assurance (with the web-quality policy, locale and localization-status reads they use) can run on the direct PostgreSQL path (`content=postgres`). Entry version reads now always take the workspace on both paths, so a future caller cannot skip the workspace check.
 - Content entries and versions can run on the direct PostgreSQL path (`content=postgres`). Validation, uniqueness and relation rules are shared by both paths. On the direct path, every version read requires the entry's workspace, the uniqueness check sees every entry of the model (no 1000-row cap), and database errors from the entry SQL functions no longer reach the browser.

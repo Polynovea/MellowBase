@@ -1,4 +1,4 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { listWorkflowDefinitionRows, upsertWorkflowDefinition } from "@/lib/content/workflowData";
 
 export interface WorkflowStageDefinition {
   key: string;
@@ -53,14 +53,8 @@ export function normalizeWorkflowDefinition(value: unknown): EditorialWorkflowDe
 }
 
 export async function listWorkflowDefinitions(workspaceId: string): Promise<WorkflowDefinitionRow[]> {
-  const { data, error } = await createServiceRoleClient()
-    .from("workflow_definitions")
-    .select("*, content_models(id,name,api_key)")
-    .eq("workspace_id", workspaceId)
-    .order("active", { ascending: false })
-    .order("updated_at", { ascending: false });
-  if (error) throw new Error(error.message);
-  return (data ?? []).map((row) => ({ ...row, definition_json: normalizeWorkflowDefinition(row.definition_json) })) as WorkflowDefinitionRow[];
+  const data = await listWorkflowDefinitionRows(workspaceId);
+  return data.map((row) => ({ ...row, definition_json: normalizeWorkflowDefinition(row.definition_json) })) as WorkflowDefinitionRow[];
 }
 
 export async function saveWorkflowDefinition(params: {
@@ -75,7 +69,7 @@ export async function saveWorkflowDefinition(params: {
   const name = params.name.trim();
   if (!name) throw new Error("Workflow name is required");
   const definition = normalizeWorkflowDefinition(params.definition);
-  const { data, error } = await createServiceRoleClient().rpc("cms_upsert_workflow_definition", {
+  return upsertWorkflowDefinition({
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_definition_id: params.definitionId ?? null,
@@ -84,6 +78,4 @@ export async function saveWorkflowDefinition(params: {
     p_definition: definition,
     p_active: params.active ?? true,
   });
-  if (error || !data) throw new Error(error?.message || "Could not save workflow definition");
-  return data;
 }

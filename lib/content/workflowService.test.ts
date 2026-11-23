@@ -235,16 +235,19 @@ describe("workflowService unit tests", () => {
     });
     const mockLimit = vi.fn().mockReturnValue({ maybeSingle: mockMaybeSingle });
     const mockOrder = vi.fn().mockReturnValue({ limit: mockLimit });
-    const mockEq = vi.fn().mockReturnValue({ order: mockOrder });
+    // .eq("entry_id", …).eq("content_entries.workspace_id", …): the instance is read through its entry.
+    const mockWorkspaceEq = vi.fn().mockReturnValue({ order: mockOrder });
+    const mockEq = vi.fn().mockReturnValue({ eq: mockWorkspaceEq });
     const mockSelect = vi.fn().mockReturnValue({ eq: mockEq });
 
     mockFrom.mockReturnValue({ select: mockSelect });
 
-    const wf = await getWorkflow("ent-123");
+    const wf = await getWorkflow("ws-1", "ent-123");
 
     expect(mockFrom).toHaveBeenCalledWith("workflow_instances");
-    expect(mockSelect).toHaveBeenCalledWith("*, workflow_actions(*), workflow_stage_approvals(*), workflow_definitions(id,name,definition_json)");
+    expect(mockSelect).toHaveBeenCalledWith("*, workflow_actions(*), workflow_stage_approvals(*), workflow_definitions(id,name,definition_json), content_entries!inner(workspace_id)");
     expect(mockEq).toHaveBeenCalledWith("entry_id", "ent-123");
+    expect(mockWorkspaceEq).toHaveBeenCalledWith("content_entries.workspace_id", "ws-1");
     expect(mockOrder).toHaveBeenCalledWith("started_at", { ascending: false });
     expect(wf?.id).toBe("inst-1");
   });
@@ -253,12 +256,14 @@ describe("workflowService unit tests", () => {
     const mockMaybeSingle = vi.fn().mockResolvedValue({ data: null });
     const mockLimit = vi.fn().mockReturnValue({ maybeSingle: mockMaybeSingle });
     const mockOrder = vi.fn().mockReturnValue({ limit: mockLimit });
-    const mockEq = vi.fn().mockReturnValue({ order: mockOrder });
+    // .eq("entry_id", …).eq("content_entries.workspace_id", …): the instance is read through its entry.
+    const mockWorkspaceEq = vi.fn().mockReturnValue({ order: mockOrder });
+    const mockEq = vi.fn().mockReturnValue({ eq: mockWorkspaceEq });
     const mockSelect = vi.fn().mockReturnValue({ eq: mockEq });
 
     mockFrom.mockReturnValue({ select: mockSelect });
 
-    const wf = await getWorkflow("ent-456");
+    const wf = await getWorkflow("ws-1", "ent-456");
     expect(wf).toBeNull();
   });
 });
