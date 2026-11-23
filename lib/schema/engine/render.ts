@@ -59,10 +59,10 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
       const fieldColumns = columns.length ? sql`, ${sql.join(columns, sql`, `)}` : sql``;
       return [
         tx(sql`create table ${table} (
-          entry_id uuid not null references public.content_entries (id) on delete cascade,
-          variant text not null check (variant in ('draft', 'published')),
-          locale text not null${fieldColumns},
-          primary key (entry_id, variant, locale)
+          _entry_id uuid not null references public.content_entries (id) on delete cascade,
+          _variant text not null check (_variant in ('draft', 'published')),
+          _locale text not null${fieldColumns},
+          primary key (_entry_id, _variant, _locale)
         )`, false),
         tx(sql`grant select, insert, update, delete on ${table} to ${sql.id(APP_ROLE)}`, false),
         tx(sql`alter table ${table} enable row level security`, false),
@@ -76,6 +76,7 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
     case "drop_column":
       return [tx(sql`alter table ${table} drop column ${ident(step.column)}`)];
     case "rename_column": {
+      if (step.from === step.to) return [];
       const statements = [tx(sql`alter table ${table} rename column ${ident(step.from)} to ${ident(step.to)}`)];
       const renameIndex = (kind: "uq" | "ix") =>
         tx(sql`alter index ${indexRef(derivedName(kind, step.table, step.from))} rename to ${ident(derivedName(kind, step.table, step.to))}`);
@@ -102,7 +103,7 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
     case "set_required": {
       const name = ident(derivedName("ck", step.table, step.column));
       return [
-        tx(sql`alter table ${table} add constraint ${name} check (variant <> 'published' or ${ident(step.column)} is not null) not valid`),
+        tx(sql`alter table ${table} add constraint ${name} check (_variant <> 'published' or ${ident(step.column)} is not null) not valid`),
         // VALIDATE takes a SHARE UPDATE EXCLUSIVE lock: reads and writes continue during the scan.
         tx(sql`alter table ${table} validate constraint ${name}`, false),
       ];
@@ -111,7 +112,7 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
       return [tx(sql`alter table ${table} drop constraint ${ident(derivedName("ck", step.table, step.column))}`)];
     case "add_index": {
       const name = ident(derivedName(step.unique ? "uq" : "ix", step.table, step.column));
-      const columns = step.unique ? sql`(${ident(step.column)}, variant, locale)` : sql`(${ident(step.column)})`;
+      const columns = step.unique ? sql`(${ident(step.column)}, _variant, _locale)` : sql`(${ident(step.column)})`;
       const query = sql`create ${sql.raw(step.unique ? "unique index" : "index")} ${sql.raw(concurrently ? "concurrently " : "")}${name} on ${table} ${columns}`;
       return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently }];
     }

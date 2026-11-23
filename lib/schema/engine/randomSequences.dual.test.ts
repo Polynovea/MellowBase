@@ -150,14 +150,14 @@ describeWithDatabase("schema engine: random model changes applied and reverted",
           const extraNames = names.length ? sql`, ${sql.join(names)}` : sql``;
           const extraValues = values.length ? sql`, ${sql.join(values)}` : sql``;
           const onConflict = keep.length ? sql`do update set ${sql.join(keep)}` : sql`do nothing`;
-          await sql`insert into ${t} (entry_id, variant, locale${extraNames}) values (${row.entryId}, ${row.variant}, 'en'${extraValues})
-            on conflict (entry_id, variant, locale) ${onConflict}`.execute(getDb());
+          await sql`insert into ${t} (_entry_id, _variant, _locale${extraNames}) values (${row.entryId}, ${row.variant}, 'en'${extraValues})
+            on conflict (_entry_id, _variant, _locale) ${onConflict}`.execute(getDb());
         }
       };
       const snapshot = async (table: string, columns: string[]) => {
         const values = new Map<string, unknown[]>();
         for (const column of columns) {
-          const result = await sql<{ v: string | null }>`select ${sql.id(column)}::text as v from ${sql.id("content", table)} order by entry_id, variant, locale`.execute(owner);
+          const result = await sql<{ v: string | null }>`select ${sql.id(column)}::text as v from ${sql.id("content", table)} order by _entry_id, _variant, _locale`.execute(owner);
           values.set(column, result.rows.map((row) => row.v));
         }
         return values;

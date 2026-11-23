@@ -1,71 +1,49 @@
-// Name rules for anything that becomes a PostgreSQL identifier: model api keys, field keys (column
-// names), table names and derived index/constraint names. Identifiers are always passed to SQL through
-// Kysely's sql.id() (quoted), never concatenated; these rules are the second line of defence and keep
-// names portable and predictable.
+// Name rules for the schema engine.
+//
+// Model api keys and field keys follow ONE rule, the canonical schema's (validateCanonicalSchema uses
+// this same KEY_PATTERN): a lowercase letter, then lowercase letters, digits and underscores. Nothing
+// else is refused, so every model that validates today can get a table unchanged.
+//
+// Physical names are derived from keys and stored in the table's shape: column names (see
+// columnNameFor) and the m_ table names. Every identifier is quoted through Kysely's sql.id() and
+// checked by assertIdentifier() before it is rendered, so reserved words are harmless as column names.
 import { createHash } from "node:crypto";
 import type { PlanProblem } from "@/lib/schema/engine/plan";
 
-/** Model api keys and field keys: lowercase letter first, then lowercase letters, digits, underscores; 63 bytes max. */
-export const NAME_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
+import { KEY_PATTERN } from "@/lib/schema/engine/keys";
+
+export { KEY_PATTERN };
+
+/** Physical column names: start with a letter (so never a storage column), 63 bytes at most. */
+export const COLUMN_NAME_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
+
+/** Physical table names: the fixed m_ prefix keeps them apart from anything a user names. */
+export const TABLE_NAME_PATTERN = /^m_[a-z0-9_]{1,61}$/;
 
 /**
- * PostgreSQL's reserved key words (pg_get_keywords() categories R and T, PostgreSQL 15 to 17). A
- * dual test checks this list still covers every R and T word of the test database's version.
+ * The storage columns every model table has. They start with "_", which no field key (and so no
+ * derived column name) can, so a field can never collide with them. Read them from here.
  */
-export const POSTGRES_RESERVED_WORDS: ReadonlySet<string> = new Set([
-  // R: reserved
-  "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "both", "case", "cast",
-  "check", "collate", "column", "constraint", "create", "current_catalog", "current_date", "current_role",
-  "current_time", "current_timestamp", "current_user", "default", "deferrable", "desc", "distinct", "do",
-  "else", "end", "except", "false", "fetch", "for", "foreign", "from", "grant", "group", "having", "in",
-  "initially", "intersect", "into", "lateral", "leading", "limit", "localtime", "localtimestamp", "not",
-  "null", "offset", "on", "only", "or", "order", "placing", "primary", "references", "returning", "select",
-  "session_user", "some", "symmetric", "system_user", "table", "then", "to", "trailing", "true", "union",
-  "unique", "user", "using", "variadic", "when", "where", "window", "with",
-  // T: reserved, but allowed as a function or type name
-  "authorization", "binary", "collation", "concurrently", "cross", "current_schema", "freeze", "full",
-  "ilike", "inner", "is", "isnull", "join", "left", "like", "natural", "notnull", "outer", "overlaps",
-  "right", "similar", "tablesample", "verbose",
-]);
+export const STORAGE_COLUMNS = { entryId: "_entry_id", variant: "_variant", locale: "_locale" } as const;
 
-/** Prefixes PostgreSQL or this CMS use for their own objects. */
-export const SYSTEM_PREFIXES = ["pg_", "polynovea_"] as const;
-
-/** PostgreSQL's hidden system columns: a field with one of these names would be shadowed or refused. */
+/** PostgreSQL's hidden system columns: a user column cannot take these names. */
 export const SYSTEM_COLUMNS: ReadonlySet<string> = new Set(["tableoid", "xmin", "cmin", "xmax", "cmax", "ctid", "oid"]);
-
-/** The storage columns every model table has, plus `id`, which the API uses for the entry id. */
-export const STORAGE_COLUMNS: ReadonlySet<string> = new Set(["entry_id", "variant", "locale", "id"]);
 
 export type NameKind = "model" | "field";
 
 const KIND_LABEL: Record<NameKind, string> = { model: "Model API key", field: "Field key" };
 
-/** Why `name` cannot be used, or null if it can. Messages are plain words, safe to show in the UI. */
+/** Why `name` cannot be used as a key, or null if it can. Plain words, safe to show in the UI. */
 export function nameProblem(name: string, kind: NameKind): PlanProblem | null {
-  const label = KIND_LABEL[kind];
-  if (typeof name !== "string" || !NAME_PATTERN.test(name)) {
-    return {
-      code: "invalid_name",
-      message: `${label} "${String(name).slice(0, 80)}" must start with a lowercase letter and use only lowercase letters, digits and underscores (63 characters at most).`,
-    };
-  }
-  if (POSTGRES_RESERVED_WORDS.has(name)) {
-    return { code: "reserved_word", message: `${label} "${name}" is a reserved database word. Choose another name, for example "${name}_value".` };
-  }
-  const prefix = SYSTEM_PREFIXES.find((p) => name.startsWith(p));
-  if (prefix) return { code: "system_name", message: `${label} "${name}" starts with "${prefix}", which is kept for the system.` };
-  if (kind === "field" && (SYSTEM_COLUMNS.has(name) || STORAGE_COLUMNS.has(name))) {
-    return { code: "system_name", message: `Field key "${name}" is used by the system for every model. Choose another name.` };
-  }
-  return null;
+  if (typeof name === "string" && KEY_PATTERN.test(name)) return null;
+  return {
+    code: "invalid_name",
+    message: `${KIND_LABEL[kind]} "${String(name).slice(0, 80)}" must start with a lowercase letter and use only lowercase letters, digits and underscores.`,
+  };
 }
 
-/** Physical table names: the fixed m_ prefix keeps them apart from anything a user names. */
-export const TABLE_NAME_PATTERN = /^m_[a-z0-9_]{1,61}$/;
-
-/** Every identifier the engine renders: user names, table names and derived names. */
-const IDENTIFIER_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
+/** Every identifier the engine renders: column, table and derived index/constraint names. */
+const IDENTIFIER_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
 
 /** Throws unless `name` is safe to render as an identifier. Called for every identifier in render.ts. */
 export function assertIdentifier(name: string): string {
@@ -75,6 +53,19 @@ export function assertIdentifier(name: string): string {
 
 function shortHash(value: string, length: number): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
+}
+
+/**
+ * The column name for a new field. The key itself when it fits and is free; otherwise the key cut to
+ * fit plus a hash of the key (and, on a further collision, of an attempt number). Deterministic for the
+ * same key and the same set of names already taken. Once chosen, a field keeps its column name.
+ */
+export function columnNameFor(key: string, taken: ReadonlySet<string>): string {
+  if (key.length <= 63 && !SYSTEM_COLUMNS.has(key) && !taken.has(key)) return key;
+  for (let attempt = 0; ; attempt += 1) {
+    const name = `${key.slice(0, 54)}_${shortHash(attempt === 0 ? key : `${key}#${attempt}`, 8)}`;
+    if (!taken.has(name)) return name;
+  }
 }
 
 /**

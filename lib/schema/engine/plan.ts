@@ -29,13 +29,15 @@ export type ForeignKeyAction = "restrict" | "set_null";
 
 /** One field's column, as it physically exists (or will). Index and constraint names derive from table + column. */
 export interface ColumnShape {
-  /** Column name = the field key. */
+  /** The physical column name (see columnNameFor): the field key when it fits, else derived. Fixed once chosen. */
   name: string;
+  /** The field key this column stores. API, SDK and permissions use the key; only SQL uses `name`. */
+  field: string;
   fieldType: FieldType;
   pgType: PgColumnType;
-  /** CHECK (variant <> 'published' OR col IS NOT NULL): drafts may be incomplete. */
+  /** CHECK (_variant <> 'published' OR col IS NOT NULL): drafts may be incomplete. */
   requiredWhenPublished: boolean;
-  /** Unique index on (col, variant, locale). */
+  /** Unique index on (col, _variant, _locale). */
   unique: boolean;
   /** Plain index on col, for filtering and sorting (not created when `unique` already is). */
   indexed: boolean;
@@ -44,12 +46,12 @@ export interface ColumnShape {
 }
 
 /**
- * A model's table: content.<table>, storage columns (entry_id, variant, locale; primary key) plus one
+ * A model's table: content.<table>, storage columns (_entry_id, _variant, _locale; primary key; see STORAGE_COLUMNS in names.ts) plus one
  * column per field that has one. To-many relations have no column (they stay in content_relations).
  */
 export interface TableShape {
   table: string;
-  /** Keyed by column name. */
+  /** Keyed by column name; each column's `field` is its field key. */
   columns: Record<string, ColumnShape>;
 }
 
@@ -66,12 +68,12 @@ export type PlanStep = StepBase & (
   | { kind: "drop_table"; table: string; /** Filled by countDestructiveImpact. */ affectedRows?: number }
   /** Adds the column only (nullable, no constraints); constraints follow as their own steps. */
   | { kind: "add_column"; table: string; column: ColumnShape }
-  | { kind: "drop_column"; table: string; column: string; affectedValues?: number }
+  | { kind: "drop_column"; table: string; column: string; /** The field key that left the schema. */ field: string; affectedValues?: number }
   /**
    * Renames the column and its index/constraint names (they derive from the column name). `column` is
    * the shape before the rename. The runner may implement it as expand and contract.
    */
-  | { kind: "rename_column"; table: string; from: string; to: string; column: ColumnShape }
+  | { kind: "rename_column"; table: string; /** Column names. */ from: string; to: string; /** The new field key. */ field: string; column: ColumnShape }
   /** Fills empty values with the field's default (parameterised UPDATE), so a new required field can be validated. */
   | { kind: "backfill_column"; table: string; column: string; pgType: PgColumnType; value: unknown }
   /**
@@ -116,6 +118,12 @@ export interface MigrationPlan {
   targetShapeHash: SchemaHash;
   /** Canonical hash of the target model schema (null when the plan deletes the model). */
   targetSchemaHash: SchemaHash | null;
+  /**
+   * The content_model_versions row the plan builds toward (null for a preview of an unsaved schema, or
+   * when the plan deletes the model). The worker rebuilds the plan from this version and the table's
+   * recorded state (buildPlanFromTrustedState) and never executes a plan it was handed.
+   */
+  targetVersionId: string | null;
   /** Hash over everything above and the steps: the ledger's identity for this plan. */
   planHash: SchemaHash;
   baseShape: TableShape | null;

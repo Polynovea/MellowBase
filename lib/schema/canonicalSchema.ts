@@ -2,9 +2,13 @@ import { z } from "zod";
 import { FIELD_TYPES, MODEL_CAPABILITIES, MODEL_OPERATIONS } from "@/lib/schema/fields/types";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 import { fieldPatternProblem } from "@/lib/schema/fields/safePattern";
+import { KEY_PATTERN } from "@/lib/schema/engine/keys";
 
-const API_KEY_RE = /^[a-z][a-z0-9_]*$/;
-const FIELD_KEY_RE = /^[a-z][a-z0-9_]*$/;
+// One key rule for model api keys and field keys, shared with the schema engine (lib/schema/engine/names.ts):
+// whatever validates here can always get a table. Keys never start with "_", which keeps them apart from
+// the engine's storage columns (_entry_id, _variant, _locale).
+const API_KEY_RE = KEY_PATTERN;
+const FIELD_KEY_RE = KEY_PATTERN;
 
 const FieldValidationConfigZ = z
   .object({

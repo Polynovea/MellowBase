@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import { SchemaEngineError } from "@/lib/schema/engine/errors";
+import { describeContextFor } from "@/lib/schema/engine/describe";
 import { countDestructiveImpact } from "@/lib/schema/engine/impact";
 import { hashShape } from "@/lib/schema/engine/hash";
 import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "@/lib/schema/engine/limits";
@@ -36,12 +37,14 @@ export interface ModelTableState {
   table: string;
   shape: TableShape;
   hash: string;
+  /** The schema version the table was last planned to (null before the first saved version). */
+  appliedVersionId: string | null;
 }
 
 export async function loadModelTable(db: Executor, modelId: string): Promise<ModelTableState | null> {
-  const row = await db.selectFrom("content_model_tables").select(["table_name", "applied_shape", "applied_shape_hash"])
+  const row = await db.selectFrom("content_model_tables").select(["table_name", "applied_shape", "applied_shape_hash", "applied_version_id"])
     .where("content_model_id", "=", modelId).executeTakeFirst();
-  return row ? { table: row.table_name, shape: row.applied_shape as unknown as TableShape, hash: row.applied_shape_hash } : null;
+  return row ? { table: row.table_name, shape: row.applied_shape as unknown as TableShape, hash: row.applied_shape_hash, appliedVersionId: row.applied_version_id } : null;
 }
 
 /** The first free table-name candidate for a new model. The unique constraint settles races. */
@@ -103,8 +106,18 @@ export async function prepareMigrationPlan(db: Executor, input: PrepareInput): P
     reservedModelNames: reserved.models,
   });
   if (!result.ok) return result;
-  const context = { modelName: input.targetSchema?.name ?? input.currentSchema?.name ?? input.model.apiKey, schemas: [input.targetSchema, input.currentSchema] };
+  const context = describeContextFor(result.plan, input.targetSchema?.name ?? input.currentSchema?.name ?? input.model.apiKey, [input.targetSchema, input.currentSchema]);
   return { ok: true, plan: await countDestructiveImpact(db, result.plan, context) };
+}
+
+/**
+ * What the user must type to confirm a destructive stage: the model's API key, read from the model row
+ * (never from a plan, which may come from the app-writable ledger).
+ */
+export async function expectedConfirmation(db: Executor, contentModelId: string): Promise<string> {
+  const model = await db.selectFrom("content_models").select("api_key").where("id", "=", contentModelId).executeTakeFirst();
+  if (!model) throw new SchemaEngineError("not_found", "This model no longer exists.");
+  return model.api_key;
 }
 
 const stageSteps = (plan: MigrationPlan, stage: PlanStage) => plan.steps.filter((step) => step.stage === stage);
@@ -149,13 +162,13 @@ export async function assertStageCurrent(
     throw new SchemaEngineError("reserved_name", `The model API key "${plan.modelApiKey}" belonged to a model deleted in the last 30 days and cannot be reused yet.`);
   }
   const clash = steps.flatMap((step) => {
-    if (step.kind === "rename_column") return reserved.fields.has(step.to) ? [step.to] : [];
-    const added = step.kind === "add_column" ? [step.column.name] : step.kind === "create_table" ? step.columns.map((c) => c.name) : [];
+    if (step.kind === "rename_column") return reserved.fields.has(step.field) ? [step.field] : [];
+    const added = step.kind === "add_column" ? [step.column.field] : step.kind === "create_table" ? step.columns.map((c) => c.field) : [];
     return added.filter((name) => reserved.fields.has(name) || reserved.renamedFields.has(name));
   })[0];
   if (clash) throw new SchemaEngineError("reserved_name", `The field key "${clash}" was deleted or renamed in the last 30 days and cannot be reused yet.`);
 
-  return row ? { table: row.table_name, shape: row.applied_shape as unknown as TableShape, hash: row.applied_shape_hash } : null;
+  return row ? { table: row.table_name, shape: row.applied_shape as unknown as TableShape, hash: row.applied_shape_hash, appliedVersionId: row.applied_version_id } : null;
 }
 
 async function reserveName(trx: Transaction<DB>, plan: MigrationPlan, kind: "field" | "model", name: string, reason: "deleted" | "renamed") {
@@ -185,16 +198,16 @@ export async function applyStageBookkeeping(trx: Transaction<DB>, plan: Migratio
   for (const step of steps) {
     switch (step.kind) {
       case "rename_column":
-        await trx.updateTable("content_field_permissions").set({ field_key: step.to, updated_at: sql<string>`now()` })
-          .where("content_model_id", "=", plan.modelId).where("field_key", "=", step.from).execute();
+        await trx.updateTable("content_field_permissions").set({ field_key: step.field, updated_at: sql<string>`now()` })
+          .where("content_model_id", "=", plan.modelId).where("field_key", "=", step.column.field).execute();
         // Renaming back releases the name's own rename reservation.
         await trx.deleteFrom("schema_name_reservations").where("content_model_id", "=", plan.modelId).where("kind", "=", "field")
-          .where("name", "=", step.to).where("reason", "=", "renamed").execute();
-        await reserveName(trx, plan, "field", step.from, "renamed");
+          .where("name", "=", step.field).where("reason", "=", "renamed").execute();
+        await reserveName(trx, plan, "field", step.column.field, "renamed");
         break;
       case "drop_field_metadata":
       case "drop_column": {
-        const field = step.kind === "drop_column" ? step.column : step.field;
+        const field = step.field;
         await deleteFieldPermissions(trx, plan, field);
         await reserveName(trx, plan, "field", field, "deleted");
         break;
@@ -216,10 +229,11 @@ export async function applyStageBookkeeping(trx: Transaction<DB>, plan: Migratio
     await trx.deleteFrom("content_model_tables").where("content_model_id", "=", plan.modelId).execute();
     return;
   }
+  const version = plan.targetVersionId ? { applied_version_id: plan.targetVersionId } : {};
   await trx.insertInto("content_model_tables").values({
-    content_model_id: plan.modelId, workspace_id: plan.workspaceId, table_name: plan.table, applied_shape: JSON.stringify(after), applied_shape_hash: hash,
+    content_model_id: plan.modelId, workspace_id: plan.workspaceId, table_name: plan.table, applied_shape: JSON.stringify(after), applied_shape_hash: hash, ...version,
   }).onConflict((oc) => oc.column("content_model_id").doUpdateSet({
-    applied_shape: JSON.stringify(after), applied_shape_hash: hash, updated_at: sql<string>`now()`,
+    applied_shape: JSON.stringify(after), applied_shape_hash: hash, updated_at: sql<string>`now()`, ...version,
   })).execute();
 }
 
@@ -308,8 +322,9 @@ export async function applyDestructiveStage(
       if (plan?.planHash !== row.plan_hash || plan?.modelId !== row.content_model_id) {
         throw new SchemaEngineError("invalid_plan", "This change plan was altered after it was made. Review the change again.");
       }
-      if (typeof args.confirmation !== "string" || args.confirmation.trim() !== plan.modelApiKey) {
-        throw new SchemaEngineError("confirmation_mismatch", `Type the model's API key, ${plan.modelApiKey}, to confirm the deletion.`);
+      const expected = await expectedConfirmation(trx, row.content_model_id ?? "");
+      if (typeof args.confirmation !== "string" || args.confirmation.trim() !== expected) {
+        throw new SchemaEngineError("confirmation_mismatch", `Type the model's API key (${expected}) to confirm the deletion.`);
       }
       await assertStageCurrent(trx, plan, "destructive", { limits: args.limits });
       await runStage(trx, plan, "destructive");

@@ -28,7 +28,7 @@ export async function countDestructiveImpact(db: Executor, plan: MigrationPlan, 
   const replaced = new Set(plan.steps.flatMap((s) => (s.kind === "replace_column" ? [s.column.name] : [])));
   const backfilled = new Set(plan.steps.flatMap((s) => (s.kind === "backfill_column" ? [s.column] : [])));
   const retyped = new Set(plan.steps.flatMap((s) => (s.kind === "change_type" ? [s.column] : [])));
-  const published = () => countOf(db, sql<{ n: string }>`select count(*) as n from ${table} where variant = 'published'`);
+  const published = () => countOf(db, sql<{ n: string }>`select count(*) as n from ${table} where _variant = 'published'`);
 
   const steps: PlanStep[] = [];
   for (const step of plan.steps) {
@@ -49,7 +49,7 @@ export async function countDestructiveImpact(db: Executor, plan: MigrationPlan, 
         let blocking: number;
         if (backfilled.has(step.column)) blocking = 0;
         else if (!name || (replaced.has(step.column) && step.stage === "destructive")) blocking = await published();
-        else blocking = await countOf(db, sql<{ n: string }>`select count(*) as n from ${table} where variant = 'published' and ${ident(name)} is null`);
+        else blocking = await countOf(db, sql<{ n: string }>`select count(*) as n from ${table} where _variant = 'published' and ${ident(name)} is null`);
         steps.push({ ...step, blockingRows: blocking });
         break;
       }
@@ -58,7 +58,7 @@ export async function countDestructiveImpact(db: Executor, plan: MigrationPlan, 
         const name = existingName(plan, step.column);
         if (!name || replaced.has(step.column) || backfilled.has(step.column) || retyped.has(step.column)) { steps.push(step); break; }
         const duplicates = await countOf(db, sql<{ n: string }>`
-          select count(*) - count(distinct (${ident(name)}, variant, locale)) as n from ${table} where ${ident(name)} is not null`);
+          select count(*) - count(distinct (${ident(name)}, _variant, _locale)) as n from ${table} where ${ident(name)} is not null`);
         steps.push({ ...step, blockingRows: duplicates });
         break;
       }

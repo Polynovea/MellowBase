@@ -58,10 +58,10 @@ describe("validatePlan (plans read back from the ledger)", () => {
 
   it("refuses forged names, types, other tables, out-of-order stages and claimed shapes the steps do not reach", () => {
     const p = plan(v1, model(f("title"), f("body"), f("extra")));
-    expect(refusal(forge(p, (c) => { (c.steps[0] as Extract<PlanStep, { kind: "add_column" }>).column.name = "order"; }))).toBe("invalid_plan");
+    expect(refusal(forge(p, (c) => { (c.steps[0] as Extract<PlanStep, { kind: "add_column" }>).column.name = "_entry_id"; }))).toBe("invalid_plan");
     expect(refusal(forge(p, (c) => { (c.steps[0] as Extract<PlanStep, { kind: "add_column" }>).column.pgType = "text; drop" as never; }))).toBe("invalid_plan");
     expect(refusal(forge(p, (c) => { c.table = "users"; }))).toBe("invalid_plan");
-    expect(refusal(forge(p, (c) => { c.modelApiKey = "select"; }))).toBe("invalid_plan");
+    expect(refusal(forge(p, (c) => { c.modelApiKey = "Select"; }))).toBe("invalid_plan");
     expect(refusal(forge(p, (c) => { c.targetShapeHash = c.baseShapeHash; c.targetShape = c.baseShape; }))).toBe("invalid_plan");
 
     const mixed = plan(v1, model(f("title"), f("extra")));

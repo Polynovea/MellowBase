@@ -7,7 +7,7 @@ import { indexCount, isPgColumnType } from "@/lib/schema/engine/columns";
 import { SchemaEngineError } from "@/lib/schema/engine/errors";
 import { hashShape } from "@/lib/schema/engine/hash";
 import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "@/lib/schema/engine/limits";
-import { nameProblem, TABLE_NAME_PATTERN } from "@/lib/schema/engine/names";
+import { COLUMN_NAME_PATTERN, nameProblem, TABLE_NAME_PATTERN } from "@/lib/schema/engine/names";
 import type { ColumnShape, MigrationPlan, PlanStage, PlanStep, TableShape } from "@/lib/schema/engine/plan";
 import { applyStepToShape, computePlanHash } from "@/lib/schema/engine/planner";
 
@@ -22,7 +22,8 @@ const invalid = (why: string) => new SchemaEngineError("invalid_plan", `This cha
 
 function checkColumn(column: ColumnShape | undefined, where: string): void {
   if (!column || typeof column !== "object") throw invalid(`${where} has no column`);
-  if (nameProblem(column.name, "field")) throw invalid(`${where} has an invalid column name`);
+  if (typeof column.name !== "string" || !COLUMN_NAME_PATTERN.test(column.name)) throw invalid(`${where} has an invalid column name`);
+  if (nameProblem(column.field, "field")) throw invalid(`${where} has an invalid field key`);
   if (!isPgColumnType(column.pgType)) throw invalid(`${where} has an unknown column type`);
   if (column.foreignKey && !FK_ACTIONS.has(column.foreignKey.onDelete)) throw invalid(`${where} has an unknown link rule`);
 }
@@ -36,16 +37,17 @@ function checkShape(shape: TableShape | null, table: string, label: string): voi
   }
 }
 
-/** Every field name a step introduces or touches. */
-function stepNames(step: PlanStep): string[] {
+/** Every column name a step introduces or touches, and every field key it names. */
+function stepNames(step: PlanStep): { columns: string[]; fields: string[] } {
   switch (step.kind) {
-    case "create_table": return step.columns.map((c) => c.name);
-    case "drop_table": return [];
-    case "add_column": return [step.column.name];
-    case "replace_column": return [step.column.name];
-    case "rename_column": return [step.from, step.to, step.column?.name];
-    case "drop_field_metadata": return [step.field];
-    default: return [step.column];
+    case "create_table": return { columns: step.columns.map((c) => c.name), fields: [] };
+    case "drop_table": return { columns: [], fields: [] };
+    case "add_column": return { columns: [step.column.name], fields: [] };
+    case "replace_column": return { columns: [step.column.name], fields: [] };
+    case "rename_column": return { columns: [step.from, step.to, step.column?.name], fields: [step.field] };
+    case "drop_column": return { columns: [step.column], fields: [step.field] };
+    case "drop_field_metadata": return { columns: [], fields: [step.field] };
+    default: return { columns: [step.column], fields: [] };
   }
 }
 
@@ -64,6 +66,7 @@ export function validatePlan(plan: MigrationPlan, options: { limits?: SchemaLimi
   if (!UUID.test(String(plan.workspaceId)) || !UUID.test(String(plan.modelId))) throw invalid("it names no valid model");
   if (typeof plan.table !== "string" || !TABLE_NAME_PATTERN.test(plan.table)) throw invalid("its table name is not a model table");
   if (nameProblem(plan.modelApiKey, "model")) throw invalid("its model API key breaks the name rules");
+  if (plan.targetVersionId !== null && plan.targetVersionId !== undefined && !UUID.test(String(plan.targetVersionId))) throw invalid("it names no valid schema version");
   if (computePlanHash(plan) !== plan.planHash) throw invalid("it was altered after it was made");
 
   let stage: PlanStage = "expand";
@@ -75,7 +78,9 @@ export function validatePlan(plan: MigrationPlan, options: { limits?: SchemaLimi
     stage = step.stage;
     if (step.stage === "expand" && DATA_DELETING_STEPS.has(step.kind)) throw invalid("a step that deletes data is not in the confirmed stage");
     if (step.stage === "destructive" && !DESTRUCTIVE_STAGE_STEPS.has(step.kind)) throw invalid("the confirmed stage holds a step that belongs earlier");
-    for (const name of stepNames(step)) if (nameProblem(name, "field")) throw invalid("a step uses an invalid field name");
+    const names = stepNames(step);
+    for (const name of names.columns) if (typeof name !== "string" || !COLUMN_NAME_PATTERN.test(name)) throw invalid("a step uses an invalid column name");
+    for (const name of names.fields) if (nameProblem(name, "field")) throw invalid("a step uses an invalid field key");
     if (step.kind === "create_table") step.columns.forEach((c) => checkColumn(c, "a new table"));
     if (step.kind === "add_column" || step.kind === "replace_column") checkColumn(step.column, "a new column");
     if (step.kind === "rename_column") checkColumn(step.column, "a renamed column");

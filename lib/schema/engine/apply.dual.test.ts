@@ -7,7 +7,6 @@ import {
   applyDestructiveStage, applyExpandStage, loadModelTable, prepareMigrationPlan, SchemaEngineError,
   type FieldRename, type MigrationPlan,
 } from "@/lib/schema/engine/index";
-import { POSTGRES_RESERVED_WORDS } from "@/lib/schema/engine/names";
 import { ownerDb, physicalOf, physicalShape, TEST_LIMITS, uniqueKey } from "@/lib/schema/engine/testing";
 import type { CanonicalSchema, FieldDefinition } from "@/lib/schema/fields/types";
 
@@ -67,11 +66,11 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
 
     const [entry, other] = await m.entries(2);
     const t = sql.id("content", table);
-    await appQuery(sql`insert into ${t} (entry_id, variant, locale, title, author) values (${entry}, 'draft', 'en', null, ${other})`);
-    await appQuery(sql`insert into ${t} (entry_id, variant, locale, title) values (${entry}, 'published', 'en', 'Hello')`);
-    expect(await errorOf(appQuery(sql`insert into ${t} (entry_id, variant, locale, title) values (${other}, 'published', 'en', null)`))).toMatchObject({ code: "23514" });
-    expect(await errorOf(appQuery(sql`insert into ${t} (entry_id, variant, locale, title) values (${other}, 'published', 'en', 'Hello')`))).toMatchObject({ code: "23505" });
-    expect(await errorOf(appQuery(sql`update ${t} set author = gen_random_uuid() where entry_id = ${entry}`))).toMatchObject({ code: "23503" });
+    await appQuery(sql`insert into ${t} (_entry_id, _variant, _locale, title, author) values (${entry}, 'draft', 'en', null, ${other})`);
+    await appQuery(sql`insert into ${t} (_entry_id, _variant, _locale, title) values (${entry}, 'published', 'en', 'Hello')`);
+    expect(await errorOf(appQuery(sql`insert into ${t} (_entry_id, _variant, _locale, title) values (${other}, 'published', 'en', null)`))).toMatchObject({ code: "23514" });
+    expect(await errorOf(appQuery(sql`insert into ${t} (_entry_id, _variant, _locale, title) values (${other}, 'published', 'en', 'Hello')`))).toMatchObject({ code: "23505" });
+    expect(await errorOf(appQuery(sql`update ${t} set author = gen_random_uuid() where _entry_id = ${entry}`))).toMatchObject({ code: "23503" });
     expect(await errorOf(appQuery(sql`alter table ${t} add column sneaky text`))).toMatchObject({ code: "42501" });
     expect(await errorOf(appQuery(sql`create table content.m_sneaky (x int)`))).toMatchObject({ code: "42501" });
 
@@ -99,7 +98,7 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     await m.apply(m.schema(f("title"), f("secret")));
     const table = (await m.table())!;
     const ids = await m.entries(3);
-    for (const id of ids) await appQuery(sql`insert into ${sql.id("content", table)} (entry_id, variant, locale, title, secret) values (${id}, 'draft', 'en', 't', 's')`);
+    for (const id of ids) await appQuery(sql`insert into ${sql.id("content", table)} (_entry_id, _variant, _locale, title, secret) values (${id}, 'draft', 'en', 't', 's')`);
     for (const field of ["title", "secret"]) {
       await backend.query("insert into content_field_permissions (workspace_id, content_model_id, field_key, role_id) values ($1, $2, $3, $4)", [m.workspaceId, m.modelId, field, m.roleId]);
     }
@@ -171,7 +170,7 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     await m.apply(m.schema(f("title", "text", { required: true, unique: true })));
     const table = (await m.table())!;
     const [id] = await m.entries(1);
-    await appQuery(sql`insert into ${sql.id("content", table)} (entry_id, variant, locale, title) values (${id}, 'published', 'en', 'Kept')`);
+    await appQuery(sql`insert into ${sql.id("content", table)} (_entry_id, _variant, _locale, title) values (${id}, 'published', 'en', 'Kept')`);
     await backend.query("insert into content_field_permissions (workspace_id, content_model_id, field_key, role_id) values ($1, $2, 'title', $3)", [m.workspaceId, m.modelId, m.roleId]);
 
     const plan = await m.apply(m.schema(f("headline", "text", { required: true, unique: true })), [{ from: "title", to: "headline" }]);
@@ -190,7 +189,7 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     await m.apply(m.schema(f("title")));
     const table = (await m.table())!;
     const ids = await m.entries(3);
-    for (const id of ids) await appQuery(sql`insert into ${sql.id("content", table)} (entry_id, variant, locale, title) values (${id}, 'published', 'en', 'same')`);
+    for (const id of ids) await appQuery(sql`insert into ${sql.id("content", table)} (_entry_id, _variant, _locale, title) values (${id}, 'published', 'en', 'same')`);
 
     const blocked = await m.prepare(m.schema(f("title", "text", { unique: true }), f("status", "text", { required: true })));
     expect(blocked.steps.map((s) => s.summary)).toEqual([
@@ -220,9 +219,4 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     expect((await backend.query("select kind, name from schema_name_reservations where workspace_id = $1", [m.workspaceId]))).toEqual([{ kind: "model", name: m.apiKey }]);
   });
 
-  it("covers every reserved key word of this PostgreSQL version", async () => {
-    const rows = await backend.query<{ word: string }>("select word from pg_get_keywords() where catcode in ('R', 'T')");
-    expect(rows.length).toBeGreaterThan(50);
-    expect(rows.map((r) => r.word).filter((word) => !POSTGRES_RESERVED_WORDS.has(word))).toEqual([]);
-  });
 });

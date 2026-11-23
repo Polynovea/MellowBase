@@ -26,13 +26,18 @@ comment on schema content is
 -- The physical table of each model. table_name is chosen once (from the api key, with a fixed m_
 -- prefix) and never changes, so it is unique across the whole install even though api keys are only
 -- unique per workspace. applied_shape is the table as it physically is now (columns, types,
--- constraints); plans are built from it and refused if its hash changed since.
+-- constraints); plans are built from it and refused if its hash changed since. The migration worker
+-- rebuilds every plan from this row and the target version, so the app role must only read this table
+-- (0074 makes it read-only for polynovea_app).
 create table if not exists public.content_model_tables (
   content_model_id uuid primary key references public.content_models (id) on delete restrict,
   workspace_id uuid not null references public.workspaces (id) on delete restrict,
   table_name text not null unique check (table_name ~ '^m_[a-z0-9_]{1,61}$'),
   applied_shape jsonb not null,
   applied_shape_hash text not null check (applied_shape_hash ~ '^[0-9a-f]{64}$'),
+  -- The schema version the table was last planned to (its fields are the model's current fields; a
+  -- column whose field is not in it is waiting for its deletion to be confirmed).
+  applied_version_id uuid references public.content_model_versions (id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -50,7 +55,7 @@ create table if not exists public.content_field_permissions (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces (id) on delete cascade,
   content_model_id uuid not null references public.content_models (id) on delete cascade,
-  field_key text not null check (field_key ~ '^[a-z][a-z0-9_]{0,62}$'),
+  field_key text not null check (field_key ~ '^[a-z][a-z0-9_]*$'),
   role_id uuid not null references public.roles (id) on delete cascade,
   can_read boolean not null default true,
   can_write boolean not null default false,
@@ -68,7 +73,7 @@ create table if not exists public.schema_name_reservations (
   workspace_id uuid not null references public.workspaces (id) on delete cascade,
   content_model_id uuid references public.content_models (id) on delete cascade,
   kind text not null check (kind in ('field', 'model')),
-  name text not null check (name ~ '^[a-z][a-z0-9_]{0,62}$'),
+  name text not null check (name ~ '^[a-z][a-z0-9_]*$'),
   reason text not null check (reason in ('deleted', 'renamed')),
   reserved_until timestamptz not null,
   created_at timestamptz not null default now(),
