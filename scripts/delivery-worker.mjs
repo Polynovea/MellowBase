@@ -38,6 +38,10 @@ const queueArg = process.argv.find((arg) => arg.startsWith("--queues="));
 // (a receiver on 127.0.0.1). Off by default, and only whoever starts the worker can turn it on; never
 // pass it to a production worker, where it would reopen the SSRF hole the guard closes.
 const allowPrivateDestinations = process.argv.includes("--allow-private-destinations");
+if (allowPrivateDestinations && process.env.NODE_ENV === "production") {
+  console.error("[delivery-worker] --allow-private-destinations is refused when NODE_ENV=production: it bypasses the SSRF guard.");
+  process.exit(2);
+}
 if (allowPrivateDestinations) console.warn("[delivery-worker] --allow-private-destinations: deliveries may reach loopback and private addresses. Local use only.");
 const SUPPORTED_QUEUES = ((queueArg ? queueArg.slice("--queues=".length) : null) || process.env.DELIVERY_WORKER_QUEUES || "default,intelligence,media").split(",").map((value) => value.trim()).filter(Boolean);
 let stopping = false;
