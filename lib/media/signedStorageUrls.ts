@@ -1,4 +1,5 @@
 import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
+import { loadKeyRing, purposeKeys } from "@/lib/setup/keyRing";
 
 // Signed, expiring app URLs for storage that has no URL signing of its own (local disk) or whose
 // signing cannot bind an upload's size and type (Azure Blob SAS). A token is
@@ -10,8 +11,10 @@ import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 //
 // Signing key: POLYNOVEA_STORAGE_SIGNING_KEY (base64, at least 32 bytes). A comma-separated list is a
 // key ring: the first key signs, every key verifies, so a key can be rotated without breaking URLs
-// that are still in flight. When it is unset the key is derived from CMS_CONFIG_ENCRYPTION_KEY with
-// HKDF under a storage-only label, so the two uses never share key material.
+// that are still in flight. When it is unset the keys come from the master key ring (ADR-006): its
+// `storage-signing` key of each master key, the first signing. Links signed before the ring existed
+// used a key derived from CMS_CONFIG_ENCRYPTION_KEY; while that variable is set, that key still
+// verifies (it never signs again).
 
 export const UPLOAD_URL_TTL_SECONDS = 15 * 60;
 export const READ_URL_TTL_SECONDS = 60 * 60;
@@ -38,17 +41,24 @@ function decodeKey(raw: string, name: string): Buffer {
   return key;
 }
 
+function legacySigningKey(env: Env): Buffer | null {
+  const master = env.CMS_CONFIG_ENCRYPTION_KEY?.trim();
+  if (!master) return null;
+  const ikm = Buffer.from(master, "base64");
+  if (ikm.length !== 32) throw new Error("CMS_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key");
+  return Buffer.from(hkdfSync("sha256", ikm, Buffer.alloc(0), "polynovea/storage-url-signing/v1", 32));
+}
+
 /** The signing key ring: the first key signs, every key verifies. */
 export function storageSigningKeys(env: Env = process.env): Buffer[] {
   const explicit = env.POLYNOVEA_STORAGE_SIGNING_KEY?.trim();
   if (explicit) return explicit.split(",").filter((part) => part.trim()).map((part) => decodeKey(part, "POLYNOVEA_STORAGE_SIGNING_KEY"));
-  const master = env.CMS_CONFIG_ENCRYPTION_KEY?.trim();
-  if (master) {
-    const ikm = Buffer.from(master, "base64");
-    if (ikm.length !== 32) throw new Error("CMS_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key");
-    return [Buffer.from(hkdfSync("sha256", ikm, Buffer.alloc(0), "polynovea/storage-url-signing/v1", 32))];
-  }
-  throw new Error("Signed storage URLs need POLYNOVEA_STORAGE_SIGNING_KEY (or CMS_CONFIG_ENCRYPTION_KEY) to be set");
+  const ring = loadKeyRing(env);
+  const legacy = legacySigningKey(env);
+  const keys = ring ? purposeKeys(ring, "storage-signing").all.map((entry) => entry.key) : [];
+  if (legacy) keys.push(legacy);
+  if (keys.length) return keys;
+  throw new Error("Signed storage URLs need a master key (CMS_MASTER_KEY or master.key) or POLYNOVEA_STORAGE_SIGNING_KEY");
 }
 
 function mac(key: Buffer, body: string) {

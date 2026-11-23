@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetKeyRingCache } from "@/lib/setup/keyRing";
 import { cmsBaseUrl, mediaLinkUrl, signedReadUrl, signedUploadUrl, signStorageToken, storageSigningKeys, verifyStorageToken } from "@/lib/media/signedStorageUrls";
 
 const keyA = randomBytes(32).toString("base64");
@@ -8,7 +12,14 @@ const env = { POLYNOVEA_STORAGE_SIGNING_KEY: keyA };
 const ws = "11111111-1111-4111-8111-111111111111";
 const write = { o: "write" as const, p: "connection:abc", w: ws, k: `${ws}/general/1-x.png`, t: "image/png", n: 1234 };
 
-afterEach(() => vi.useRealTimers());
+// No master.key here unless a test makes one.
+const emptyConfigDir = mkdtempSync(path.join(os.tmpdir(), "polynovea-signing-"));
+const masterKey = (kid: string) => `${kid}:${randomBytes(32).toString("base64")}`;
+
+afterEach(() => {
+  vi.useRealTimers();
+  resetKeyRingCache();
+});
 
 describe("storage URL signing", () => {
   it("round-trips a write token with every bound field", () => {
@@ -73,12 +84,35 @@ describe("storage URL signing", () => {
     expect(verifyStorageToken(fresh, "write", { POLYNOVEA_STORAGE_SIGNING_KEY: keyA }).ok).toBe(false);
   });
 
-  it("derives a separate key from CMS_CONFIG_ENCRYPTION_KEY when no signing key is set", () => {
+  it("derives the signing keys from the master key ring, never using a master key directly", () => {
+    const ringEnv = { CMS_MASTER_KEY: `${masterKey("new")},${masterKey("old")}`, POLYNOVEA_CONFIG_DIR: emptyConfigDir };
+    const keys = storageSigningKeys(ringEnv);
+    expect(keys).toHaveLength(2);
+    for (const key of keys) expect(key).toHaveLength(32);
+    const masters = ringEnv.CMS_MASTER_KEY.split(",").map((entry) => Buffer.from(entry.split(":")[1], "base64"));
+    expect(keys.some((key) => masters.some((master) => master.equals(key)))).toBe(false);
+  });
+
+  it("signs with the ring and still verifies links signed with the legacy CMS_CONFIG_ENCRYPTION_KEY key", () => {
+    const legacy = randomBytes(32).toString("base64");
+    const legacyEnv = { CMS_CONFIG_ENCRYPTION_KEY: legacy, POLYNOVEA_CONFIG_DIR: emptyConfigDir };
+    const oldToken = signStorageToken(write, 900, legacyEnv);
+    resetKeyRingCache();
+    const upgraded = { ...legacyEnv, CMS_MASTER_KEY: masterKey("k1") };
+    expect(verifyStorageToken(oldToken, "write", upgraded).ok).toBe(true);
+    const fresh = signStorageToken(write, 900, upgraded);
+    resetKeyRingCache();
+    expect(verifyStorageToken(fresh, "write", legacyEnv).ok).toBe(false);
+    resetKeyRingCache();
+    expect(verifyStorageToken(fresh, "write", { CMS_MASTER_KEY: upgraded.CMS_MASTER_KEY, POLYNOVEA_CONFIG_DIR: emptyConfigDir }).ok).toBe(true);
+  });
+
+  it("derives a separate legacy key from CMS_CONFIG_ENCRYPTION_KEY and refuses when there is no key at all", () => {
     const master = randomBytes(32);
-    const [derived] = storageSigningKeys({ CMS_CONFIG_ENCRYPTION_KEY: master.toString("base64") });
+    const [derived] = storageSigningKeys({ CMS_CONFIG_ENCRYPTION_KEY: master.toString("base64"), POLYNOVEA_CONFIG_DIR: emptyConfigDir });
     expect(derived).toHaveLength(32);
     expect(derived.equals(master)).toBe(false);
-    expect(() => storageSigningKeys({})).toThrow(/POLYNOVEA_STORAGE_SIGNING_KEY/);
+    expect(() => storageSigningKeys({ POLYNOVEA_CONFIG_DIR: emptyConfigDir })).toThrow(/master key/);
     expect(() => storageSigningKeys({ POLYNOVEA_STORAGE_SIGNING_KEY: randomBytes(16).toString("base64") })).toThrow(/32/);
   });
 

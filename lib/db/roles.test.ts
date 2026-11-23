@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ClientBase } from "pg";
 import { createHash, createHmac, pbkdf2Sync } from "node:crypto";
-import { bootstrapInstallRoles, ensureCompatibilityRoles, scramSha256Verifier } from "@/lib/db/roles.mjs";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { appRoleProblems, bootstrapInstallRoles, ensureCompatibilityRoles, INSTALL_PROBES, installationState, rolesInUseElsewhere, scramSha256Verifier, tablesMissingAppPolicy, withOwnerRole } from "@/lib/db/roles.mjs";
+import { adminRoutes, fakeClient as routedClient } from "@/lib/setup/database/testFakes";
 
 function fakeClient(missing: string[], canCreate: boolean, opts: { superuser?: boolean; bypassRoles?: string[]; version?: number } = {}) {
   const statements: string[] = [];
@@ -96,5 +99,124 @@ describe("scramSha256Verifier", () => {
     const serverKey = createHmac("sha256", salted).update("Server Key").digest("base64");
     expect(verifier).toBe(`SCRAM-SHA-256$4096:${salt.toString("base64")}$${storedKey}:${serverKey}`);
     expect(scramSha256Verifier("pencil")).not.toBe(scramSha256Verifier("pencil")); // random salt
+  });
+});
+
+describe("bootstrapInstallRoles and schema public", () => {
+  it("closes schema public to PUBLIC before it changes hands", async () => {
+    const { client, statements } = fakeClient([], true);
+    await bootstrapInstallRoles(client, { database: "polynovea", ownerPassword: "a", appPassword: "b" });
+    expect(statements.indexOf("revoke create on schema public from public")).toBeLessThan(statements.indexOf('alter schema public owner to "polynovea_owner"'));
+  });
+});
+
+describe("installationState", () => {
+  it.each([
+    [{}, "fresh"],
+    [{ core: true }, "foreign"],
+    [{ installation: true }, "foreign"],
+    [{ admins: true }, "foreign"],
+    [{ ledger: true }, "resumable"],
+    [{ ledger: true, core: true, admins: true, installation: true, inUse: false }, "resumable"],
+    [{ ledger: true, installation: true, inUse: true }, "installed"],
+    // An install from before migration 0072: admins, no installation table.
+    [{ ledger: true, core: true, admins: true, inUse: true }, "installed"],
+    [{ ledger: true, core: true, admins: true, owners: ["polynovea_owner", "postgres"] }, "foreign"],
+  ] as const)("%j is %s", async (state, expected) => {
+    const fake = routedClient(adminRoutes(state));
+    await expect(installationState(fake.client)).resolves.toBe(expected);
+  });
+
+  it("runs the installation row and all four INSTALL_PROBES as the tables' owner", async () => {
+    const fake = routedClient(adminRoutes({ ledger: true, core: true, admins: true, members: true, content: true, installation: true }));
+    await installationState(fake.client);
+    const check = fake.statements.find((sql) => sql.endsWith("as in_use"))!;
+    expect(check).toContain("exists (select 1 from public.installation)");
+    for (const probe of INSTALL_PROBES) expect(check).toContain(probe.sql);
+    const index = fake.statements.indexOf(check);
+    expect(fake.statements[index - 1]).toBe('set role "polynovea_owner"');
+    expect(fake.statements[index + 1]).toBe("reset role");
+  });
+
+  it("does not query tables that do not exist yet (a part-migrated database)", async () => {
+    const fake = routedClient(adminRoutes({ ledger: true, core: true }));
+    await expect(installationState(fake.client)).resolves.toBe("resumable");
+    const check = fake.statements.find((sql) => sql.endsWith("as in_use"))!;
+    expect(check).not.toMatch(/installation|admin_users|workspace_members|content_entries/);
+    expect(check).toContain("public.workspaces");
+  });
+});
+
+describe("INSTALL_PROBES: the shared 'database holds an install' rule", () => {
+  it("is exactly admin users, workspace members, content entries, or a workspace other than the seeded one", () => {
+    expect(INSTALL_PROBES.map((probe) => probe.sql)).toEqual([
+      "exists (select 1 from public.admin_users)",
+      "exists (select 1 from public.workspace_members)",
+      "exists (select 1 from public.content_entries)",
+      "exists (select 1 from public.workspaces w where w.slug <> 'polynovea')",
+    ]);
+  });
+
+  it("matches migration 0072's backfill rule (gate-config's copy), so the two cannot drift", () => {
+    const migration = readFileSync(path.join(process.cwd(), "supabase", "migrations", "0072_installation.sql"), "utf8").replace(/\r\n/g, "\n");
+    const marked = /-- backfill:start\n([\s\S]*?)-- backfill:end/.exec(migration);
+    expect(marked, "0072 must mark its install rule with -- backfill:start / -- backfill:end").not.toBeNull();
+    const probes = [...marked![1].matchAll(/exists \(select 1 from public\.[a-z_]+(?: [a-z]+ where [^)]*)?\)/g)].map((match) => match[0]);
+    expect(probes).toEqual(INSTALL_PROBES.map((probe) => probe.sql));
+  });
+
+  it("treats a database whose roles another admin created as foreign", async () => {
+    const fake = routedClient([[/^grant "polynovea_owner"/, () => Object.assign(new Error("permission denied to grant role"), { code: "42501" })], ...adminRoutes({ ledger: true, installation: true })]);
+    await expect(installationState(fake.client)).resolves.toBe("foreign");
+  });
+});
+
+describe("rolesInUseElsewhere", () => {
+  it("returns the other databases relying on the shared roles, checking explicit grants and dependencies", async () => {
+    const fake = routedClient(adminRoutes({ rolesElsewhere: [{ role: "polynovea_app", database: "polynovea" }] }));
+    await expect(rolesInUseElsewhere(fake.client)).resolves.toEqual([{ role: "polynovea_app", database: "polynovea" }]);
+    const sql = fake.statements[0];
+    for (const part of ["d.datdba = roles.oid", "aclexplode", "has_database_privilege", "pg_shdepend", "current_database()"]) expect(sql).toContain(part);
+    expect(fake.params[0]).toEqual([["polynovea_owner", "polynovea_app"]]);
+  });
+});
+
+describe("withOwnerRole", () => {
+  it("acts as the owner for the call only, and gives the membership back even on failure", async () => {
+    const fake = routedClient(adminRoutes());
+    await expect(withOwnerRole(fake.client, async () => { throw new Error("inner"); }, { setRole: true })).rejects.toThrow("inner");
+    expect(fake.statements.slice(1)).toEqual([
+      'grant "polynovea_owner" to current_user with set true, inherit false',
+      'set role "polynovea_owner"',
+      "reset role",
+      'revoke "polynovea_owner" from current_user',
+    ]);
+  });
+});
+
+describe("appRoleProblems and tablesMissingAppPolicy", () => {
+  it("lists every way the app role could create or change structure", async () => {
+    const fake = routedClient([[/as create_schemas/, () => ({ rows: [{ bypass: true, create_schemas: ["public"], create_database: true, temporary: true, member_of: ["polynovea_owner"], owned: "2" }] })]]);
+    expect(await appRoleProblems(fake.client)).toEqual([
+      "polynovea_app holds SUPERUSER, CREATEROLE, CREATEDB or BYPASSRLS",
+      "polynovea_app may create objects in schema(s) public",
+      "polynovea_app may create schemas in the database",
+      "polynovea_app may create temporary tables",
+      "polynovea_app is a member of polynovea_owner",
+      "polynovea_app owns 2 object(s)",
+    ]);
+    expect(fake.params[0]).toEqual(["polynovea_app"]);
+  });
+
+  it("is empty for a correctly limited app role, and reports a missing role", async () => {
+    const ok = routedClient([[/as create_schemas/, () => ({ rows: [{ bypass: false, create_schemas: [], create_database: false, temporary: false, member_of: [], owned: "0" }] })]]);
+    expect(await appRoleProblems(ok.client)).toEqual([]);
+    const missing = routedClient([[/as create_schemas/, () => ({ rows: [{ bypass: null, create_schemas: [], create_database: false, temporary: false, member_of: [], owned: "0" }] })]]);
+    expect(await appRoleProblems(missing.client)).toEqual(["polynovea_app does not exist"]);
+  });
+
+  it("returns the tables without the app policy", async () => {
+    const fake = routedClient([[/p\.cmd = 'ALL'/, () => ({ rows: [{ relname: "posts" }] })]]);
+    expect(await tablesMissingAppPolicy(fake.client)).toEqual(["posts"]);
   });
 });

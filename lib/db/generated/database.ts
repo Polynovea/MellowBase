@@ -905,6 +905,19 @@ export interface InfrastructureApprovalRequests {
   workspace_id: string;
 }
 
+export interface Installation {
+  app_version: string | null;
+  completed_at: Generated<string>;
+  database_mode: string;
+  install_id: Generated<string>;
+  organisation_name: string;
+  /**
+   * The owner created by the setup wizard. Empty only on installs set up before the wizard that had no active master or admin user.
+   */
+  owner_admin_user_id: string | null;
+  singleton: Generated<boolean>;
+}
+
 export interface LegacyContentMigrations {
   content_entry_id: string;
   migrated_at: Generated<string>;
@@ -2163,6 +2176,7 @@ export interface DB {
   extension_manifests: ExtensionManifests;
   extension_permission_grants: ExtensionPermissionGrants;
   infrastructure_approval_requests: InfrastructureApprovalRequests;
+  installation: Installation;
   legacy_content_migrations: LegacyContentMigrations;
   live_events: LiveEvents;
   live_metrics: LiveMetrics;
