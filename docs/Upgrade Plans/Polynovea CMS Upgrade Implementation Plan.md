@@ -230,7 +230,7 @@ One engineer-equivalent, running alongside the data waves. Existing users keep t
 
 **Regression tests we write ourselves** (the bug classes Better Auth has had): a revoked session is rejected on the next request; an unverified OAuth email never links to an existing account; parallel wrong TOTP and recovery-code attempts cannot exceed the limit; rate limits hold behind a proxy and across an IPv6 /64; a passkey from the wrong origin is refused.
 
-**Exit gate (week 10):** the admin UI and API run on built-in auth with no GoTrue, all the regression tests pass, and the migration command has been rehearsed on a copy of a real install.
+**Exit gate (week 10):** the admin UI and API run on built-in auth with no GoTrue, all the regression tests pass, and the migration command has been rehearsed on a local Supabase install seeded with test users (there are no production installs; the first Azure deployment repeats it end to end).
 
 ## Phase 1: database roles, functions and storage (weeks 3–6)
 
