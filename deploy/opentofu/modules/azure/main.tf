@@ -14,7 +14,7 @@ locals {
   container_name = "polynovea"
   secret_name    = "polynovea-database-admin"
 
-  # Non-secret values only, with the release package's keys. The image itself sets HOSTNAME, PORT,
+  # Non-secret values only, with the release package's keys. The release package sets HOSTNAME, PORT,
   # POLYNOVEA_TRUSTED_PROXIES and POLYNOVEA_CONFIG_DIR.
   settings = join("\n", compact([
     "# Written by the Polynovea OpenTofu module. Non-secret values only.",
