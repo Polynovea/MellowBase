@@ -73,6 +73,9 @@ export function stampRequest(request: StampableRequest, server: { address(): Add
     tls: Boolean((socket as (Socket & { encrypted?: boolean }) | null)?.encrypted),
     forwarded: FORWARDING_HEADERS.some((name) => request.headers[name] !== undefined),
   };
+  // Not remote property injection: the key is a server-generated per-process nonce (holder()), never
+  // client input, and every client header with this prefix was deleted above.
+  // nosemgrep: javascript.express.security.audit.remote-property-injection.remote-property-injection
   request.headers[holder().header] = JSON.stringify(info);
 }
 
