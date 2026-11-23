@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 4: autonomy policies and operational plan creation on the direct path. A plan can no longer reference another workspace's reconciliation run, policy updates are validated before they reach the database, and a plan, its nodes and edges, its drift marking and its audit event commit together.
 Phase 1 wave 4: the operational world model on the direct path. A discovery's nodes, edges, observations, stale marking and the run's completion commit together, so a failed discovery leaves the previous world model intact.
 Phase 1 wave 4: ML governance (retention, prediction feedback, online evaluation) and predictive plan comparison on the direct path. Retention deletes the four kinds of expired learning data in one transaction, and feedback, comparisons and scenario selection commit with their audit events.
 Phase 1 wave 4: operational ML (learning policy, model registry, feature snapshots, training, predictions and outcomes) on the direct path. A model version takes its number under a lock, and the new version, the previous version's retirement, deployment and evaluations commit together.

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as planData from "@/lib/intelligence/planData";
+import * as reconciliationData from "@/lib/intelligence/reconciliationData";
 import { verifyConnection } from "@/lib/infrastructure/connectionService";
 import { runComponentAction, runSystemDoctor } from "@/lib/infrastructure/operabilityService";
 import { sha256Canonical } from "@/lib/intelligence/operationalCanonical";
@@ -18,6 +20,10 @@ import type {
 import { getActiveDesiredState, reconcileOperationalState } from "@/lib/intelligence/reconciliationService";
 import { getOperationalWorldModel, refreshOperationalWorldModel } from "@/lib/intelligence/worldModelService";
 import { logPlatformEvent } from "@/lib/platform/audit";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const AUTONOMY_MODES = new Set(["diagnose_only", "recommend", "approval_execute", "policy_auto_repair"]);
+const POLICY_CLASSIFICATIONS = new Set(["safe", "requires_lock", "requires_backfill"]);
 import { getVersion } from "@/lib/schema/modelService";
 
 const CLASSIFICATION_ORDER: Record<OperationalDeterministicClassification, number> = {
@@ -131,13 +137,8 @@ function dedupeNodes(nodes: OperationalPlanNodeDefinition[]) {
 }
 
 export async function getAutonomyPolicy(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
-  const { data: existing, error } = await db.from("operational_autonomy_policies").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).maybeSingle();
-  if (error) throw new Error(error.message);
-  if (existing) return existing;
-  const { data: created, error: createError } = await db.from("operational_autonomy_policies").insert({ workspace_id: workspaceId, environment_id: environmentId, mode: "diagnose_only" }).select().single();
-  if (createError || !created) throw new Error(createError?.message || "Could not create operational autonomy policy");
-  return created;
+  if (!UUID.test(environmentId)) throw Object.assign(new Error("Environment not found"), { status: 404 });
+  return planData.autonomyPolicy(workspaceId, environmentId);
 }
 
 export async function updateAutonomyPolicy(params: {
@@ -149,13 +150,17 @@ export async function updateAutonomyPolicy(params: {
   maxDeterministicClassification?: "safe" | "requires_lock" | "requires_backfill";
   settings?: Record<string, unknown>;
 }) {
-  const db = createServiceRoleClient();
-  const { data: environment } = await db.from("workspace_environments").select("kind").eq("workspace_id", params.workspaceId).eq("id", params.environmentId).maybeSingle();
+  // mode, the classification and the keys come from the request body.
+  if (!AUTONOMY_MODES.has(String(params.mode))) throw Object.assign(new Error("Unsupported autonomy mode"), { status: 400 });
+  if (params.maxDeterministicClassification !== undefined && !POLICY_CLASSIFICATIONS.has(String(params.maxDeterministicClassification))) throw Object.assign(new Error("Unsupported maximum classification"), { status: 400 });
+  if (params.allowedRemediationKeys && !params.allowedRemediationKeys.every((key) => typeof key === "string" && key.length > 0 && key.length <= 200)) throw Object.assign(new Error("Remediation keys must be names"), { status: 400 });
+  if (params.settings !== undefined && (!params.settings || typeof params.settings !== "object" || Array.isArray(params.settings))) throw Object.assign(new Error("Settings must be an object"), { status: 400 });
+  const environment = UUID.test(params.environmentId) ? await reconciliationData.environmentState(params.workspaceId, params.environmentId) : null;
   if (!environment) throw Object.assign(new Error("Environment not found"), { status: 404 });
   if (environment.kind === "production" && params.mode === "policy_auto_repair" && (params.maxDeterministicClassification ?? "safe") !== "safe") {
     throw Object.assign(new Error("Production policy auto-repair may only cover deterministically SAFE remediations"), { status: 409 });
   }
-  const { data, error } = await db.from("operational_autonomy_policies").upsert({
+  return planData.saveAutonomyPolicy({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     mode: params.mode,
@@ -165,10 +170,7 @@ export async function updateAutonomyPolicy(params: {
     settings_json: params.settings ?? {},
     updated_by: params.actorId,
     updated_at: new Date().toISOString(),
-  }, { onConflict: "environment_id" }).select().single();
-  if (error || !data) throw new Error(error?.message || "Could not update autonomy policy");
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.autonomy_policy.updated", entityType: "workspace_environment", entityId: params.environmentId, metadata: { mode: data.mode, maxDeterministicClassification: data.max_deterministic_classification, allowedRemediationKeys: data.allowed_remediation_keys } });
-  return data;
+  }, (data) => ({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.autonomy_policy.updated", entityType: "workspace_environment", entityId: params.environmentId, metadata: { mode: data.mode, maxDeterministicClassification: data.max_deterministic_classification, allowedRemediationKeys: data.allowed_remediation_keys } }));
 }
 
 export async function createOperationalPlan(params: {
@@ -179,11 +181,11 @@ export async function createOperationalPlan(params: {
   reconciliationRunId?: string | null;
   name?: string | null;
 }) {
-  const db = createServiceRoleClient();
-  const [{ data: environment }, desiredState, world] = await Promise.all([
-    db.from("workspace_environments").select("id,kind,status").eq("workspace_id", params.workspaceId).eq("id", params.environmentId).maybeSingle(),
+  if (!UUID.test(params.environmentId)) throw Object.assign(new Error("Environment not found"), { status: 404 });
+  const [environment, desiredState, world] = await Promise.all([
+    reconciliationData.environmentState(params.workspaceId, params.environmentId),
     params.desiredStateRevisionId
-      ? db.from("operational_desired_state_revisions").select("*").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("id", params.desiredStateRevisionId).maybeSingle().then((result: any) => result.data)
+      ? (UUID.test(params.desiredStateRevisionId) ? reconciliationData.revisionById(params.workspaceId, params.environmentId, params.desiredStateRevisionId) : null)
       : getActiveDesiredState(params.workspaceId, params.environmentId),
     getOperationalWorldModel(params.workspaceId, params.environmentId),
   ]);
@@ -192,21 +194,20 @@ export async function createOperationalPlan(params: {
   if (!world.latestDiscovery) throw Object.assign(new Error("Run operational discovery before planning"), { status: 409 });
 
   let reconciliationRunId = params.reconciliationRunId ?? null;
+  // The run id comes from the request body and the plan's foreign key to it is not workspace-scoped.
+  if (reconciliationRunId && (!UUID.test(reconciliationRunId) || !(await planData.reconciliationRunInEnvironment(params.workspaceId, params.environmentId, reconciliationRunId)))) {
+    throw Object.assign(new Error("Reconciliation run not found in this environment"), { status: 404 });
+  }
   if (!reconciliationRunId) {
     const reconciliation = await reconcileOperationalState({ workspaceId: params.workspaceId, environmentId: params.environmentId, actorId: params.actorId, desiredStateRevisionId: desiredState.id, refreshWorld: false });
     reconciliationRunId = reconciliation.run.id;
   }
 
-  const [{ data: drifts, error: driftError }, { data: worldNodes, error: nodesError }] = await Promise.all([
-    db.from("operational_drift_items").select("*").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("desired_state_revision_id", desiredState.id).in("state", ["open", "acknowledged", "planned"]).order("severity"),
-    db.from("operational_world_nodes").select("id,node_key,source_entity_type,source_entity_id,state,provider,attributes_json").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId),
-  ]);
-  if (driftError) throw new Error(driftError.message);
-  if (nodesError) throw new Error(nodesError.message);
-  const worldNodeById = new Map((worldNodes ?? []).map((node) => [node.id, node]));
+  const { drifts, worldNodes } = await planData.planInputs(params.workspaceId, params.environmentId, desiredState.id);
+  const worldNodeById = new Map(worldNodes.map((node) => [node.id, node]));
 
   const actionNodes: OperationalPlanNodeDefinition[] = [];
-  for (const drift of drifts ?? []) {
+  for (const drift of drifts) {
     if (drift.category === "schema") {
       const modelId = String(drift.drift_key).split(".")[1] || null;
       const desiredVersion = Number(drift.desired_json?.version ?? 0);
@@ -347,11 +348,11 @@ export async function createOperationalPlan(params: {
   };
   const checksum = sha256Canonical(planDocument);
 
-  const { data: existing, error: existingError } = await db.from("operational_change_plans").select("*").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("plan_checksum_sha256", checksum).maybeSingle();
-  if (existingError) throw new Error(existingError.message);
+  const existing = await planData.planByChecksum(params.workspaceId, params.environmentId, checksum);
   if (existing) return getOperationalPlan(params.workspaceId, existing.id);
 
-  const { data: plan, error: planError } = await db.from("operational_change_plans").insert({
+  const plan = await planData.persistPlan({
+    planRow: {
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     desired_state_revision_id: desiredState.id,
@@ -366,11 +367,9 @@ export async function createOperationalPlan(params: {
     created_by: params.actorId,
     created_at: createdAt,
     expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-  }).select().single();
-  if (planError || !plan) throw new Error(planError?.message || "Could not persist operational plan");
-
-  const persistedNodeRows = nodes.map((node) => ({
-    plan_id: plan.id,
+    },
+    nodeRowsFor: (planId) => nodes.map((node) => ({
+    plan_id: planId,
     node_key: node.nodeKey,
     ordinal: node.ordinal,
     operation: node.operation,
@@ -385,33 +384,18 @@ export async function createOperationalPlan(params: {
     input_json: node.input,
     verification_json: node.verification,
     compensation_json: node.compensation,
-  }));
-  const { data: persistedNodes, error: persistedNodesError } = await db.from("operational_change_plan_nodes").insert(persistedNodeRows).select("id,node_key");
-  if (persistedNodesError) throw new Error(persistedNodesError.message);
-  const idByKey = new Map((persistedNodes ?? []).map((node) => [node.node_key, node.id]));
-  const edgeRows = nodes.flatMap((node) => node.dependsOn.map((dependencyKey) => ({ plan_id: plan.id, from_node_id: idByKey.get(dependencyKey), to_node_id: idByKey.get(node.nodeKey), edge_kind: "depends_on" }))).filter((edge) => edge.from_node_id && edge.to_node_id);
-  if (edgeRows.length) {
-    const { error } = await db.from("operational_change_plan_edges").insert(edgeRows);
-    if (error) throw new Error(error.message);
-  }
-  if ((drifts ?? []).length) await db.from("operational_drift_items").update({ state: "planned" }).eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("desired_state_revision_id", desiredState.id).in("state", ["open", "acknowledged"]);
-
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.plan.created", entityType: "operational_change_plan", entityId: plan.id, metadata: { environmentId: params.environmentId, checksum, classification, requiresApproval, nodeCount: nodes.length, driftCount: (drifts ?? []).length } });
+    })),
+    edgeRowsFor: (planId, idByKey) => nodes.flatMap((node) => node.dependsOn.map((dependencyKey) => ({ plan_id: planId, from_node_id: idByKey.get(dependencyKey), to_node_id: idByKey.get(node.nodeKey), edge_kind: "depends_on" }))).filter((edge) => edge.from_node_id && edge.to_node_id),
+    markDriftPlanned: drifts.length > 0,
+    auditFor: (created) => ({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.plan.created", entityType: "operational_change_plan", entityId: created.id, metadata: { environmentId: params.environmentId, checksum, classification, requiresApproval, nodeCount: nodes.length, driftCount: drifts.length } }),
+  });
   return getOperationalPlan(params.workspaceId, plan.id);
 }
 
 export async function getOperationalPlan(workspaceId: string, planId: string) {
-  const db = createServiceRoleClient();
-  const [{ data: plan, error: planError }, { data: nodes, error: nodesError }, { data: edges, error: edgesError }] = await Promise.all([
-    db.from("operational_change_plans").select("*").eq("workspace_id", workspaceId).eq("id", planId).maybeSingle(),
-    db.from("operational_change_plan_nodes").select("*").eq("plan_id", planId).order("ordinal"),
-    db.from("operational_change_plan_edges").select("*").eq("plan_id", planId),
-  ]);
-  if (planError) throw new Error(planError.message);
-  if (nodesError) throw new Error(nodesError.message);
-  if (edgesError) throw new Error(edgesError.message);
+  const { plan, nodes, edges } = UUID.test(planId) ? await planData.planGraph(workspaceId, planId) : { plan: null, nodes: [], edges: [] };
   if (!plan) throw Object.assign(new Error("Operational plan not found"), { status: 404 });
-  return { plan, nodes: nodes ?? [], edges: edges ?? [] };
+  return { plan, nodes, edges };
 }
 
 async function findApprovedPlanRequest(workspaceId: string, environmentId: string, planId: string, requestId?: string | null) {
@@ -716,12 +700,5 @@ export async function executeOperationalPlan(params: { workspaceId: string; envi
 }
 
 export async function listOperationalPlans(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
-  const [plans, simulations, executions, evidence] = await Promise.all([
-    db.from("operational_change_plans").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("created_at", { ascending: false }).limit(50),
-    db.from("operational_simulation_runs").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("started_at", { ascending: false }).limit(50),
-    db.from("operational_execution_runs").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("started_at", { ascending: false }).limit(50),
-    db.from("operational_evidence_packages").select("id,execution_run_id,plan_id,checksum_sha256,created_at,package_json").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("created_at", { ascending: false }).limit(50),
-  ]);
-  return { plans: plans.data ?? [], simulations: simulations.data ?? [], executions: executions.data ?? [], evidencePackages: evidence.data ?? [] };
+  return UUID.test(environmentId) ? planData.planLists(workspaceId, environmentId) : { plans: [], simulations: [], executions: [], evidencePackages: [] };
 }
