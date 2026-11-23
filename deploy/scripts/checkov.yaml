@@ -30,9 +30,14 @@ skip-check:
   - CKV_AWS_145   # paid extra: S3 KMS: SSE-S3 (AES-256) encryption, no KMS request costs
   - CKV2_AZURE_1  # paid extra: Storage CMK: Microsoft-managed keys plus infrastructure encryption
   - CKV_AZURE_93  # paid extra: Managed disk CMK (disk encryption set): Microsoft-managed keys
+  - CKV_AZURE_2   # paid extra: Managed disk encryption setting: disks are encrypted at rest with platform keys by default; the check wants a disk encryption set (CMK)
+  - CKV_AZURE_189 # paid extra: Key Vault public network access off needs a private endpoint; default-deny firewall admits only the VM subnet
   - CKV_AWS_260   # by design: Port 80 open: only when a domain is set, for Let's Encrypt HTTP-01 and the HTTPS redirect
   - CKV_AZURE_119 # by design: NIC public IP: the site is served from this VM
   - CKV_AWS_161   # by design: RDS IAM auth: the CMS uses password roles (polynovea_owner / polynovea_app) made by the wizard
   - CKV2_AWS_57   # by design: Secret rotation: the admin login is read once by the wizard, then unused
   - CKV_AZURE_41  # by design: Key Vault secret expiry: an expired secret can't be read, which would break re-running setup
+  - CKV_AZURE_97  # by design: Encryption at host needs a per-subscription feature registration, which would break the one-click deploy; disks are still encrypted at rest
+  - CKV_AZURE_151 # by design: false positive, a Windows-only check flagged on this Linux VM
+  - CKV_AWS_23    # by design: false positive, every security group rule has a Description; checkov can't read the conditional (Fn::If) ones
   - CKV_AZURE_43  # by design: Storage account naming: false positive, the name is computed (prefix + hash, 3-24 lowercase)
