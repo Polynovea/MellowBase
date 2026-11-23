@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 3: content analytics and GA4 sync on the direct path, which finishes lib/content. Migration 0070 makes the snapshot key treat a missing version as a value: GA4 syncs no longer add duplicate snapshots for unpublished entries on every run (existing duplicates move to content_analytics_snapshots_duplicate_archive). The GA4 connector response no longer includes its encrypted config, and a manual snapshot can only name the entry's own version.
 Phase 1 wave 3: publication targets and jobs on the direct path. Dispatching a job no longer returns the target's encrypted config, a target's own headers can no longer replace the delivery's signature or idempotency headers, target config from the request is validated (HTTPS, public address, plain single-line headers), and each publication job commits with its delivery job.
 Phase 1 wave 3: webhook subscriptions and deliveries on the direct path. Subscription writes commit with their audit events, each queued delivery commits with its job, and an attempt's outcome commits as one. Event filters from the request are validated, and another workspace's subscription id now reads as not found on both paths.
 Phase 1 wave 3: dependency, impact and asset-usage graph reads on the direct path; every lookup is scoped by workspace and a widely used entry's or asset's blast radius is no longer cut off at 1000 relations.
