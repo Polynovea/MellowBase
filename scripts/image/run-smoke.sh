@@ -93,13 +93,20 @@ smoke "$PREFIX-tunnel" -e SETUP_CODE="$CODE" -e EXPECT_RELEASE="$RELEASE_ID" -e 
 
 step "Bundled database: 127.0.0.1 and socket only, no password sign-in, no remote roles"
 docker exec "$PREFIX-tunnel" sh -ec '
-  psql -h /var/run/postgresql -U postgres -d polynovea -Atc "show listen_addresses" | grep -qx 127.0.0.1 && echo "listen_addresses = 127.0.0.1"
-  psql -h /var/run/postgresql -U postgres -d polynovea -Atc "select count(*) from pg_roles where rolname in (\x27polynovea_owner\x27,\x27polynovea_app\x27)" | grep -qx 2 && echo "polynovea_owner and polynovea_app exist"
-  if PGPASSWORD=x psql -h 127.0.0.1 -U postgres -d polynovea -c "select 1" >/dev/null 2>&1; then echo "FAIL: superuser over TCP"; exit 1; else echo "superuser over TCP refused"; fi
-  if PGPASSWORD=x psql -h 127.0.0.1 -U polynovea_app -d postgres -c "select 1" >/dev/null 2>&1; then echo "FAIL: app role on another database"; exit 1; else echo "app role limited to the polynovea database"; fi
-  test "$(stat -c %a /var/run/postgresql)" = 700 && echo "socket directory is private (0700)"
-  pgbackrest --config=/var/lib/polynovea/etc/pgbackrest.conf --log-path=/var/lib/polynovea/log/pgbackrest --stanza=polynovea info | grep -q "status: ok" && echo "pgBackRest stanza ok, full backup present"
-  test "$(stat -c %a /var/lib/polynovea/etc/pgbackrest.conf)" = 600 && echo "pgbackrest.conf is 0600"
+  sql() { psql -h /var/run/postgresql -U postgres -d polynovea -Atc "$1"; }
+  check() { if [ "$1" = "$2" ]; then echo "ok    $3"; else echo "FAIL  $3: got [$1], expected [$2]"; exit 1; fi; }
+  check "$(sql "show listen_addresses")" "127.0.0.1" "listens on 127.0.0.1 only"
+  check "$(sql "select string_agg(rolname, \$\$,\$\$ order by rolname) from pg_roles where rolname like \$\$polynovea\\_%\$\$")" "polynovea_app,polynovea_owner" "polynovea_owner and polynovea_app exist"
+  # Sign-in rules (pg_hba): nothing accepts a connection except the superuser over the socket by peer,
+  # and polynovea_owner/polynovea_app to the polynovea database from 127.0.0.1/32 by SCRAM.
+  check "$(sql "select count(*) from pg_hba_file_rules where error is null and auth_method <> \$\$reject\$\$ and not (type = \$\$local\$\$ and user_name = \$\${postgres}\$\$ and auth_method = \$\$peer\$\$) and not (type = \$\$host\$\$ and database = \$\${polynovea}\$\$ and user_name = \$\${polynovea_owner,polynovea_app}\$\$ and address = \$\$127.0.0.1\$\$ and netmask = \$\$255.255.255.255\$\$ and auth_method = \$\$scram-sha-256\$\$)")" "0" \
+    "pg_hba accepts only: superuser by socket (peer), polynovea_* to one database from 127.0.0.1 by SCRAM"
+  check "$(sql "select count(*) from pg_hba_file_rules where error is not null")" "0" "pg_hba has no rule errors"
+  if PGPASSWORD=x psql -h 127.0.0.1 -U postgres -d polynovea -c "select 1" 2>&1 | grep -q "pg_hba.conf"; then echo "ok    superuser over TCP rejected by pg_hba"; else echo "FAIL  superuser over TCP not rejected by pg_hba"; exit 1; fi
+  mode="$(stat -c %a /var/run/postgresql)"
+  case "$mode" in *00) echo "ok    socket directory has no group or other access ($mode)";; *) echo "FAIL  socket directory mode $mode"; exit 1;; esac
+  if pgbackrest --config=/var/lib/polynovea/etc/pgbackrest.conf --log-path=/var/lib/polynovea/log/pgbackrest --stanza=polynovea info | grep -q "status: ok"; then echo "ok    pgBackRest stanza ok, full backup present"; else echo "FAIL  pgBackRest stanza"; exit 1; fi
+  check "$(stat -c %a /var/lib/polynovea/etc/pgbackrest.conf)" "600" "pgbackrest.conf is 0600"
 '
 
 step "Restart: PostgreSQL comes back with the container"
