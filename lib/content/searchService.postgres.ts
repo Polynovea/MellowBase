@@ -6,7 +6,10 @@
 // PostgREST `or(owner_id.eq.<id>,is_shared.eq.true)` string from the owner ID.
 // - Malformed IDs in search filters return no rows instead of a database error; a malformed saved
 // search ID is "not found". Lists have explicit limits and tie-breaks.
+import { sql } from "kysely";
 import { callFunction, DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne } from "@/lib/db/index";
+import { tableSource, type TableSource } from "@/lib/content/tableStore";
+import { STORAGE_COLUMNS } from "@/lib/schema/engine/names";
 import type { ContentEntryRow, ContentEntryVersionRow } from "@/lib/content/entryService";
 import { searchableText, type ContentSearchParams } from "@/lib/content/searchService";
 
@@ -38,7 +41,9 @@ export async function searchContent(params: ContentSearchParams) {
   for (const id of [params.modelId, params.authorId, params.termId]) {
     if (id && !isUuid(id)) return [];
   }
-  const rows = await callFunction("cms_search_content_ranked", {
+  const query = params.query?.trim() || null;
+  const source = params.modelId && query ? await tableSource(params.workspaceId, params.modelId) : null;
+  const rows = source ? await searchModelTable(params, source, query!) : await callFunction("cms_search_content_ranked", {
     p_workspace_id: params.workspaceId,
     p_query: params.query?.trim() || null,
     p_model_id: params.modelId ?? null,
@@ -53,6 +58,51 @@ export async function searchContent(params: ContentSearchParams) {
   });
   if (params.sort === "updated_asc") return [...rows].sort((a, b) => new Date(a.updated_at ?? 0).getTime() - new Date(b.updated_at ?? 0).getTime());
   if (params.sort === "updated_desc") return [...rows].sort((a, b) => new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime());
+  return rows;
+}
+
+type RankedRow = Awaited<ReturnType<typeof callFunction<"cms_search_content_ranked">>>[number];
+
+/**
+ * Phase 3, model-scoped search on a model switched to its table. Same filters, ranking and order as
+ * cms_search_content_ranked (ranking stays on content_search_documents, which every save still
+ * maintains); only the trigram and substring match moves to the model table's search-indexed text
+ * columns (pg_trgm GIN indexes the schema engine builds). The full-text match stays on the document.
+ * Known difference from the whole-document match: a phrase spanning two fields, and text inside
+ * non-text fields (rich text, lists, JSON) or in text fields that are not search-indexed (slug, email,
+ * url, select), match only through full text, not by trigram or substring.
+ */
+async function searchModelTable(params: ContentSearchParams, source: TableSource, q: string): Promise<RankedRow[]> {
+  const columns = Object.values(source.shape.columns).filter((column) => column.searchIndexed && column.pgType === "text");
+  const table = sql.id("content", source.table);
+  const columnMatch = columns.length
+    ? sql.join(columns.map((column) => sql`r.${sql.id(column.name)} % ${q} or r.${sql.id(column.name)} ilike '%' || ${q} || '%'`), sql` or `)
+    : sql`false`;
+  const limit = Math.min(200, Math.max(1, params.limit ?? 50));
+  const offset = Math.max(0, params.offset ?? 0);
+  const { rows } = await sql<RankedRow>`
+    with input as (select ${q}::text as q, websearch_to_tsquery('simple', ${q}) as tsq)
+    select d.entry_id, d.workspace_id, d.version_id, d.content_model_id, d.locale, d.status, d.author_id, d.search_text, d.updated_at,
+           ts_rank_cd(d.search_vector, input.tsq)::real as rank,
+           similarity(d.search_text, input.q)::real as similarity
+      from public.content_search_documents d
+     cross join input
+     where d.workspace_id = ${params.workspaceId}
+       and d.content_model_id = ${source.modelId}
+       ${params.status ? sql`and d.status = ${params.status}` : sql``}
+       ${params.locale ? sql`and d.locale = ${params.locale}` : sql``}
+       ${params.authorId ? sql`and d.author_id = ${params.authorId}::uuid` : sql``}
+       ${params.updatedFrom ? sql`and d.updated_at >= ${params.updatedFrom}::timestamptz` : sql``}
+       ${params.updatedTo ? sql`and d.updated_at <= ${params.updatedTo}::timestamptz` : sql``}
+       ${params.termId ? sql`and exists (select 1 from public.content_relations rel
+                                          where rel.workspace_id = ${params.workspaceId} and rel.source_entry_id = d.entry_id
+                                            and rel.source_version_id = d.version_id and rel.target_term_id = ${params.termId}::uuid)` : sql``}
+       and (
+         d.search_vector @@ input.tsq
+         or d.entry_id in (select r.${sql.id(STORAGE_COLUMNS.entryId)} from ${table} r where ${columnMatch})
+       )
+     order by greatest(ts_rank_cd(d.search_vector, input.tsq), similarity(d.search_text, input.q)) desc, d.updated_at desc
+     limit ${limit} offset ${offset}`.execute(getDb());
   return rows;
 }
 
