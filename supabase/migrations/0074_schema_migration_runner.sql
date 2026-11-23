@@ -1,0 +1,263 @@
+-- 0074: the schema migration runner (self-hosted upgrade, phase 3: real tables).
+--
+-- The runner (lib/schema/runner/, process scripts/schema-migration-worker.mjs) applies the plan stages
+-- the schema engine writes to schema_migration_ledger (0073). It runs as polynovea_owner on its own
+-- connection pool; the request that asked for a change never holds owner rights. This migration adds
+-- what the runner keeps for itself:
+--
+--   schema_migration_runs          one row per ledger stage: the worker running it, the position it
+--                                  reached (to resume a crashed run per statement) and per-step timings
+--   schema_expand_contract_tasks   renames and type changes done by expand and contract: the columns,
+--                                  trigger, backfill position, and when the old column is dropped
+--   polynovea_schema_dual_write()  the one trigger function every expand/contract uses
+--
+-- The app role can write ledger rows (that is how a change is requested), so the runner never trusts
+-- them: it re-checks every row and re-renders the SQL itself. These two tables are different: the
+-- runner acts on the positions and column names stored here, so the app role may only read them.
+
+-- ── Runs ──────────────────────────────────────────────────────────────────────────────────────────
+create table if not exists public.schema_migration_runs (
+  id uuid primary key default gen_random_uuid(),
+  ledger_id uuid not null unique references public.schema_migration_ledger (id) on delete cascade,
+  workspace_id uuid not null references public.workspaces (id) on delete cascade,
+  content_model_id uuid references public.content_models (id) on delete set null,
+  stage text not null check (stage in ('expand', 'destructive')),
+  status text not null check (status in ('running', 'succeeded', 'failed', 'refused')),
+  worker_id text not null check (char_length(worker_id) between 1 and 200),
+  -- The next statement to run: steps of this stage in plan order, statements of a step in order.
+  -- Advanced in the same transaction as each transactional statement, so a resumed run never runs a
+  -- committed statement twice.
+  next_step integer not null default 0 check (next_step >= 0),
+  next_statement integer not null default 0 check (next_statement >= 0),
+  -- [{ step, kind, startedAt, finishedAt, statements, lockRetries }], one entry per finished step.
+  step_log jsonb not null default '[]'::jsonb check (jsonb_typeof(step_log) = 'array'),
+  lock_retries integer not null default 0 check (lock_retries >= 0),
+  -- A code only (e.g. lock_timeout_exhausted): never SQL text, identifiers or values.
+  error_ref text check (error_ref ~ '^[a-z0-9_]{1,80}$'),
+  started_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  finished_at timestamptz
+);
+
+create index if not exists schema_migration_runs_model_idx on public.schema_migration_runs (content_model_id, started_at desc);
+
+comment on table public.schema_migration_runs is
+  'Progress and per-step timings of each schema migration stage. Written only by the migration worker (polynovea_owner).';
+
+-- ── Expand and contract ──────────────────────────────────────────────────────────────────────────
+-- kind rename:      new_column added, kept in sync with old_column both ways by the trigger, backfilled;
+--                   the model's shape switches to new_column when the stage finishes; contract drops the
+--                   trigger and old_column.
+-- kind change_type: new_column (hidden name) of the new type, filled from old_column by the trigger and
+--                   the backfill; the switch renames old_column to retired_column and new_column into
+--                   old_column's place; contract drops retired_column.
+create table if not exists public.schema_expand_contract_tasks (
+  id uuid primary key default gen_random_uuid(),
+  ledger_id uuid not null references public.schema_migration_ledger (id) on delete cascade,
+  step_index integer not null check (step_index >= 0),
+  workspace_id uuid not null references public.workspaces (id) on delete cascade,
+  content_model_id uuid references public.content_models (id) on delete set null,
+  table_name text not null check (table_name ~ '^m_[a-z0-9_]{1,61}$'),
+  kind text not null check (kind in ('rename', 'change_type')),
+  old_column text not null check (old_column ~ '^[a-z][a-z0-9_]{0,62}$'),
+  new_column text not null check (new_column ~ '^[a-z][a-z0-9_]{0,62}$'),
+  retired_column text check (retired_column ~ '^[a-z][a-z0-9_]{0,62}$'),
+  trigger_name text not null check (trigger_name ~ '^[a-z][a-z0-9_]{0,62}$'),
+  status text not null check (status in ('expanding', 'awaiting_contract', 'contracted', 'failed')),
+  -- Where the expand is: add_column, trigger, guard_index, backfill, precheck, indexes, switch,
+  -- validate, done; phase_statement is the next statement within a phase that has several.
+  phase text not null default 'add_column'
+    check (phase in ('add_column', 'trigger', 'guard_index', 'backfill', 'precheck', 'indexes', 'switch', 'validate', 'done')),
+  phase_statement integer not null default 0 check (phase_statement >= 0),
+  -- Last primary key the backfill finished: {"entry_id": ..., "variant": ..., "locale": ...}.
+  backfill_cursor jsonb,
+  backfilled_rows bigint not null default 0 check (backfilled_rows >= 0),
+  -- The worker's release when the expand finished. Contract runs once a worker of another release
+  -- sees it (and contract_min_at has passed), or at contract_after, whichever comes first; always well
+  -- before the 30-day name reservation (schema_name_reservations) runs out.
+  release_id text check (char_length(release_id) between 1 and 200),
+  contract_min_at timestamptz,
+  contract_after timestamptz,
+  error_ref text check (error_ref ~ '^[a-z0-9_]{1,80}$'),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  switched_at timestamptz,
+  contracted_at timestamptz,
+  unique (ledger_id, step_index)
+);
+
+create index if not exists schema_expand_contract_tasks_due_idx
+  on public.schema_expand_contract_tasks (status, contract_after);
+create index if not exists schema_expand_contract_tasks_model_idx
+  on public.schema_expand_contract_tasks (content_model_id, status);
+
+comment on table public.schema_expand_contract_tasks is
+  'Renames and type changes in progress (expand and contract). Written only by the migration worker (polynovea_owner).';
+
+alter table public.schema_migration_runs enable row level security;
+alter table public.schema_expand_contract_tasks enable row level security;
+
+-- ── Dual-write trigger ───────────────────────────────────────────────────────────────────────────
+-- BEFORE INSERT OR UPDATE, FOR EACH ROW, on a content table during an expand. Arguments: the source
+-- column, the destination column, and 'copy' (one way, source to destination: type changes) or 'sync'
+-- (both ways: renames, so writers that know either name keep both columns equal).
+--
+-- It only ever sets a column of NEW. The value converts through JSON (jsonb_populate_record), so
+-- there is no dynamic SQL and no name is ever spliced into a statement. A value that cannot convert
+-- leaves the destination NULL and never fails the user's save; the runner's switch refuses to finish
+-- while any row has a source value and no destination value, so nothing is lost silently.
+--
+-- A backfill is an UPDATE that sets the source column to itself: this trigger then fills the
+-- destination with exactly the same conversion as a live write.
+create or replace function public.polynovea_schema_dual_write()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  src text := tg_argv[0];
+  dst text := tg_argv[1];
+  two_way boolean := tg_argv[2] = 'sync';
+  new_row jsonb := pg_catalog.to_jsonb(new);
+  old_row jsonb;
+  from_col text := src;
+  to_col text := dst;
+begin
+  if tg_when <> 'BEFORE' or tg_level <> 'ROW' or tg_op not in ('INSERT', 'UPDATE') then
+    raise exception 'polynovea_schema_dual_write must be a BEFORE INSERT OR UPDATE row trigger';
+  end if;
+  if not (new_row ? src and new_row ? dst) then
+    raise exception 'polynovea_schema_dual_write: trigger arguments do not name columns of the table';
+  end if;
+
+  if two_way then
+    if tg_op = 'INSERT' then
+      -- A writer that only knows the new name leaves the old one empty.
+      if (new_row -> src) = 'null'::jsonb and (new_row -> dst) <> 'null'::jsonb then
+        from_col := dst;
+        to_col := src;
+      end if;
+    else
+      old_row := pg_catalog.to_jsonb(old);
+      if (new_row -> src) is not distinct from (old_row -> src)
+         and (new_row -> dst) is distinct from (old_row -> dst) then
+        from_col := dst;
+        to_col := src;
+      end if;
+    end if;
+  end if;
+
+  begin
+    new := pg_catalog.jsonb_populate_record(new, pg_catalog.jsonb_build_object(to_col, new_row -> from_col));
+  exception when data_exception then
+    new := pg_catalog.jsonb_populate_record(new, pg_catalog.jsonb_build_object(to_col, null));
+  end;
+  return new;
+end;
+$$;
+
+comment on function public.polynovea_schema_dual_write() is
+  'Expand/contract dual-write trigger for content tables (lib/schema/runner/expandContract.ts). Sets NEW only.';
+
+-- ── App access ───────────────────────────────────────────────────────────────────────────────────
+-- The helper from 0067/0068/0072, unchanged except for a fixed list of tables the app role may only
+-- read: the migration ledger (as before) and the runner's two tables. Every later migration that ends
+-- with `select public.polynovea_apply_app_access()` keeps them read-only.
+create or replace function public.polynovea_apply_app_access()
+returns void
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  item record;
+  grantee text;
+  has_service_role boolean := exists (select 1 from pg_roles where rolname = 'service_role');
+  api_roles text[] := array(select rolname::text from pg_roles where rolname in ('anon', 'authenticated'));
+  read_only text[] := array['polynovea_migration_ledger', 'schema_migration_runs', 'schema_expand_contract_tasks'];
+begin
+  execute 'grant usage on schema public to polynovea_app';
+
+  for item in
+    select c.relname, c.relrowsecurity
+    from pg_catalog.pg_class c
+    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm')
+      and pg_catalog.pg_has_role(c.relowner, 'USAGE')
+  loop
+    if item.relname = any (read_only) then
+      -- Written by migrations or the migration worker (polynovea_owner); the runtime only reads them.
+      execute format('grant select on public.%I to polynovea_app', item.relname);
+      execute format('revoke insert, update, delete, truncate on public.%I from polynovea_app', item.relname);
+      foreach grantee in array api_roles loop
+        execute format('revoke all on public.%I from %I', item.relname, grantee);
+      end loop;
+    elsif item.relname = 'installation' then
+      -- Read, and insert once at the end of setup. Never change or delete (0072).
+      execute 'grant select, insert on public.installation to polynovea_app';
+      execute 'revoke update, delete, truncate on public.installation from polynovea_app';
+      if has_service_role then
+        execute 'revoke update, delete, truncate on public.installation from service_role';
+      end if;
+      foreach grantee in array api_roles loop
+        execute format('revoke all on public.installation from %I', grantee);
+      end loop;
+    else
+      execute format('grant select, insert, update, delete on public.%I to polynovea_app', item.relname);
+    end if;
+    if item.relrowsecurity and not exists (
+      select 1 from pg_catalog.pg_policies p
+      where p.schemaname = 'public' and p.tablename = item.relname and p.policyname = 'polynovea_app_all'
+    ) then
+      execute format(
+        'create policy polynovea_app_all on public.%I for all to polynovea_app using (true) with check (true)',
+        item.relname
+      );
+    end if;
+  end loop;
+
+  for item in
+    select c.relname
+    from pg_catalog.pg_class c
+    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind = 'S' and pg_catalog.pg_has_role(c.relowner, 'USAGE')
+  loop
+    execute format('grant usage, select on sequence public.%I to polynovea_app', item.relname);
+  end loop;
+
+  -- Functions: EXECUTE for polynovea_app (and service_role on Supabase), never for PUBLIC, anon or
+  -- authenticated. Extension functions (pg_trgm) keep their defaults.
+  for item in
+    select p.oid::regprocedure as signature, p.proname
+    from pg_catalog.pg_proc p
+    join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.prokind in ('f', 'p')
+      and pg_catalog.pg_has_role(p.proowner, 'USAGE')
+      and not exists (
+        select 1 from pg_catalog.pg_depend d
+        where d.classid = 'pg_catalog.pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e'
+      )
+  loop
+    execute format('revoke execute on function %s from public', item.signature);
+    foreach grantee in array api_roles loop
+      execute format('revoke execute on function %s from %I', item.signature, grantee);
+    end loop;
+    if item.proname = 'polynovea_apply_app_access' then
+      continue; -- for migrations only
+    end if;
+    execute format('grant execute on function %s to polynovea_app', item.signature);
+    if has_service_role then
+      execute format('grant execute on function %s to service_role', item.signature);
+    end if;
+  end loop;
+end;
+$$;
+
+revoke all on function public.polynovea_apply_app_access() from public;
+
+select public.polynovea_apply_app_access();
+
+update public.cms_runtime_state
+set schema_migration = '0074', updated_at = now() where singleton = true;

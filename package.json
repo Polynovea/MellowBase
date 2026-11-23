@@ -28,6 +28,7 @@
     "db:dev": "node scripts/dev-db/setup.mjs",
     "db:types": "node scripts/db/generate-types.mjs",
     "worker:delivery": "node scripts/delivery-worker.mjs",
+    "worker:schema": "node scripts/schema-migration-worker.mjs",
     "certify:phase8": "node scripts/certify-phase8.mjs && node scripts/certify-phase8-authenticated-api.mjs",
     "certify:phase9": "node scripts/certify-phase9.mjs && node scripts/certify-phase9-authenticated-api.mjs",
     "certify:phase10": "node scripts/certify-phase10-foundation.mjs && node scripts/certify-phase10.mjs && node scripts/certify-phase10-authenticated-api.mjs",
