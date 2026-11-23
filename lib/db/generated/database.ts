@@ -260,6 +260,27 @@ export interface ContentAnalyticsSnapshots {
   workspace_id: string;
 }
 
+export interface ContentAnalyticsSnapshotsDuplicateArchive {
+  archived_at: Generated<string>;
+  captured_at: Generated<string>;
+  connector_id: string | null;
+  conversions: Numeric | null;
+  data_fresh_through: string | null;
+  destination_url: string;
+  engagement_seconds: Numeric | null;
+  entry_id: string;
+  id: Generated<string>;
+  metrics_json: Generated<Json>;
+  page_views: number | null;
+  period_end: string;
+  period_start: string;
+  source: Generated<string>;
+  sync_correlation_id: string | null;
+  users_count: number | null;
+  version_id: string | null;
+  workspace_id: string;
+}
+
 export interface ContentAssignments {
   assigned_by_admin_user_id: string | null;
   assigned_to_admin_user_id: string;
@@ -2099,6 +2120,7 @@ export interface DB {
   connection_secret_bindings: ConnectionSecretBindings;
   connection_verifications: ConnectionVerifications;
   content_analytics_snapshots: ContentAnalyticsSnapshots;
+  content_analytics_snapshots_duplicate_archive: ContentAnalyticsSnapshotsDuplicateArchive;
   content_assignments: ContentAssignments;
   content_comment_mentions: ContentCommentMentions;
   content_comments: ContentComments;
