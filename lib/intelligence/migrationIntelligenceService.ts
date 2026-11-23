@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as discoveryData from "@/lib/intelligence/discoveryData";
+import * as migrationIntelData from "@/lib/intelligence/migrationIntelData";
 import { redactCredentials, resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
 import { computeSchemaHash, getModel, getVersion } from "@/lib/schema/modelService";
 import { validateCanonicalSchema } from "@/lib/schema/canonicalSchema";
@@ -8,7 +9,6 @@ import { computeSchemaDiff } from "@/lib/schema/diff";
 import type { FieldDefinition } from "@/lib/schema/fields/types";
 import type { FieldDiffEntry, SchemaDiff } from "@/lib/schema/diff";
 import type { OperationalDeterministicClassification } from "@/lib/intelligence/operationalTypes";
-import { logPlatformEvent } from "@/lib/platform/audit";
 import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
 
 const { Client } = pg;
@@ -51,17 +51,11 @@ export interface DataAwareChangeAssessment {
 
 function toInt(value: unknown) { return Number(value ?? 0) || 0; }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function findDatabaseConnection(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
-  const { data, error } = await db.from("workspace_connections")
-    .select("id,connector_type,name,status,active,created_at")
-    .eq("workspace_id", workspaceId)
-    .eq("environment_id", environmentId)
-    .eq("connector_family", "database")
-    .eq("active", true)
-    .order("created_at", { ascending: false });
-  if (error) throw new Error(error.message);
-  const connection = (data ?? []).find((row) => ["database.postgres", "database.supabase"].includes(row.connector_type) && row.status === "active") ?? null;
+  const data = await discoveryData.databaseConnections(workspaceId, environmentId);
+  const connection = data.find((row) => ["database.postgres", "database.supabase"].includes(row.connector_type) && row.status === "active") ?? null;
   if (!connection) throw Object.assign(new Error("No active PostgreSQL/Supabase database connection is available for data-aware migration inspection"), { status: 409 });
   const credentials = await resolveConnectionCredentials(workspaceId, connection.id);
   const connectionString = credentials.connection_url ?? null;
@@ -238,11 +232,7 @@ export async function assessDataAwareSchemaChange(params: {
 
   const targetSchema = validation.schema;
   const targetHash = computeSchemaHash(targetSchema);
-  const db = createServiceRoleClient();
-  const [{ data: targetVersion }, { data: sourceDeployment }] = await Promise.all([
-    db.from("content_model_versions").select("id,version_number,schema_hash,schema_json").eq("content_model_id", model.id).eq("schema_hash", targetHash).order("version_number", { ascending: false }).limit(1).maybeSingle(),
-    db.from("environment_schema_deployments").select("id,schema_version,schema_hash,status,deployed_at,metadata_json").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("content_model_id", model.id).in("status", ["deployed", "drifted"]).order("deployed_at", { ascending: false }).limit(1).maybeSingle(),
-  ]);
+  const { targetVersion, sourceDeployment } = await migrationIntelData.assessmentSources(params.workspaceId, params.environmentId, model.id, targetHash);
   const sourceVersionNumber = Number(sourceDeployment?.schema_version ?? 0);
   const sourceVersion = sourceVersionNumber > 0 ? await getVersion(model.id, sourceVersionNumber) : null;
   const sourceDeploymentHash = String(sourceDeployment?.schema_hash ?? "") || null;
@@ -358,7 +348,7 @@ export async function assessDataAwareSchemaChange(params: {
     };
 
     const correlationId = randomUUID();
-    const { data: persisted, error } = await db.from("operational_change_assessments").insert({
+    const persisted = await migrationIntelData.recordAssessment({
       workspace_id: params.workspaceId,
       environment_id: params.environmentId,
       content_model_id: params.modelId,
@@ -382,22 +372,18 @@ export async function assessDataAwareSchemaChange(params: {
       source_connection_id: discovered.connection.id,
       correlation_id: correlationId,
       created_by: params.actorId,
-    }).select().single();
-    if (error || !persisted) throw new Error(error?.message || "Could not persist data-aware change assessment");
-    await db.from("operational_events").insert({
+    }, {
       workspace_id: params.workspaceId,
       environment_id: params.environmentId,
       event_type: "schema_change.assessment",
       source_type: "operational_change_assessment",
-      source_id: persisted.id,
       correlation_id: correlationId,
       features_json: { deterministicClassification, sourceSchemaVersion: sourceVersionNumber || null, targetSchemaVersion: targetVersionNumber || null, provenanceState, entryCount, versionCount, activeRelationCount, tableBytes: toInt(sizes?.bytes), lockRisk: estimate.lockRisk, blockerCount: hardBlockers.length, warningCount: warnings.length, fieldChangeCount: fields.length },
       outcome_json: { status, directApplyBlocked: hardBlockers.length > 0 },
       privacy_class: "operational_minimized",
       eligible_for_local_learning: true,
       eligible_for_cross_install_learning: false,
-    });
-    await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.schema_change.assessed", entityType: "content_model", entityId: params.modelId, metadata: { environmentId: params.environmentId, assessmentId: persisted.id, correlationId, status, deterministicClassification, provenanceState, sourceSchemaVersion: sourceVersionNumber || null, targetSchemaVersion: targetVersionNumber || null, blockerCount: hardBlockers.length, warningCount: warnings.length, entryCount } });
+    }, (recorded) => ({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.schema_change.assessed", entityType: "content_model", entityId: params.modelId, metadata: { environmentId: params.environmentId, assessmentId: recorded.id, correlationId, status, deterministicClassification, provenanceState, sourceSchemaVersion: sourceVersionNumber || null, targetSchemaVersion: targetVersionNumber || null, blockerCount: hardBlockers.length, warningCount: warnings.length, entryCount } }));
     return { assessment: persisted, analysis: assessment };
   } catch (error) {
     const safe = redactCredentials(error instanceof Error ? error.message : String(error), discovered.credentials);
@@ -408,9 +394,6 @@ export async function assessDataAwareSchemaChange(params: {
 }
 
 export async function listDataAwareChangeAssessments(workspaceId: string, environmentId: string, modelId?: string | null) {
-  let query = createServiceRoleClient().from("operational_change_assessments").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId);
-  if (modelId) query = query.eq("content_model_id", modelId);
-  const { data, error } = await query.order("created_at", { ascending: false }).limit(50);
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  if (!UUID.test(environmentId) || (modelId && !UUID.test(modelId))) return [];
+  return migrationIntelData.listAssessments(workspaceId, environmentId, modelId);
 }

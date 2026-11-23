@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 4: data-aware change assessments on the direct path. An assessment, its operational event and its audit event commit together, and the target schema version is read through its model's workspace.
 Phase 1 wave 4: deterministic remediation on the direct path. A remediation can no longer be linked to another workspace's drift item, and a run's completion, outcome event and audit event commit together.
 Phase 1 wave 4 begins: intelligence discovery reads, canonical schema deployment and the operational overview's run lists on the direct path. A schema deployment, the environment's deployed-schema marker and its audit event now commit together.
 Phase 1 wave 3: content analytics and GA4 sync on the direct path, which finishes lib/content. Migration 0070 makes the snapshot key treat a missing version as a value: GA4 syncs no longer add duplicate snapshots for unpublished entries on every run (existing duplicates move to content_analytics_snapshots_duplicate_archive). The GA4 connector response no longer includes its encrypted config, and a manual snapshot can only name the entry's own version.

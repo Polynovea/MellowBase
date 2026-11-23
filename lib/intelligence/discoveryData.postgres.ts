@@ -55,7 +55,7 @@ export async function recordSchemaDeployment(
 
 export async function databaseConnections(workspaceId: string, environmentId: string): Promise<DatabaseConnectionRow[]> {
   if (!ids(environmentId)) return [];
-  return await getDb().selectFrom("workspace_connections").select(["id", "connector_type", "status", "active", "created_at"])
+  return await getDb().selectFrom("workspace_connections").select(["id", "connector_type", "name", "status", "active", "created_at"])
     .where("workspace_id", "=", workspaceId).where("environment_id", "=", environmentId).where("connector_family", "=", "database").where("active", "=", true)
     .orderBy("created_at", "desc").orderBy("id").execute() as DatabaseConnectionRow[];
 }
