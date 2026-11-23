@@ -7,7 +7,7 @@
  * scheduled releases, webhooks, search, media, health scans and analytics.
  * Unsupported job kinds remain queued rather than being falsely consumed.
  */
-import { createDecipheriv, createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import pg from "pg";
@@ -15,6 +15,9 @@ import { guardedFetch } from "../lib/infrastructure/guardedNetwork.mjs";
 import { BetaAnalyticsDataClient } from "@google-analytics/data";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
+// Stored secrets: the same code as the app (master key ring, pv2.<kid>. values; legacy
+// CMS_CONFIG_ENCRYPTION_KEY values still read). Reads CMS_MASTER_KEY or <POLYNOVEA_CONFIG_DIR>/master.key.
+import { decryptConfig } from "../lib/setup/configCipher.mjs";
 
 if (existsSync(".env.local")) {
   for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
@@ -48,21 +51,6 @@ let stopping = false;
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => { stopping = true; });
-}
-
-function encryptionKey() {
-  const value = process.env.CMS_CONFIG_ENCRYPTION_KEY;
-  if (!value) throw new Error("CMS_CONFIG_ENCRYPTION_KEY is required by the delivery worker");
-  const buffer = Buffer.from(value, "base64");
-  if (buffer.length !== 32) throw new Error("CMS_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key");
-  return buffer;
-}
-
-function decryptConfig(value) {
-  const buffer = Buffer.from(value, "base64");
-  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), buffer.subarray(0, 12), { authTagLength: 16 });
-  decipher.setAuthTag(buffer.subarray(12, 28));
-  return JSON.parse(Buffer.concat([decipher.update(buffer.subarray(28)), decipher.final()]).toString("utf8"));
 }
 
 async function resolveWorkerConnectionCredentials(client, workspaceId, connectionId) {

@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { databaseUrlFromEnv, poolConfigFromEnv, postgresTimestampToIso } from "@/lib/db/pool";
+import { mkdtempSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { closePool, databaseUrlFromEnv, getPool, getSetupPool, PoolModeError, poolConfigFromEnv, postgresTimestampToIso } from "@/lib/db/pool";
+import { markInstalled, resetModeForTests, resolveMode } from "@/lib/setup/mode";
 import { expectOne, maybeOne, NotFoundError } from "@/lib/db/rows";
 import { callFunction } from "@/lib/db/functions";
 import { isClientSafeError } from "@/lib/http/clientError";
@@ -59,5 +63,40 @@ describe("callFunction validation", () => {
     await expect(
       callFunction("cms_merge_taxonomy_terms", { p_workspace_id: "a", "x; drop table y": "b" } as never),
     ).rejects.toThrow(/Unknown argument/);
+  });
+});
+
+describe("pool and setup mode (second enforcement layer)", () => {
+  const noConfig = { POLYNOVEA_CONFIG_DIR: mkdtempSync(path.join(os.tmpdir(), "polynovea-pool-")) };
+
+  afterEach(async () => {
+    await closePool();
+    resetModeForTests();
+    vi.unstubAllEnvs();
+  });
+
+  it("refuses to open the runtime pool in setup mode; the wizard gets its own pool", async () => {
+    vi.stubEnv("POLYNOVEA_CONFIG_DIR", noConfig.POLYNOVEA_CONFIG_DIR);
+    expect((await resolveMode(noConfig)).mode).toBe("setup");
+    expect(() => getPool()).toThrow(PoolModeError);
+    vi.stubEnv("POLYNOVEA_DATABASE_URL", "postgresql://app@localhost:5432/cms");
+    expect(getSetupPool()).toBe(getSetupPool());
+  });
+
+  it("refuses the setup pool once installed", () => {
+    vi.stubEnv("POLYNOVEA_CONFIG_DIR", noConfig.POLYNOVEA_CONFIG_DIR);
+    vi.stubEnv("POLYNOVEA_DATABASE_URL", "postgresql://app@localhost:5432/cms");
+    markInstalled();
+    expect(() => getSetupPool()).toThrow(PoolModeError);
+    expect(getPool()).toBe(getPool());
+  });
+
+  it("a pool opened before the mode was known still refuses connections in setup mode", async () => {
+    vi.stubEnv("POLYNOVEA_CONFIG_DIR", noConfig.POLYNOVEA_CONFIG_DIR);
+    vi.stubEnv("POLYNOVEA_DATABASE_URL", "postgresql://app@localhost:5432/cms");
+    const pool = getPool();
+    await resolveMode(noConfig);
+    expect(() => pool.connect()).toThrow(PoolModeError);
+    await expect(Promise.resolve().then(() => pool.query("select 1"))).rejects.toThrow(PoolModeError);
   });
 });
