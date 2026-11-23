@@ -4,8 +4,9 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import type { Kysely } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import { getDb } from "@/lib/db/index";
+import { applyDestructiveStage, applyExpandStage } from "@/lib/schema/engine/referenceExecutor.testing";
 import { describeWithDatabase } from "@/lib/db/testing/database";
-import { applyDestructiveStage, applyExpandStage, expectedConfirmation, loadModelTable } from "@/lib/schema/engine/apply";
+import { expectedConfirmation, loadModelTable } from "@/lib/schema/engine/apply";
 import { computePlanHash, computeStageHash } from "@/lib/schema/engine/planner";
 import { assertRequestedPlan, buildPlanForLedgerRequest, buildPlanFromTrustedState } from "@/lib/schema/engine/trusted";
 import type { MigrationPlan, PlanStep } from "@/lib/schema/engine/plan";
@@ -73,6 +74,24 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     expect(await expectedConfirmation(getDb(), m.modelId)).toBe(m.apiKey);
     await applyDestructiveStage(owner, { ledgerId: awaitingConfirmationId!, confirmation: m.apiKey, confirmedBy: m.adminUserId });
     expect(Object.values((await loadModelTable(getDb(), m.modelId))!.shape.columns).map((c) => c.field).sort()).toEqual(["body", "headline"]);
+  });
+
+  it("refuses a deletion planned for an older version once a newer version keeps the field", async () => {
+    const m = await model();
+    const first = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: m.v1, stage: "expand" });
+    await applyExpandStage(owner, { plan: first, requestedBy: null, limits: TEST_LIMITS });
+    const save = async (fields: ReturnType<typeof field>[]) => {
+      const changed = await applyChange({ model: (await getModel(m.workspaceId, m.modelId))!, proposedSchema: { name: "Post", apiKey: m.apiKey, fields }, acknowledgeUnsafe: true, actorAdminUserId: m.adminUserId });
+      if (!changed.ok || !changed.data.version) throw new Error("version not created");
+      return changed.data.version.id;
+    };
+    const v2 = await save([field("title")]);
+    const deletion = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: v2, stage: "expand" });
+    const destructiveHash = computeStageHash(deletion, "destructive");
+    await applyExpandStage(owner, { plan: await workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "expand", requestedPlanHash: computeStageHash(deletion, "expand") }), requestedBy: null, limits: TEST_LIMITS });
+    await save([field("title"), field("secret")]);
+    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "destructive", requestedPlanHash: destructiveHash }))).toMatchObject({ code: "stale_plan" });
+    expect(Object.values((await loadModelTable(getDb(), m.modelId))!.shape.columns).map((c) => c.field).sort()).toEqual(["secret", "title"]);
   });
 
   it("refuses a ledger row whose plan targets another model's table, or another model's version", async () => {

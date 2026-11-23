@@ -6,9 +6,10 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { sql, type Kysely } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import { getDb } from "@/lib/db/index";
+import { applyDestructiveStage, applyExpandStage } from "@/lib/schema/engine/referenceExecutor.testing";
 import { describeWithDatabase } from "@/lib/db/testing/database";
 import {
-  applyDestructiveStage, applyExpandStage, loadModelTable, prepareMigrationPlan, shapeForSchema,
+  loadModelTable, prepareMigrationPlan, shapeForSchema,
   type FieldRename, type MigrationPlan, type PgColumnType,
 } from "@/lib/schema/engine/index";
 import { ownerDb, physicalOf, physicalShape, TEST_LIMITS, uniqueKey } from "@/lib/schema/engine/testing";
