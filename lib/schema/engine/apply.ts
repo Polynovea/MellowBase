@@ -65,14 +65,16 @@ export async function chooseTableName(db: Executor, workspaceId: string, apiKey:
   return free;
 }
 
-export async function loadReservedNames(db: Executor, workspaceId: string, modelId: string): Promise<{ fields: Set<string>; models: Set<string> }> {
-  const rows = await db.selectFrom("schema_name_reservations").select(["kind", "name", "content_model_id"])
+/** Live reservations: deleted field names, renamed-away field names (this model) and deleted model api keys (workspace). */
+export async function loadReservedNames(db: Executor, workspaceId: string, modelId: string): Promise<{ fields: Set<string>; renamedFields: Set<string>; models: Set<string> }> {
+  const rows = await db.selectFrom("schema_name_reservations").select(["kind", "name", "reason", "content_model_id"])
     .where("workspace_id", "=", workspaceId)
     .where("reserved_until", ">", sql<string>`now()`)
     .where((eb) => eb.or([eb("kind", "=", "model"), eb("content_model_id", "=", modelId)]))
     .execute();
   return {
-    fields: new Set(rows.filter((r) => r.kind === "field").map((r) => r.name)),
+    fields: new Set(rows.filter((r) => r.kind === "field" && r.reason === "deleted").map((r) => r.name)),
+    renamedFields: new Set(rows.filter((r) => r.kind === "field" && r.reason === "renamed").map((r) => r.name)),
     models: new Set(rows.filter((r) => r.kind === "model").map((r) => r.name)),
   };
 }
@@ -109,6 +111,7 @@ export async function prepareMigrationPlan(db: Executor, input: PrepareInput): P
     limits: input.limits,
     otherModelCount: await countModelTables(db, input.model.id),
     reservedFieldNames: reserved.fields,
+    renamedFieldNames: reserved.renamedFields,
     reservedModelNames: reserved.models,
   });
   if (!result.ok) return result;
@@ -132,10 +135,12 @@ async function lockModel(trx: Transaction<DB>, plan: MigrationPlan) {
   return state ?? null;
 }
 
-async function runStatements(trx: Transaction<DB>, steps: PlanStep[]): Promise<void> {
+/** Runs each step's SQL and then its metadata changes, in order, inside the caller's transaction. */
+async function runSteps(trx: Transaction<DB>, steps: PlanStep[], afterStep: (step: PlanStep) => Promise<void>): Promise<void> {
   await sql`select set_config('lock_timeout', ${DDL_LOCK_TIMEOUT}, true)`.execute(trx);
   for (const step of steps) {
     for (const statement of renderStep(step)) await statement.sql.execute(trx);
+    await afterStep(step);
   }
 }
 
@@ -204,24 +209,27 @@ export async function applyExpandStage(
       if (!state && steps.some((step) => step.kind === "create_table") && (await countModelTables(trx, plan.modelId)) >= limits.maxModels) {
         throw new SchemaEngineError("cap_exceeded", `This install already has ${limits.maxModels} models, the most allowed.`);
       }
-      const newNames = steps.flatMap((step) =>
-        step.kind === "add_column" ? [step.column.name] : step.kind === "rename_column" ? [step.to] : step.kind === "create_table" ? step.columns.map((c) => c.name) : []);
       const reserved = await loadReservedNames(trx, plan.workspaceId, plan.modelId);
-      const clash = newNames.find((name) => reserved.fields.has(name));
+      const clash = steps.flatMap((step) => {
+        if (step.kind === "rename_column") return reserved.fields.has(step.to) ? [step.to] : [];
+        const added = step.kind === "add_column" ? [step.column.name] : step.kind === "create_table" ? step.columns.map((c) => c.name) : [];
+        return added.filter((name) => reserved.fields.has(name) || reserved.renamedFields.has(name));
+      })[0];
       if (clash) throw new SchemaEngineError("reserved_name", `The field key "${clash}" was deleted or renamed in the last 30 days and cannot be reused yet.`);
 
-      await runStatements(trx, steps);
-
-      for (const step of steps) {
+      await runSteps(trx, steps, async (step) => {
         if (step.kind === "rename_column") {
           await trx.updateTable("content_field_permissions").set({ field_key: step.to, updated_at: sql<string>`now()` })
             .where("content_model_id", "=", plan.modelId).where("field_key", "=", step.from).execute();
+          // Renaming back releases the name's own rename reservation.
+          await trx.deleteFrom("schema_name_reservations").where("content_model_id", "=", plan.modelId).where("kind", "=", "field")
+            .where("name", "=", step.to).where("reason", "=", "renamed").execute();
           await reserveName(trx, plan, "field", step.from, "renamed");
         } else if (step.kind === "drop_field_metadata") {
           await deleteFieldPermissions(trx, plan, step.field);
           await reserveName(trx, plan, "field", step.field, "deleted");
         }
-      }
+      });
 
       const expanded = shapeAfter(plan.baseShape, steps);
       if (hashShape(expanded) !== plan.expandedShapeHash) throw new SchemaEngineError("invalid_plan", "This change plan does not add up. Review the change again.");
@@ -296,9 +304,7 @@ export async function applyDestructiveStage(
         throw new SchemaEngineError("stale_plan", "The model changed after this deletion was planned. Review the change again.");
       }
 
-      await runStatements(trx, steps);
-
-      for (const step of steps) {
+      await runSteps(trx, steps, async (step) => {
         if (step.kind === "drop_column") {
           await deleteFieldPermissions(trx, plan, step.column);
           await reserveName(trx, plan, "field", step.column, "deleted");
@@ -306,7 +312,7 @@ export async function applyDestructiveStage(
           await deleteFieldPermissions(trx, plan);
           await reserveName(trx, plan, "model", plan.modelApiKey, "deleted");
         }
-      }
+      });
 
       const finalShape = shapeAfter(plan.expandedShape, steps);
       if (hashShape(finalShape) !== plan.targetShapeHash) throw new SchemaEngineError("invalid_plan", "This change plan does not add up. Review the change again.");

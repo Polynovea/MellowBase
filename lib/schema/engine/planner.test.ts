@@ -145,6 +145,12 @@ describe("migration plan: rules and caps", () => {
     expect(problems(model(f("title")), model(f("old")), { reservedFieldNames: ["old"], renames: [{ from: "title", to: "old" }] })).toContain("reserved_name");
   });
 
+  it("lets a rename go back to a renamed-away name, but not a new field take it", () => {
+    const now = model(f("headline"));
+    expect(problems(now, model(f("title")), { renamedFieldNames: ["title"], renames: [{ from: "headline", to: "title" }] })).toEqual([]);
+    expect(problems(now, model(f("headline"), f("title")), { renamedFieldNames: ["title"] })).toEqual(["reserved_name"]);
+  });
+
   it("enforces the model, field and index caps, which the operator can change", () => {
     const limits = { maxModels: 2, maxFieldsPerModel: 3, maxIndexesPerModel: 1 };
     expect(problems(null, v1, { limits, otherModelCount: 2 })).toEqual(["cap_exceeded"]);

@@ -31,8 +31,13 @@ export interface PlanInput {
   limits?: SchemaLimits;
   /** Model tables in the install other than this one (for the model cap). */
   otherModelCount?: number;
-  /** Field names reserved for this model (deleted or renamed within 30 days). */
+  /** Field names of this model deleted within 30 days: no new field and no rename may take them. */
   reservedFieldNames?: Iterable<string>;
+  /**
+   * Field names this model renamed away from within 30 days: no new field may take them, but a rename
+   * may (renaming back is safe, since permission rows move with a rename).
+   */
+  renamedFieldNames?: Iterable<string>;
   /** Model api keys reserved in this workspace. */
   reservedModelNames?: Iterable<string>;
 }
@@ -175,12 +180,15 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
     problems.push({ code: "cap_exceeded", message: `A model can have at most ${limits.maxIndexesPerModel} indexed fields (unique, indexed or relation); this one has ${indexes}.` });
   }
 
-  const reserved = new Set(input.reservedFieldNames ?? []);
+  const deleted = new Set(input.reservedFieldNames ?? []);
+  const renamedAway = new Set(input.renamedFieldNames ?? []);
   const currentColumns = input.currentShape?.columns ?? {};
   const currentFieldKeys = new Set([...Object.keys(currentColumns), ...(input.currentSchema?.fields.map((f) => f.key) ?? [])]);
   const renamedTo = new Set((input.renames ?? []).map((r) => r.to));
   for (const field of target.fields) {
-    if (reserved.has(field.key) && (!currentFieldKeys.has(field.key) || renamedTo.has(field.key))) {
+    const isNew = !currentFieldKeys.has(field.key);
+    const blocked = renamedTo.has(field.key) ? deleted.has(field.key) : isNew && (deleted.has(field.key) || renamedAway.has(field.key));
+    if (blocked) {
       problems.push({ code: "reserved_name", message: `The field key "${field.key}" was deleted or renamed in the last 30 days and cannot be reused yet.` });
     }
   }
