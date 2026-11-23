@@ -56,6 +56,8 @@ const env = {
   POLYNOVEA_DEV_INSTALLER_PASSWORD: existing.POLYNOVEA_DEV_INSTALLER_PASSWORD || secret(),
   POLYNOVEA_DEV_SUPABASE_DB_PASSWORD: existing.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD || secret(),
   POLYNOVEA_DEV_JWT_SECRET: existing.POLYNOVEA_DEV_JWT_SECRET || randomBytes(32).toString("hex"),
+  // Azurite account key for this checkout (Azurite's well-known public key is never used).
+  POLYNOVEA_DEV_AZURITE_KEY: existing.POLYNOVEA_DEV_AZURITE_KEY || randomBytes(64).toString("base64"),
 };
 // This checkout's stack: a stable ID and port block from its path, kept once chosen.
 const checkoutHash = createHash("sha256").update(path.resolve(root).toLowerCase()).digest();
@@ -68,6 +70,7 @@ const stack = {
   POLYNOVEA_DEV_PLAIN_PORT: String(portBase),
   POLYNOVEA_DEV_SUPABASE_PORT: String(portBase + 1),
   POLYNOVEA_DEV_GATEWAY_PORT: String(portBase + 2),
+  POLYNOVEA_DEV_AZURITE_PORT: String(portBase + 3),
 };
 const project = `polynovea-dev-${stackId}`;
 const plainHost = `127.0.0.1:${stack.POLYNOVEA_DEV_PLAIN_PORT}`;
@@ -97,6 +100,8 @@ const output = {
   POLYNOVEA_TEST_SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
   POLYNOVEA_TEST_SUPABASE_ANON_KEY: anonKey,
   POLYNOVEA_TEST_SUPABASE_DB_URL: supabaseDbUrl,
+  // Azure Blob adapter tests (lib/media/azureBlobStorage.azurite.test.ts) against Azurite.
+  POLYNOVEA_TEST_AZURITE_CONNECTION_STRING: `DefaultEndpointsProtocol=http;AccountName=polynoveadev;AccountKey=${env.POLYNOVEA_DEV_AZURITE_KEY};BlobEndpoint=http://127.0.0.1:${stack.POLYNOVEA_DEV_AZURITE_PORT}/polynoveadev;`,
 };
 writeFileSync(
   envFile,
@@ -112,11 +117,11 @@ if (down) {
   process.exit(0);
 }
 if (reset) compose("down", "-v");
-console.log(`Stack ${project}: plain PostgreSQL ${plainHost}, Supabase PostgreSQL ${supabaseHost}, gateway ${gatewayUrl}`);
+console.log(`Stack ${project}: plain PostgreSQL ${plainHost}, Supabase PostgreSQL ${supabaseHost}, gateway ${gatewayUrl}, Azurite 127.0.0.1:${stack.POLYNOVEA_DEV_AZURITE_PORT}`);
 try {
   compose("up", "-d", "--wait");
 } catch (error) {
-  throw new Error(`Could not start ${project}. If a port is taken, set POLYNOVEA_DEV_PORT_BASE to a free block of 3 ports and remove POLYNOVEA_DEV_PORT_BASE from .env.test.local.`, { cause: error });
+  throw new Error(`Could not start ${project}. If a port is taken, set POLYNOVEA_DEV_PORT_BASE to a free block of 4 ports and remove POLYNOVEA_DEV_PORT_BASE from .env.test.local.`, { cause: error });
 }
 
 function runMigrations(databaseUrl) {

@@ -15,7 +15,7 @@ Supported components:
 | Authentication | GoTrue-compatible Supabase Auth |
 | Application | Node.js 22+ Next.js server |
 | Jobs | Persistent `npm run worker:delivery` process |
-| Media | Optional S3-compatible storage; R2 is the supplied reference adapter |
+| Media | Server disk, Azure Blob, S3-compatible storage (S3, R2, MinIO) or Supabase Storage; see [STORAGE.md](STORAGE.md) |
 
 A managed Supabase project is the simplest reference backend. Self-hosted Supabase-compatible infrastructure is also valid when it provides the same required API/auth semantics.
 

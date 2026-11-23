@@ -256,9 +256,9 @@ The SQL side is smaller than feared: no migration reads JWT claims, the only ext
 
 The storage layer already supports S3, R2, MinIO and Supabase Storage through `storageProvider.ts`. Two adapters are missing for this design:
 
-- [ ] **Azure Blob**, using the VM's managed identity and short-lived SAS URLs, with the same signed size and content-type rules as the S3 presigned uploads.
-- [ ] **Local disk**, for the "on this server" option without a bucket: files on the data disk, served through signed, expiring app URLs, included in the pgBackRest backup set.
-- [ ] Supabase Storage stays available as an optional connector for existing users.
+- [x] **Azure Blob**, using the VM's managed identity and short-lived SAS URLs, with the same signed size and content-type rules as the S3 presigned uploads.
+- [x] **Local disk**, for the "on this server" option without a bucket: files on the data disk, served through signed, expiring app URLs, included in the pgBackRest backup set.
+- [x] Supabase Storage stays available as an optional connector for existing users.
 
 **Exit gate (week 6):** a database created from scratch by the migrations, with no Supabase roles present, passes the full test suite as `polynovea_app`.
 

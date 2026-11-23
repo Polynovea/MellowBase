@@ -11,6 +11,10 @@ import { allowsPrivateNetwork, assertSafeOutboundUrl } from "@/lib/infrastructur
 import type { EnvironmentKind } from "@/lib/infrastructure/types";
 import { deleteObject, resolveObjectUrl, uploadObject, createPresignedUpload as createLegacyR2PresignedUpload } from "@/lib/r2Storage";
 import { guardedFetchFor, guardedS3RequestHandler } from "@/lib/infrastructure/guardedNetwork";
+import type { Readable } from "node:stream";
+import { localStorageRoot, removeLocalObject, writeLocalObject } from "@/lib/media/localDiskStorage";
+import { azureSettingsFrom, createAzureBlobStore } from "@/lib/media/azureBlobStorage";
+import { signedReadUrl, signedUploadUrl } from "@/lib/media/signedStorageUrls";
 import { activeStorageConnections, defaultEnvironment, environmentKind as environmentKindOf, exactStorageConnection, findEnvironment, type EnvironmentRow, type StorageConnectionRow } from "@/lib/media/mediaData";
 
 export interface StorageProvider {
@@ -23,6 +27,12 @@ export interface StorageProvider {
   resolveReadUrl(key: string): Promise<string>;
   /** contentLength is signed into the URL, so the provider rejects a body of any other size. */
   createPresignedUpload?(key: string, contentType: string, contentLength: number): Promise<{ uploadUrl: string; readUrl: string }>;
+  /**
+   * Stores a body streamed through the app's signed upload route (adapters whose own URL signing cannot
+   * bind size and type). The body is already limited to the signed length and type; the adapter must
+   * only make the object visible once the stream ends without error, and never replace an existing one.
+   */
+  writeStream?(input: { key: string; contentType: string; contentLength: number; body: Readable }): Promise<void>;
 }
 
 function configText(config: Record<string, unknown>, key: string) {
@@ -53,6 +63,8 @@ function aliasesFor(type: string) {
   if (type === "storage.s3") return new Set(["s3", "aws-s3", "aws_s3", type]);
   if (type === "storage.minio") return new Set(["minio", type]);
   if (type === "storage.supabase") return new Set(["supabase", "supabase-storage", "supabase_storage", type]);
+  if (type === "storage.azure-blob") return new Set(["azure", "azure-blob", "azure_blob", "blob", type]);
+  if (type === "storage.local") return new Set(["local", "local-disk", "local_disk", "disk", "filesystem", type]);
   return new Set([type]);
 }
 
@@ -169,6 +181,74 @@ async function supabaseStorageProvider(connection: StorageConnectionRow, credent
   };
 }
 
+/** Base URL of this CMS for signed app URLs; relative URLs when unset (fine for the admin UI). */
+function appBaseUrl(config: Record<string, unknown>) {
+  const value = trimSlash(configText(config, "appUrl"));
+  if (!value) return null;
+  const url = new URL(value);
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("App URL must be an http(s) URL");
+  return url.origin + url.pathname.replace(/\/+$/, "");
+}
+
+function localDiskProvider(connection: StorageConnectionRow): StorageProvider {
+  const config = connection.config_json ?? {};
+  const root = localStorageRoot();
+  const baseUrl = appBaseUrl(config);
+  const key = connectionKey(connection.id);
+  return {
+    key,
+    kind: connection.connector_type,
+    connectionId: connection.id,
+    environmentId: connection.environment_id,
+    async upload(input) {
+      await writeLocalObject(root, input.key, input.body);
+      return { key: input.key, url: signedReadUrl(input.key, baseUrl) };
+    },
+    remove: (path) => removeLocalObject(root, path),
+    async resolveReadUrl(path) {
+      return signedReadUrl(path, baseUrl);
+    },
+    async createPresignedUpload(path, contentType, contentLength) {
+      return {
+        uploadUrl: signedUploadUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, contentType, contentLength }, baseUrl),
+        readUrl: signedReadUrl(path, baseUrl),
+      };
+    },
+    async writeStream(input) {
+      await writeLocalObject(root, input.key, input.body, { expectedBytes: input.contentLength });
+    },
+  };
+}
+
+async function azureBlobProvider(connection: StorageConnectionRow, credentials: Record<string, string>, environmentKind: EnvironmentKind): Promise<StorageProvider> {
+  const config = connection.config_json ?? {};
+  const store = await createAzureBlobStore(azureSettingsFrom(config, credentials, environmentKind), environmentKind);
+  const baseUrl = appBaseUrl(config);
+  const key = connectionKey(connection.id);
+  return {
+    key,
+    kind: connection.connector_type,
+    connectionId: connection.id,
+    environmentId: connection.environment_id,
+    async upload(input) {
+      await store.put(input.key, input.body, input.contentType);
+      return { key: input.key, url: await store.readUrl(input.key) };
+    },
+    remove: (path) => store.remove(path),
+    resolveReadUrl: (path) => store.readUrl(path),
+    async createPresignedUpload(path, contentType, contentLength) {
+      // A SAS cannot bind the upload size, so the browser uploads through the app's signed URL instead.
+      return {
+        uploadUrl: signedUploadUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, contentType, contentLength }, baseUrl),
+        readUrl: await store.readUrl(path),
+      };
+    },
+    async writeStream(input) {
+      await store.put(input.key, input.body, input.contentType);
+    },
+  };
+}
+
 async function providerFromConnection(workspaceId: string, connection: StorageConnectionRow): Promise<StorageProvider> {
   if (connection.workspace_id !== workspaceId || connection.connector_family !== "storage") throw new Error("Storage connection is outside the workspace boundary");
   if (!connection.active || connection.status !== "active") throw new Error(`${connection.name}: storage connection is not active; verify/reconnect it first`);
@@ -178,6 +258,8 @@ async function providerFromConnection(workspaceId: string, connection: StorageCo
   const credentials = await resolveConnectionCredentials(workspaceId, connection.id);
   if (["storage.r2", "storage.s3", "storage.minio"].includes(connection.connector_type)) return s3Provider(connection, credentials, environmentKind);
   if (connection.connector_type === "storage.supabase") return supabaseStorageProvider(connection, credentials, environmentKind);
+  if (connection.connector_type === "storage.azure-blob") return azureBlobProvider(connection, credentials, environmentKind);
+  if (connection.connector_type === "storage.local") return localDiskProvider(connection);
   throw new Error(`Storage connector ${connection.connector_type} has no media data-plane adapter`);
 }
 

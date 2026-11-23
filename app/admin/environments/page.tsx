@@ -212,7 +212,7 @@ export default function EnvironmentsPage() {
             <Field label="CMS base URL"><input name="cmsBaseUrl" placeholder="https://cms.example.com" className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm" /></Field>
             <Field label="Public site URLs"><textarea name="publicSiteUrls" placeholder={'One URL per line\nhttps://example.com'} className="mt-2 min-h-24 w-full rounded-lg px-3 py-2.5 text-sm" /></Field>
             <Field label="Database provider"><input name="databaseProvider" placeholder="supabase / postgres / rds" className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm" /></Field>
-            <Field label="Storage provider"><input name="storageProvider" placeholder="r2 / s3 / minio" className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm" /></Field>
+            <Field label="Storage provider"><input name="storageProvider" placeholder="r2 / s3 / minio / azure-blob / local" className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm" /></Field>
             <Field label="Runtime provider"><input name="runtimeProvider" placeholder="vercel / ec2 / vm" className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm" /></Field>
             <label className="flex items-center gap-2 self-end pb-2 text-[12px] text-fg-secondary"><input type="checkbox" name="isDefault" className="accent-primary" /> Make this the default environment</label>
             <div className="flex items-end xl:col-span-2"><button disabled={busy !== ""} className="ui-btn ui-btn-primary w-full md:w-auto">{busy === "create" ? "Creating…" : "Create environment"}</button></div>
