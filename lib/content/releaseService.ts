@@ -1,4 +1,6 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+// Content area, releases: the readiness and lifecycle rules live here and are shared by both data
+// paths; queries and SQL function calls are primitives in releaseData.ts (the `content` switch).
+import * as releaseData from "@/lib/content/releaseData";
 import { runVersionPreflight, type PreflightReport } from "@/lib/content/preflightService";
 
 export type ReleaseStatus = "draft" | "approved" | "scheduled" | "publishing" | "published" | "partially_failed" | "cancelled";
@@ -42,37 +44,18 @@ const mapRpcError = (error: { message?: string; code?: string } | null | undefin
   return { ok: false, error: message, status: 500 };
 };
 
+/** A release SQL function, in the { data, error } shape mapRpcError expects. */
+async function rpc(name: releaseData.ReleaseFunctionName, args: Record<string, unknown>): Promise<{ data: unknown; error: { code?: string; message?: string } | null }> {
+  const result = await releaseData.callReleaseFunction(name, args);
+  return result.ok ? { data: result.data, error: null } : { data: null, error: { code: result.code ?? undefined, message: result.message ?? undefined } };
+}
+
 export async function listReleases(workspaceId: string) {
-  const { data, error } = await createServiceRoleClient()
-    .from("releases")
-    .select("*, release_items(id,entry_id,entry_version_id,delivery_status,delivery_error), release_locale_targets(locale,required)")
-    .eq("workspace_id", workspaceId)
-    .order("created_at", { ascending: false });
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return releaseData.listReleases(workspaceId);
 }
 
 export async function getRelease(workspaceId: string, releaseId: string) {
-  const { data, error } = await createServiceRoleClient()
-    .from("releases")
-    .select(`
-      *,
-      release_items(
-        id,entry_id,entry_version_id,delivery_status,delivery_error,created_at,
-        content_entries(id,status,current_draft_version_id,published_version_id,content_model_id,content_models!content_entries_workspace_model_fk(name,api_key)),
-        content_entry_versions(id,locale,version_number,state,data_jsonb,created_at)
-      ),
-      release_locale_targets(id,locale,required),
-      release_approvals(id,actor_admin_user_id,decision,comment,created_at),
-      release_assignments(id,assigned_to_admin_user_id,assigned_by_admin_user_id,role,status,due_at,note,completed_at,created_at),
-      release_history(id,actor_admin_user_id,action,from_status,to_status,detail_json,created_at),
-      release_rollback_items(entry_id,target_version_id,previous_published_version_id,created_at)
-    `)
-    .eq("workspace_id", workspaceId)
-    .eq("id", releaseId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  return data;
+  return releaseData.getRelease(workspaceId, releaseId);
 }
 
 export async function createRelease(params: {
@@ -87,21 +70,15 @@ export async function createRelease(params: {
   if (!name) return { ok: false, error: "Release name is required", status: 400 };
   const itemVersionIds = [...new Set(params.itemVersionIds.filter(Boolean))];
   if (!itemVersionIds.length) return { ok: false, error: "A release needs at least one approved entry version", status: 400 };
-  const db = createServiceRoleClient();
   // A caller may select optional coordinated locales, but it must never be
   // able to omit a workspace-required locale and thereby bypass readiness.
-  const { data: requiredLocaleRows, error: requiredLocalesError } = await db
-    .from("workspace_locales")
-    .select("locale")
-    .eq("workspace_id", params.workspaceId)
-    .eq("enabled", true)
-    .eq("required", true);
-  if (requiredLocalesError) return mapRpcError(requiredLocalesError, "Could not resolve required workspace locales");
+  const required = await releaseData.requiredLocales(params.workspaceId);
+  if (!required.ok) return mapRpcError({ code: required.code ?? undefined, message: required.message ?? undefined }, "Could not resolve required workspace locales");
   const locales = [...new Set([
     ...(params.locales ?? []).map((locale) => locale.trim()).filter(Boolean),
-    ...((requiredLocaleRows ?? []).map((row) => row.locale).filter(Boolean)),
+    ...required.locales,
   ])];
-  const { data, error } = await db.rpc("cms_create_release", {
+  const { data, error } = await rpc("cms_create_release", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_name: name,
@@ -115,7 +92,7 @@ export async function createRelease(params: {
 export async function replaceReleaseItems(params: { workspaceId: string; actorId: string; releaseId: string; itemVersionIds: string[] }): Promise<ReleaseResult<unknown>> {
   const ids = [...new Set(params.itemVersionIds.filter(Boolean))];
   if (!ids.length) return { ok: false, error: "A release needs at least one approved entry version", status: 400 };
-  const { data, error } = await createServiceRoleClient().rpc("cms_replace_release_items", {
+  const { data, error } = await rpc("cms_replace_release_items", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_release_id: params.releaseId,
@@ -125,7 +102,7 @@ export async function replaceReleaseItems(params: { workspaceId: string; actorId
 }
 
 export async function setReleaseLocales(params: { workspaceId: string; actorId: string; releaseId: string; locales: string[] }): Promise<ReleaseResult<unknown>> {
-  const { data, error } = await createServiceRoleClient().rpc("cms_set_release_locales", {
+  const { data, error } = await rpc("cms_set_release_locales", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_release_id: params.releaseId,
@@ -144,7 +121,7 @@ export async function assignRelease(params: {
   note?: string | null;
 }): Promise<ReleaseResult<unknown>> {
   if (params.dueAt && Number.isNaN(Date.parse(params.dueAt))) return { ok: false, error: "dueAt must be a valid ISO timestamp", status: 400 };
-  const { data, error } = await createServiceRoleClient().rpc("cms_assign_release", {
+  const { data, error } = await rpc("cms_assign_release", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_release_id: params.releaseId,
@@ -185,13 +162,10 @@ export async function getReleaseReadiness(workspaceId: string, releaseId: string
     itemReports.push({ entryId: item.entry_id, versionId: item.entry_version_id, locale: version?.locale ?? "unknown", preflight, drifted });
   }
 
-  const db = createServiceRoleClient();
   const itemEntryIds = new Set(items.map((item) => item.entry_id));
   const itemLocaleByEntry = new Map(items.map((item) => [item.entry_id, item.content_entry_versions?.locale ?? "unknown"]));
-  const { data: translationRows } = coordinatedEntryIds.length
-    ? await db.from("content_entry_translations").select("source_entry_id,locale,translated_entry_id,source_version_id,reviewed_at,stale_at").eq("workspace_id", workspaceId).in("source_entry_id", coordinatedEntryIds)
-    : { data: [] as Array<{ source_entry_id: string; locale: string; translated_entry_id: string | null; source_version_id: string | null; reviewed_at: string | null; stale_at: string | null }> };
-  const translatedIds = new Set((translationRows ?? []).map((row) => row.translated_entry_id).filter((id): id is string => Boolean(id)));
+  const translationRows = await releaseData.translationsOfSources(workspaceId, coordinatedEntryIds);
+  const translatedIds = new Set(translationRows.map((row) => row.translated_entry_id).filter((id): id is string => Boolean(id)));
   const roots = items.filter((item) => !translatedIds.has(item.entry_id));
   const localeReadiness: ReleaseReadiness["localeReadiness"] = [];
 
@@ -199,7 +173,7 @@ export async function getReleaseReadiness(workspaceId: string, releaseId: string
     const missingSourceEntryIds: string[] = [];
     for (const root of roots) {
       if (itemLocaleByEntry.get(root.entry_id) === target.locale) continue;
-      const relation = (translationRows ?? []).find((row) => row.source_entry_id === root.entry_id && row.locale === target.locale);
+      const relation = translationRows.find((row) => row.source_entry_id === root.entry_id && row.locale === target.locale);
       const translatedIncluded = Boolean(relation?.translated_entry_id && itemEntryIds.has(relation.translated_entry_id));
       const sourceVersionCurrent = !relation?.source_version_id || relation.source_version_id === root.entry_version_id;
       const fresh = translatedIncluded && sourceVersionCurrent && !relation?.stale_at && Boolean(relation?.reviewed_at);
@@ -217,15 +191,11 @@ export async function getReleaseReadiness(workspaceId: string, releaseId: string
     }
   }
 
-  const { data: dependencyRows } = coordinatedEntryIds.length
-    ? await db.from("content_relations").select("source_entry_id,source_version_id,target_entry_id,source_field_key,relation_type").eq("workspace_id", workspaceId).in("source_entry_id", coordinatedEntryIds).not("target_entry_id", "is", null)
-    : { data: [] as Array<{ source_entry_id: string | null; source_version_id: string | null; target_entry_id: string | null; source_field_key: string; relation_type: string }> };
+  const dependencyRows = await releaseData.entryRelationsFrom(workspaceId, coordinatedEntryIds);
   const liveVersionByEntry = new Map(items.map((item) => [item.entry_id, item.entry_version_id]));
-  const dependencyTargetIds = [...new Set((dependencyRows ?? []).map((row) => row.target_entry_id).filter((id): id is string => Boolean(id)))];
-  const { data: dependencyTargets } = dependencyTargetIds.length
-    ? await db.from("content_entries").select("id,status").eq("workspace_id", workspaceId).in("id", dependencyTargetIds)
-    : { data: [] as Array<{ id: string; status: string }> };
-  const dependencyStatus = new Map((dependencyTargets ?? []).map((row) => [row.id, row.status]));
+  const dependencyTargetIds = [...new Set(dependencyRows.map((row) => row.target_entry_id).filter((id): id is string => Boolean(id)))];
+  const dependencyTargets = await releaseData.entryStatusesById(workspaceId, dependencyTargetIds);
+  const dependencyStatus = new Map(dependencyTargets.map((row) => [row.id, row.status]));
   for (const edge of dependencyRows ?? []) {
     if (!edge.source_entry_id || liveVersionByEntry.get(edge.source_entry_id) !== edge.source_version_id || !edge.target_entry_id) continue;
     if (itemEntryIds.has(edge.target_entry_id)) continue;
@@ -273,7 +243,7 @@ export async function transitionRelease(params: {
   if (params.action === "schedule" && (!params.scheduledFor || Number.isNaN(Date.parse(params.scheduledFor)))) {
     return { ok: false, error: "scheduledFor must be a valid future ISO timestamp", status: 400 };
   }
-  const { data, error } = await createServiceRoleClient().rpc("cms_transition_release", {
+  const { data, error } = await rpc("cms_transition_release", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_release_id: params.releaseId,
@@ -288,7 +258,7 @@ export async function publishRelease(params: { workspaceId: string; actorId: str
   const readiness = await getReleaseReadiness(params.workspaceId, params.releaseId);
   if (!readiness.ok) return readiness;
   if (readiness.data.status === "blocked") return { ok: false, error: `Release is blocked by ${readiness.data.summary.blocking} readiness issue${readiness.data.summary.blocking === 1 ? "" : "s"}`, status: 409 };
-  const { data, error } = await createServiceRoleClient().rpc("cms_publish_release", {
+  const { data, error } = await rpc("cms_publish_release", {
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_release_id: params.releaseId,
@@ -298,17 +268,9 @@ export async function publishRelease(params: { workspaceId: string; actorId: str
 
 export async function processDueReleases(params: { workspaceId: string; actorId: string; limit?: number }) {
   const limit = Math.min(50, Math.max(1, params.limit ?? 10));
-  const { data, error } = await createServiceRoleClient()
-    .from("releases")
-    .select("id,name,scheduled_for")
-    .eq("workspace_id", params.workspaceId)
-    .eq("status", "scheduled")
-    .lte("scheduled_for", new Date().toISOString())
-    .order("scheduled_for", { ascending: true })
-    .limit(limit);
-  if (error) throw new Error(error.message);
+  const data = await releaseData.dueReleases(params.workspaceId, limit);
   const results = [] as Array<{ releaseId: string; ok: boolean; error?: string }>;
-  for (const release of data ?? []) {
+  for (const release of data) {
     const result = await publishRelease({ workspaceId: params.workspaceId, actorId: params.actorId, releaseId: release.id });
     results.push(result.ok ? { releaseId: release.id, ok: true } : { releaseId: release.id, ok: false, error: result.error });
   }
