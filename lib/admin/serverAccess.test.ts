@@ -60,6 +60,26 @@ describe("requireAdminRequest", () => {
     expect(result.error?.status).toBe(401);
   });
 
+  it("uses the built-in provider's cookie session when AUTH_PROVIDER=builtin, with no Supabase key", async () => {
+    const identityProvider = await import("@/lib/auth/betterAuth/instance");
+    const verifyRequest = vi.fn().mockResolvedValue({
+      identity: { user: { id: "u9", email: "editor@example.com", emailConfirmedAt: null, metadata: {} }, sessionId: "s1", authenticatedAt: new Date(), transport: "cookie" },
+      error: null,
+    });
+    const spy = vi.spyOn(identityProvider, "getBuiltinServerIdentityProvider").mockReturnValue({ verifyRequest } as never);
+    process.env.AUTH_PROVIDER = "builtin";
+    try {
+      mockCreateServiceRoleClient.mockReturnValue(fakeDb({ getUser: { data: { user: null }, error: null }, adminUserRow: editorRow }));
+      const result = await requireAdminRequest(new Request("https://example.com/api/test", { headers: { cookie: "__Host-polynovea.session_token=x" } }));
+      expect(verifyRequest).toHaveBeenCalledOnce();
+      expect(result.data?.identity.transport).toBe("cookie");
+      expect(result.data?.profile.username).toBe("editor");
+    } finally {
+      delete process.env.AUTH_PROVIDER;
+      spy.mockRestore();
+    }
+  });
+
   it("returns 500 when the service role key is not configured", async () => {
     mockCreateServiceRoleClient.mockImplementation(() => {
       throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");

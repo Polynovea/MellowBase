@@ -1,16 +1,12 @@
 /**
- * ServerIdentityProvider on Better Auth (phase 0 spike).
+ * ServerIdentityProvider on Better Auth.
  *
- * Fits the interface without forking the library: sessions are checked through auth.api.getSession,
- * and admin-side user management goes through the documented $context.internalAdapter.
- *
- * Interface finding: Better Auth is cookie-first. The "bearer token" here is the signed session
- * cookie value; the browser cannot read it (HttpOnly), so BrowserIdentityProvider's
- * Session.accessToken has no Better Auth equivalent. Phase 1 should change the server interface to
- * verifyRequest(request) and move the admin UI's API client to the session cookie (the plan already
- * schedules that), rather than adding the bearer plugin.
+ * Fits the interface without forking the library: sessions are checked through auth.api.getSession
+ * (database only; the cookie cache is off), and admin-side user management goes through the
+ * documented $context.internalAdapter. Better Auth is cookie-first, so verifyRequest reads the
+ * session cookie from the request; the browser never sees the token (HttpOnly).
  */
-import type { ServerIdentityProvider, User } from "@/lib/auth/provider";
+import type { RequestIdentity, ServerIdentityProvider, User } from "@/lib/auth/provider";
 import { hashPassword } from "@/lib/auth/betterAuth/passwordHash";
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, type PolynoveaAuth } from "@/lib/auth/betterAuth/server";
 
@@ -37,23 +33,29 @@ function safeJson(value: string): unknown {
 
 const genericError = (message: string) => new Error(message);
 
-// A Better Auth session cookie value is the token, a dot and its base64 signature (it may arrive
-// URL-encoded). Anything else, such as a ";" or a newline, is rejected before it reaches a Cookie
-// header, where it could add or split cookies.
-const SESSION_TOKEN = /^[A-Za-z0-9._~+/=%-]{1,512}$/;
+type BetterAuthSession = { id: string; createdAt: Date | string };
 
 export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth): ServerIdentityProvider {
   return {
-    async verifyBearerToken(token) {
-      if (typeof token !== "string" || !SESSION_TOKEN.test(token)) return { user: null, error: genericError("Invalid session") };
+    async verifyRequest(request) {
+      const cookie = request.headers.get("cookie");
+      if (!cookie) return { identity: null, error: genericError("Missing session") };
       try {
-        const ctx = await auth.$context;
-        const headers = new Headers({ cookie: `${ctx.authCookies.sessionToken.name}=${token}` });
-        const result = await auth.api.getSession({ headers, query: { disableCookieCache: true } });
-        if (!result) return { user: null, error: genericError("Invalid session") };
-        return { user: toIdentityUser(result.user as BetterAuthUser), error: null };
+        // Only the Cookie header is passed on; nothing else in the request is trusted here.
+        const result = await auth.api.getSession({ headers: new Headers({ cookie }), query: { disableCookieCache: true } });
+        if (!result) return { identity: null, error: genericError("Invalid session") };
+        const session = result.session as BetterAuthSession;
+        const identity: RequestIdentity = {
+          user: toIdentityUser(result.user as BetterAuthUser),
+          sessionId: session.id,
+          // Every sign-in (and every step-up re-authentication) creates a new session, so its
+          // creation time is when the user last proved who they are.
+          authenticatedAt: new Date(session.createdAt),
+          transport: "cookie",
+        };
+        return { identity, error: null };
       } catch {
-        return { user: null, error: genericError("Invalid session") };
+        return { identity: null, error: genericError("Invalid session") };
       }
     },
 
@@ -119,6 +121,16 @@ export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth): Server
         return { error: null };
       } catch {
         return { error: genericError("Could not delete user") };
+      }
+    },
+
+    async revokeUserSessions(id) {
+      try {
+        const ctx = await auth.$context;
+        await ctx.internalAdapter.deleteUserSessions(id);
+        return { error: null };
+      } catch {
+        return { error: genericError("Could not sign the user out") };
       }
     },
   };

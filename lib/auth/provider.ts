@@ -1,6 +1,6 @@
 /**
- * Identity types owned by the CMS, so the auth library behind this interface (Supabase GoTrue today,
- * Better Auth next) can change without touching the rest of the code.
+ * Identity types owned by the CMS, so the auth library behind this interface (Supabase GoTrue or the
+ * built-in Better Auth) can change without touching the rest of the code.
  */
 export interface User {
   /** Stable identity ID; admin_users.auth_user_id points at it. */
@@ -13,11 +13,30 @@ export interface User {
 }
 
 export interface Session {
-  /** Bearer token the admin UI sends to the API. */
+  /**
+   * Bearer token the admin UI sends to the API. Empty for the built-in provider, whose session lives
+   * in an HttpOnly cookie that the browser sends by itself.
+   */
   accessToken: string;
   /** Expiry as Unix seconds, or null when the provider does not say. */
   expiresAt: number | null;
   user: User;
+}
+
+/** How the credential reached the server. Cookie credentials need CSRF checks on state-changing requests. */
+export type CredentialTransport = "cookie" | "bearer";
+
+/** A request whose credential the provider has verified. */
+export interface RequestIdentity {
+  user: User;
+  /** Provider session ID (never the secret token), or null when the provider has none. */
+  sessionId: string | null;
+  /**
+   * When the user last proved who they are (password, passkey or code), used by step-up checks.
+   * Null when the provider cannot tell; step-up then fails closed.
+   */
+  authenticatedAt: Date | null;
+  transport: CredentialTransport;
 }
 
 /**
@@ -34,8 +53,15 @@ export interface BrowserIdentityProvider {
 }
 
 export interface ServerIdentityProvider {
-  verifyBearerToken(token: string): Promise<{ user: User | null; error: Error | null }>;
+  /**
+   * Verifies the credential the request carries: the session cookie for the built-in provider, the
+   * `Authorization: Bearer` header for Supabase. Takes the whole request so each provider reads what
+   * it needs; it never trusts anything else in it.
+   */
+  verifyRequest(request: Request): Promise<{ identity: RequestIdentity | null; error: Error | null }>;
   createUser(input: { email: string; password: string; emailConfirmed: boolean; metadata?: Record<string, unknown> }): Promise<{ user: User | null; error: Error | null }>;
   updateUser(id: string, input: { password?: string; metadata?: Record<string, unknown> }): Promise<{ error: Error | null }>;
   deleteUser(id: string): Promise<{ error: Error | null }>;
+  /** Ends every session of a user (sign out everywhere; also used after role and password changes). */
+  revokeUserSessions(id: string): Promise<{ error: Error | null }>;
 }

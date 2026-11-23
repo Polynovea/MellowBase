@@ -4,7 +4,7 @@ import { ACCESS_MODULES, normalizeAdminUser } from "@/lib/admin/access";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { deleteAdminProfile, findAdminUser, updateAdminProfile } from "@/lib/admin/adminUserService";
-import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
+import { getServerIdentityProvider } from "@/lib/auth/server";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
@@ -27,7 +27,7 @@ export async function PATCH(
   if (auth.error) return auth.error;
 
   const { id } = await params;
-  const identity = getSupabaseServerIdentityProvider();
+  const identity = getServerIdentityProvider();
 
   try {
     const parsed = updateUserSchema.parse(await req.json());
@@ -113,7 +113,7 @@ export async function DELETE(
   if (auth.error) return auth.error;
 
   const { id } = await params;
-  const identity = getSupabaseServerIdentityProvider();
+  const identity = getServerIdentityProvider();
 
   const existing = await findAdminUser(id);
 

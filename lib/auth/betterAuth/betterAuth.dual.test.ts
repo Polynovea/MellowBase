@@ -27,6 +27,15 @@ function sessionCookie(response: Response, name: string): string | null {
   return decodeURIComponent(header.slice(name.length + 1).split(";")[0]);
 }
 
+/** A request carrying the session cookie, as the browser would send it. */
+function requestWithSession(cookieName: string, token: string): Request {
+  return new Request(`${BASE_URL}/api/admin/me`, { headers: { cookie: `${cookieName}=${encodeURIComponent(token)}` } });
+}
+
+async function verifiedUser(identity: ReturnType<typeof getBetterAuthServerIdentityProvider>, cookieName: string, token: string) {
+  return (await identity.verifyRequest(requestWithSession(cookieName, token))).identity?.user ?? null;
+}
+
 function cookieHeader(response: Response): string {
   return response.headers.getSetCookie().map((cookie) => cookie.split(";")[0]).join("; ");
 }
@@ -99,17 +108,18 @@ describe("Better Auth behind ServerIdentityProvider [postgres]", () => {
     const token = sessionCookie(signedIn, cookieName);
     expect(token).toBeTruthy();
 
-    const verified = await identity.verifyBearerToken(token!);
-    expect(verified.user?.id).toBe(user!.id);
-    expect((await identity.verifyBearerToken("forged.token")).user).toBeNull();
-    // Characters that would add or split cookies never reach the Cookie header.
-    expect((await identity.verifyBearerToken(`${token}; other=1`)).user).toBeNull();
-    expect((await identity.verifyBearerToken(`${token}
-x: y`)).user).toBeNull();
+    const verified = await identity.verifyRequest(requestWithSession(cookieName, token!));
+    expect(verified.identity?.user.id).toBe(user!.id);
+    expect(verified.identity?.transport).toBe("cookie");
+    expect(verified.identity?.sessionId).toBeTruthy();
+    expect(Date.now() - verified.identity!.authenticatedAt!.getTime()).toBeLessThan(60_000);
+    expect(await verifiedUser(identity, cookieName, "forged.token")).toBeNull();
+    // A bearer header is not a credential for the built-in provider.
+    expect((await identity.verifyRequest(new Request(BASE_URL, { headers: { authorization: `Bearer ${token}` } }))).identity).toBeNull();
 
     // Plan regression test: a revoked session is rejected on the next request.
     await auth.api.signOut({ headers: new Headers({ cookie: cookieHeader(signedIn) }) });
-    expect((await identity.verifyBearerToken(token!)).user).toBeNull();
+    expect(await verifiedUser(identity, cookieName, token!)).toBeNull();
   });
 
   it("enrols TOTP and then requires the code at sign-in", async () => {
@@ -140,7 +150,7 @@ x: y`)).user).toBeNull();
     const done = await auth.api.verifyTOTP({ body: { code: await code() }, headers: new Headers({ cookie: cookieHeader(second) }), asResponse: true });
     expect(done.status).toBe(200);
     const token = sessionCookie(done, cookieName);
-    expect((await identity.verifyBearerToken(token!)).user?.email).toBe(email);
+    expect((await verifiedUser(identity, cookieName, token!))?.email).toBe(email);
   });
 
   it("a password change signs the user out everywhere", async () => {
@@ -151,7 +161,7 @@ x: y`)).user).toBeNull();
     const signedIn = await auth.api.signInEmail({ body: { email, password }, asResponse: true });
     const token = sessionCookie(signedIn, cookieName)!;
     expect((await identity.updateUser(user!.id, { password: "a brand new long passphrase" })).error).toBeNull();
-    expect((await identity.verifyBearerToken(token)).user).toBeNull();
+    expect(await verifiedUser(identity, cookieName, token)).toBeNull();
     const again = await auth.api.signInEmail({ body: { email, password: "a brand new long passphrase" }, asResponse: true });
     expect(again.status).toBe(200);
   });

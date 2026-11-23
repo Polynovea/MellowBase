@@ -5,7 +5,7 @@ import { logAdminActivity } from "@/lib/admin/audit";
 import { normalizeAdminUser } from "@/lib/admin/access";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { updateOwnDisplayName } from "@/lib/admin/adminUserService";
-import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
+import { getServerIdentityProvider } from "@/lib/auth/server";
 
 const ts = () => new Date().toISOString();
 
@@ -28,7 +28,7 @@ export async function PATCH(req: Request) {
 
   try {
     const parsed = updateProfileSchema.parse(await req.json());
-    const identity = getSupabaseServerIdentityProvider();
+    const identity = getServerIdentityProvider();
     const profile = auth.data!.profile;
     const authUser = auth.data!.user;
 

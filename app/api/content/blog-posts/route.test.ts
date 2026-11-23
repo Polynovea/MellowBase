@@ -87,7 +87,7 @@ describe("POST /api/content/blog-posts", () => {
   });
 
   it("creates the post, logs the activity, and skips revalidation for a draft", async () => {
-    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile } });
+    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile, identity: {} as never } });
     mockInsertDbItem.mockResolvedValue({ data: { id: "post-1", title: "Draft", status: "draft" }, error: null });
 
     const res = await POST(postRequest({ title: "Draft", status: "draft" }));
@@ -101,7 +101,7 @@ describe("POST /api/content/blog-posts", () => {
   });
 
   it("revalidates the website when the created post is published", async () => {
-    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile } });
+    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile, identity: {} as never } });
     mockInsertDbItem.mockResolvedValue({ data: { id: "post-2", slug: "hello-world", status: "published" }, error: null });
 
     await POST(postRequest({ title: "Hello World", status: "published" }));
@@ -109,7 +109,7 @@ describe("POST /api/content/blog-posts", () => {
   });
 
   it("returns 500 and does not log activity when the insert fails", async () => {
-    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile } });
+    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile, identity: {} as never } });
     mockInsertDbItem.mockResolvedValue({ data: null, error: "duplicate slug" });
 
     const res = await POST(postRequest({ title: "Dup", slug: "dup" }));
@@ -118,7 +118,7 @@ describe("POST /api/content/blog-posts", () => {
   });
 
   it("returns 400 when the request body is not valid JSON", async () => {
-    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile } });
+    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile, identity: {} as never } });
     const badReq = new Request("https://example.com/api/content/blog-posts", {
       method: "POST",
       headers: { "content-type": "application/json" },
