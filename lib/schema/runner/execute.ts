@@ -9,7 +9,7 @@
 //   (lockRetry.ts); it is never held open across a sleep.
 // - The run's position (schema_migration_runs.next_statement) moves in the same transaction as the
 //   statements it covers, so a run that crashes is resumed exactly after the last committed statement.
-// - Non-transactional statements (CREATE / DROP INDEX CONCURRENTLY) run alone on the session, outside
+// - Non-transactional statements (CREATE / DROP INDEX CONCURRENTLY; one retry at most) run alone on the session, outside
 //   any transaction, with the patient lock wait of lockRetry.ts (they wait for every older transaction
 //   in the database but never block reads or writes), then the session goes back to 3 seconds. A failed concurrent build leaves an INVALID index behind; the runner drops every
 //   invalid index on the model's table before such a statement and after it fails, then retries. When a
@@ -154,6 +154,18 @@ export async function inLockTimedTransaction<T>(client: pg.ClientBase, work: () 
   }, retry);
 }
 
+/**
+ * CONCURRENTLY statements already wait up to the patient lock timeout (10 minutes by default); with
+ * the usual five retries the single worker could sit on one statement for about an hour. They get
+ * one retry at most: a second 10-minute wait, then the stage fails with lock_timeout_exhausted and can
+ * be retried later.
+ */
+export const CONCURRENT_MAX_RETRIES = 1;
+
+function concurrentRetry(retry?: LockRetryOptions): LockRetryOptions {
+  return { ...retry, retries: Math.min(retry?.retries ?? CONCURRENT_MAX_RETRIES, CONCURRENT_MAX_RETRIES) };
+}
+
 /** Drops every INVALID index on content.<table>: what a failed CREATE INDEX CONCURRENTLY leaves. */
 export async function dropInvalidIndexes(client: pg.ClientBase, table: string, retry?: LockRetryOptions): Promise<number> {
   const { rows } = await client.query<{ name: string }>(
@@ -167,7 +179,7 @@ export async function dropInvalidIndexes(client: pg.ClientBase, table: string, r
   );
   for (const { name } of rows) {
     const statement = compile(sql`drop index concurrently if exists ${sql.id("content", name)}`);
-    await withLockRetry(() => client.query(statement.text, statement.values), retry);
+    await withLockRetry(() => client.query(statement.text, statement.values), concurrentRetry(retry));
   }
   return rows.length;
 }
@@ -193,7 +205,7 @@ async function runNonTransactional(ctx: StepContext, statement: RenderedStatemen
         await dropInvalidIndexes(client, table, retry).catch(() => undefined);
         throw error;
       }
-    }, retry);
+    }, concurrentRetry(retry));
     return retries;
   } finally {
     await client.query(`set lock_timeout = '${LOCK_TIMEOUT_MS}ms'`).catch(() => undefined);

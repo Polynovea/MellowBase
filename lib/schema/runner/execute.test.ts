@@ -2,7 +2,7 @@ import { sql } from "kysely";
 import { describe, expect, it } from "vitest";
 import type { RenderedStatement } from "@/lib/schema/engine/plan";
 import { compile } from "@/lib/schema/runner/engine";
-import { groupStatements } from "@/lib/schema/runner/execute";
+import { CONCURRENT_MAX_RETRIES, groupStatements } from "@/lib/schema/runner/execute";
 import { renderStep } from "@/lib/schema/engine";
 
 const statement = (transactional: boolean, lockSensitive: boolean, ownTransaction = false): RenderedStatement => ({ sql: sql`select 1`, transactional, lockSensitive, ownTransaction });
@@ -55,5 +55,11 @@ describe("compile", () => {
     const compiled = compile(sql`update ${sql.id("content", "m_posts")} set ${sql.id("title")} = ${"x'); drop table y; --"}`);
     expect(compiled.text).toBe('update "content"."m_posts" set "title" = $1');
     expect(compiled.values).toEqual(["x'); drop table y; --"]);
+  });
+});
+
+describe("CONCURRENTLY retries", () => {
+  it("are at most one, since each wait is already up to the patient lock timeout", () => {
+    expect(CONCURRENT_MAX_RETRIES).toBe(1);
   });
 });
