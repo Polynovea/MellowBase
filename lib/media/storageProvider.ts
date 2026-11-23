@@ -11,7 +11,10 @@ import { allowsPrivateNetwork, assertSafeOutboundUrl } from "@/lib/infrastructur
 import type { EnvironmentKind } from "@/lib/infrastructure/types";
 import { deleteObject, resolveObjectUrl, uploadObject, createPresignedUpload as createLegacyR2PresignedUpload } from "@/lib/r2Storage";
 import { guardedFetchFor, guardedS3RequestHandler } from "@/lib/infrastructure/guardedNetwork";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdir } from "node:fs/promises";
 import type { Readable } from "node:stream";
+import { isWorkspaceStorageKey } from "@/lib/media/storageKeys";
 import { localStorageRoot, removeLocalObject, writeLocalObject } from "@/lib/media/localDiskStorage";
 import { azureSettingsFrom, createAzureBlobStore } from "@/lib/media/azureBlobStorage";
 import { cmsBaseUrl, mediaLinkUrl, signedReadUrl, signedUploadUrl } from "@/lib/media/signedStorageUrls";
@@ -203,36 +206,68 @@ async function supabaseStorageProvider(connection: StorageConnectionRow, credent
   };
 }
 
-function localDiskProvider(connection: StorageConnectionRow): StorageProvider {
-  const config = connection.config_json ?? {};
+/** Provider key recorded on assets stored by the server's default local disk (no storage connection). */
+export const SERVER_LOCAL_PROVIDER_KEY = "local";
+
+function localDiskProvider(input: { key: string; workspaceId: string; connectionId: string | null; environmentId: string | null; appUrl?: string }): StorageProvider {
   const root = localStorageRoot();
-  const baseUrl = cmsBaseUrl(configText(config, "appUrl"));
-  const key = connectionKey(connection.id);
-  const contentUrl = async (path: string) => mediaLinkUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, servedFromDisk: true }, baseUrl);
+  const baseUrl = cmsBaseUrl(input.appUrl);
+  const key = input.key;
+  // Keys are always "<workspaceId>/...": this provider never touches another workspace's files.
+  const own = (path: string) => {
+    if (!isWorkspaceStorageKey(input.workspaceId, path)) throw new Error("Storage key is outside this workspace");
+    return path;
+  };
+  const contentUrl = async (path: string) => mediaLinkUrl({ providerKey: key, workspaceId: input.workspaceId, key: own(path), servedFromDisk: true }, baseUrl);
   return {
     key,
-    kind: connection.connector_type,
-    connectionId: connection.id,
-    environmentId: connection.environment_id,
-    async upload(input) {
-      await writeLocalObject(root, input.key, input.body);
-      return { key: input.key, url: await contentUrl(input.key) };
+    kind: "storage.local",
+    connectionId: input.connectionId,
+    environmentId: input.environmentId,
+    async upload(upload) {
+      await writeLocalObject(root, own(upload.key), upload.body);
+      return { key: upload.key, url: await contentUrl(upload.key) };
     },
-    remove: (path) => removeLocalObject(root, path),
+    remove: (path) => removeLocalObject(root, own(path)),
     async resolveReadUrl(path) {
-      return signedReadUrl(path, baseUrl);
+      return signedReadUrl(own(path), baseUrl);
     },
     contentUrl,
     async createPresignedUpload(path, contentType, contentLength) {
       return {
-        uploadUrl: signedUploadUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, contentType, contentLength }, baseUrl),
+        uploadUrl: signedUploadUrl({ providerKey: key, workspaceId: input.workspaceId, key: own(path), contentType, contentLength }, baseUrl),
         readUrl: await contentUrl(path),
       };
     },
-    async writeStream(input) {
-      await writeLocalObject(root, input.key, input.body, { expectedBytes: input.contentLength });
+    async writeStream(upload) {
+      await writeLocalObject(root, own(upload.key), upload.body, { expectedBytes: upload.contentLength });
     },
   };
+}
+
+function connectionLocalDiskProvider(connection: StorageConnectionRow): StorageProvider {
+  return localDiskProvider({ key: connectionKey(connection.id), workspaceId: connection.workspace_id, connectionId: connection.id, environmentId: connection.environment_id, appUrl: configText(connection.config_json ?? {}, "appUrl") });
+}
+
+/** True when every variable the legacy R2 provider needs is set. */
+export function legacyR2Configured(env: Record<string, string | undefined> = process.env) {
+  return Boolean(env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && (env.R2_ACCOUNT_ID || env.R2_S3_ENDPOINT));
+}
+
+/**
+ * The server's own disk, for a workspace with no storage connection on a self-hosted install. Checks
+ * the directory is usable first, so a misconfigured install fails with a message naming the setting.
+ */
+async function serverLocalDiskProvider(workspaceId: string, environmentId: string | null): Promise<StorageProvider> {
+  let root: string;
+  try {
+    root = localStorageRoot();
+    await mkdir(root, { recursive: true, mode: 0o750 });
+    await access(root, fsConstants.R_OK | fsConstants.W_OK);
+  } catch {
+    throw new Error("No storage connection is configured, and the server storage directory (POLYNOVEA_STORAGE_DIR, default /var/lib/polynovea/storage) is not a writable directory. Set POLYNOVEA_STORAGE_DIR to a writable absolute path, or add a storage connection.");
+  }
+  return localDiskProvider({ key: SERVER_LOCAL_PROVIDER_KEY, workspaceId, connectionId: null, environmentId });
 }
 
 async function azureBlobProvider(connection: StorageConnectionRow, credentials: Record<string, string>, environmentKind: EnvironmentKind): Promise<StorageProvider> {
@@ -279,7 +314,7 @@ async function providerFromConnection(workspaceId: string, connection: StorageCo
   if (["storage.r2", "storage.s3", "storage.minio"].includes(connection.connector_type)) return s3Provider(connection, credentials, environmentKind);
   if (connection.connector_type === "storage.supabase") return supabaseStorageProvider(connection, credentials, environmentKind);
   if (connection.connector_type === "storage.azure-blob") return azureBlobProvider(connection, credentials, environmentKind);
-  if (connection.connector_type === "storage.local") return localDiskProvider(connection);
+  if (connection.connector_type === "storage.local") return connectionLocalDiskProvider(connection);
   throw new Error(`Storage connector ${connection.connector_type} has no media data-plane adapter`);
 }
 
@@ -320,15 +355,23 @@ export async function getStorageProvider(params: {
     return providerFromConnection(workspaceId, connection);
   }
 
+  // Assets keep reading from where they were written: "r2" from R2, "local" from the server's disk.
   if (storedKey === "r2" && !params.environmentId) return legacyR2Provider();
-  if (!workspaceId) return legacyR2Provider();
+  if (storedKey === SERVER_LOCAL_PROVIDER_KEY && !params.environmentId) {
+    if (!workspaceId) throw new Error("Workspace ID is required to resolve a server-disk asset");
+    return serverLocalDiskProvider(workspaceId, null);
+  }
+  if (!workspaceId) {
+    if (legacyR2Configured()) return legacyR2Provider();
+    throw new Error("Workspace ID is required to choose a storage provider");
+  }
 
   const environment = await selectEnvironment(workspaceId, params.environmentId);
   const connection = await selectActiveStorageConnection(workspaceId, environment);
   if (connection) return providerFromConnection(workspaceId, connection);
 
-  // Preserve Polynovea's existing deployment while OSS/environment installs move to first-class Connections.
-  if (process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && (process.env.R2_ACCOUNT_ID || process.env.R2_S3_ENDPOINT)) return legacyR2Provider();
-
-  throw new Error("No active storage connection is configured for this environment. Open Connections, add/verify storage, then retry.");
+  // No storage connection: an existing R2 deployment keeps R2; otherwise the server's own disk, so a
+  // self-hosted install stores media with no setup.
+  if (legacyR2Configured()) return legacyR2Provider();
+  return serverLocalDiskProvider(workspaceId, environment?.id ?? null);
 }

@@ -3,6 +3,13 @@
 Media (images, video, PDFs) is stored through a **storage connection** on the workspace environment
 (Admin > Connections). Each connection type is an adapter behind `lib/media/storageProvider.ts`.
 
+**With no storage connection** media still works: it goes to the server's own disk
+(`POLYNOVEA_STORAGE_DIR`, same rules as `storage.local` below), recorded with provider key `local`. An
+existing deployment that sets all of `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_ACCOUNT_ID` (or
+`R2_S3_ENDPOINT`) keeps using R2 instead. Assets always read from where they were written: `r2` from R2,
+`local` from the server disk, `connection:<id>` from that connection, even after a connection is added.
+If the directory is not writable, uploads fail with a message naming `POLYNOVEA_STORAGE_DIR`.
+
 | Connection type | Where files live | Authentication | Browser uploads | Read links |
 | --- | --- | --- | --- | --- |
 | `storage.local` | This server's data disk (`POLYNOVEA_STORAGE_DIR`) | none (same machine) | CMS signed upload link | CMS signed link, 1 hour |
