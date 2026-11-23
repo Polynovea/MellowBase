@@ -1,4 +1,4 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as discoveryData from "@/lib/intelligence/discoveryData";
 import { listOperationalPlans, getAutonomyPolicy } from "@/lib/intelligence/planningService";
 import { listDesiredStateRevisions, listOperationalDrift } from "@/lib/intelligence/reconciliationService";
 import { getOperationalWorldModel } from "@/lib/intelligence/worldModelService";
@@ -10,7 +10,6 @@ import { listOperationalMlFeedback } from "@/lib/intelligence/operationalMlGover
 import { listOperationalMlOverview } from "@/lib/intelligence/operationalMlService";
 
 export async function getOperationalIntelligenceOverview(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
   const mlPromise = listOperationalMlOverview(workspaceId, environmentId).catch((error) => ({
     available: false,
     status: "unavailable",
@@ -23,18 +22,15 @@ export async function getOperationalIntelligenceOverview(workspaceId: string, en
     evaluations: [],
   }));
 
-  const [world, desiredStates, drift, planning, policy, reconciliation, discovery, assessments, remediationRuns, remediationRegistry, events, migrationRuns, planComparisons, mlFeedback, ml] = await Promise.all([
+  const [world, desiredStates, drift, planning, policy, runs, assessments, remediationRegistry, migrationRuns, planComparisons, mlFeedback, ml] = await Promise.all([
     getOperationalWorldModel(workspaceId, environmentId),
     listDesiredStateRevisions(workspaceId, environmentId),
     listOperationalDrift(workspaceId, environmentId),
     listOperationalPlans(workspaceId, environmentId),
     getAutonomyPolicy(workspaceId, environmentId),
-    db.from("operational_reconciliation_runs").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("started_at", { ascending: false }).limit(30),
-    db.from("operational_discovery_runs").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("started_at", { ascending: false }).limit(30),
+    discoveryData.overviewRuns(workspaceId, environmentId),
     listDataAwareChangeAssessments(workspaceId, environmentId),
-    db.from("operational_remediation_runs").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("started_at", { ascending: false }).limit(50),
     listRemediationRegistry(),
-    db.from("operational_events").select("id,event_type,source_type,source_id,occurred_at,features_json,outcome_json,privacy_class,eligible_for_local_learning,eligible_for_cross_install_learning").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("occurred_at", { ascending: false }).limit(100),
     listMigrationRuns(workspaceId, environmentId),
     listOperationalPlanComparisons(workspaceId, environmentId),
     listOperationalMlFeedback(workspaceId, environmentId).catch(() => []),
@@ -47,12 +43,12 @@ export async function getOperationalIntelligenceOverview(workspaceId: string, en
     activeDesiredState: desiredStates.find((item: any) => item.status === "active") ?? null,
     drift,
     policy,
-    reconciliationRuns: reconciliation.data ?? [],
-    discoveryRuns: discovery.data ?? [],
+    reconciliationRuns: runs.reconciliationRuns,
+    discoveryRuns: runs.discoveryRuns,
     changeAssessments: assessments,
-    remediationRuns: remediationRuns.data ?? [],
+    remediationRuns: runs.remediationRuns,
     remediationRegistry,
-    operationalEvents: events.data ?? [],
+    operationalEvents: runs.operationalEvents,
     migrationRuns,
     planComparisons,
     mlFeedback,
