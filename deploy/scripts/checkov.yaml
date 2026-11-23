@@ -1,0 +1,8 @@
+# Checkov settings for bash deploy/scripts/validate.sh. Each skipped check has its reason.
+framework:
+  - cloudformation
+  - arm
+  - terraform
+compact: true
+quiet: true
+skip-check: []
