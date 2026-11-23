@@ -3,7 +3,7 @@ import pg from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { poolConfigFromEnv } from "@/lib/db/pool";
-import { adminBackend, postgresAdminStore } from "../../scripts/lib/bootstrapAdminStore.mjs";
+import { postgresAdminStore } from "../../scripts/lib/bootstrapAdminStore.mjs";
 const clients: pg.Client[] = [];
 afterAll(async () => { await Promise.all(clients.map((client) => client.end())); });
 
@@ -22,16 +22,6 @@ async function workspaceWithRoles(backend: BackendFixtures) {
   const [editor] = await backend.query<{ id: string }>("insert into roles (workspace_id, key, name, is_system) values ($1, 'editor', 'Editor', true) returning id", [workspaceId]);
   return { workspaceId, slug: workspace.slug, ownerRoleId: owner.id, editorRoleId: editor.id };
 }
-
-describe("bootstrap admin backend choice", () => {
-  it("reads the admin area of POLYNOVEA_DATA_BACKEND", () => {
-    expect(adminBackend(undefined)).toBe("supabase");
-    expect(adminBackend("postgres")).toBe("postgres");
-    expect(adminBackend("postgres,admin=supabase")).toBe("supabase");
-    expect(adminBackend("supabase, admin=postgres")).toBe("postgres");
-    expect(() => adminBackend("admin=mysql")).toThrow("unknown backend");
-  });
-});
 
 describeWithDatabase("bootstrap admin writes", (backend) => {
   it("makes an identity the master admin and the only-system-role owner, idempotently", async () => {

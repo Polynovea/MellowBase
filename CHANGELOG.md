@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 clean-up: the POLYNOVEA_DATA_BACKEND switch is removed and every area runs only on the direct PostgreSQL path. The per-area dispatchers and the 48 Supabase data implementations are deleted, the dual-backend tests run as plain-PostgreSQL integration tests, and the test stack runs on PostgreSQL 15, 16 or 17 (node scripts/dev-db/setup.mjs --pg=15|16|17) with the Supabase compatibility services opt-in (--with-supabase). bootstrap:admin always writes the admin rows to PostgreSQL.
 Phase 1 roles and functions sign-off: all 58 SECURITY DEFINER functions pin their search_path (checked on plain PostgreSQL and Supabase, now including the polynovea_auth schema), none names a schema polynovea_app can write, and the no-DDL test for polynovea_app now also covers replacing or altering functions, triggers, sequences, comments, schema ownership, the auth tables, database CREATE (trusted extensions) and SET ROLE to the owner.
 Phase 1 wave 5: bootstrap:admin writes the master admin, workspace membership and owner role directly to PostgreSQL when the admin area is on the direct path, in one transaction. Creating the auth identity still uses Supabase Auth until the built-in auth workstream.
 Phase 1 wave 5: the legacy marketing tables adapter (blog posts, live metrics, social posts, ad campaigns) on the direct path. Saving live metrics replaces them in one transaction (a failed insert used to lose every metric), and writes take only each table's editable columns.
