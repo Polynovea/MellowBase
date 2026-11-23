@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 4: ML governance (retention, prediction feedback, online evaluation) and predictive plan comparison on the direct path. Retention deletes the four kinds of expired learning data in one transaction, and feedback, comparisons and scenario selection commit with their audit events.
 Phase 1 wave 4: operational ML (learning policy, model registry, feature snapshots, training, predictions and outcomes) on the direct path. A model version takes its number under a lock, and the new version, the previous version's retirement, deployment and evaluations commit together.
 Phase 1 wave 4: desired state and reconciliation on the direct path. A new desired-state revision takes its number under a lock, and a reconciliation's drift, resolutions, completion and audit event commit together.
 Phase 1 wave 4: migration strategy runs and batches on the direct path. Run and batch updates are scoped to the workspace, a completed run commits with its audit event, and entry versions are read through the entry's workspace.
