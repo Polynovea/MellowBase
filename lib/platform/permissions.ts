@@ -1,4 +1,5 @@
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
+import { needsStepUp, securityResponse } from "@/lib/auth/requestSecurity";
 import type { AdminUser } from "@/lib/admin/types";
 import { getDefaultWorkspace, getWorkspaceById, resolveActor } from "@/lib/platform/actor";
 import type { CmsActor, Workspace } from "@/lib/platform/types";
@@ -29,7 +30,7 @@ export interface PlatformRequestContext {
  */
 export async function requirePlatformAccess(
   req: Request,
-  options: { permission: PermissionKey | PermissionKey[] },
+  options: { permission: PermissionKey | PermissionKey[]; stepUp?: boolean },
 ): Promise<{ data?: PlatformRequestContext; error?: Response }> {
   const auth = await requireAdminRequest(req);
   if (auth.error) return { error: auth.error };
@@ -55,6 +56,9 @@ export async function requirePlatformAccess(
   if (!required.some((permission) => hasPermission(actor, permission))) {
     return { error: deniedResponse("Missing required permission", 403) };
   }
+
+  // After the permission check, so someone who may not do this is never asked to re-authenticate.
+  if (options.stepUp && needsStepUp(auth.data!.identity)) return { error: securityResponse("STEP_UP_REQUIRED") };
 
   return { data: { actor, adminUser: auth.data!.profile } };
 }

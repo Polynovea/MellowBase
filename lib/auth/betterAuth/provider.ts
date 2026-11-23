@@ -47,12 +47,14 @@ async function passwordProblem(input: { password: string; hasMfa: boolean; email
 }
 
 export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth, options: { pwnedLookup?: PwnedRangeFetch } = {}): ServerIdentityProvider {
-  const hasMfa = async (userId: string): Promise<boolean> => {
+  const authenticatorCount = async (userId: string, twoFactorEnabled?: boolean | null): Promise<number> => {
     const ctx = await auth.$context;
-    const user = (await ctx.internalAdapter.findUserById(userId)) as { twoFactorEnabled?: boolean | null } | null;
-    if (user?.twoFactorEnabled) return true;
-    return (await ctx.adapter.count({ model: "passkey", where: [{ field: "userId", value: userId }] })) > 0;
+    let totp = twoFactorEnabled;
+    if (totp === undefined) totp = ((await ctx.internalAdapter.findUserById(userId)) as { twoFactorEnabled?: boolean | null } | null)?.twoFactorEnabled;
+    const passkeys = await ctx.adapter.count({ model: "passkey", where: [{ field: "userId", value: userId }] });
+    return (totp ? 1 : 0) + passkeys;
   };
+  const hasMfa = async (userId: string): Promise<boolean> => (await authenticatorCount(userId)) > 0;
 
   return {
     async verifyRequest(request) {
@@ -75,6 +77,7 @@ export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth, options
           // creation time is when the user last proved who they are.
           authenticatedAt: new Date(session.createdAt),
           transport: "cookie",
+          authenticators: await authenticatorCount(result.user.id, (result.user as { twoFactorEnabled?: boolean | null }).twoFactorEnabled ?? null),
         };
         return { identity, error: null };
       } catch {

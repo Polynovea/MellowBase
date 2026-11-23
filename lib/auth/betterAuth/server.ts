@@ -185,6 +185,21 @@ export function createPolynoveaAuth(settings: PolynoveaAuthSettings) {
           }
         }
 
+        // With a passkey registered and no authenticator app, the password alone is not a second
+        // factor: such users sign in with the passkey. Checked only once the password is proven, so
+        // the answer reveals nothing to someone without it.
+        if (ctx.path === "/sign-in/email" && typeof ctx.body?.email === "string" && typeof ctx.body?.password === "string") {
+          const found = await ctx.context.internalAdapter.findUserByEmail(ctx.body.email.trim().toLowerCase(), { includeAccounts: true });
+          const user = found?.user as HookUser | undefined;
+          const credential = found?.accounts.find((account) => account.providerId === "credential");
+          if (user && !user.twoFactorEnabled && credential?.password) {
+            const passkeys = await ctx.context.adapter.count({ model: "passkey", where: [{ field: "userId", value: user.id }] });
+            if (passkeys > 0 && (await verifyPassword({ hash: credential.password, password: ctx.body.password }))) {
+              throw new APIError("FORBIDDEN", { message: "Sign in with your passkey", code: "PASSKEY_REQUIRED" });
+            }
+          }
+        }
+
         if ((ctx.path === "/change-password" || ctx.path === "/set-password") && typeof ctx.body?.newPassword === "string") {
           const session = ctx.context.session ?? null;
           const user = session?.user as HookUser | undefined;

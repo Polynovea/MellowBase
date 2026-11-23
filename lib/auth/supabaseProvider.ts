@@ -101,6 +101,7 @@ export function getSupabaseServerIdentityProvider(): ServerIdentityProvider {
         sessionId: typeof sessionId === "string" ? sessionId : null,
         authenticatedAt: authenticatedAtFromAccessToken(token),
         transport: "bearer",
+        authenticators: null,
       };
       return { identity, error: null };
     },

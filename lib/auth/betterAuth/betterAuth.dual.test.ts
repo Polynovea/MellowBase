@@ -371,6 +371,33 @@ describe("built-in auth: passkeys [postgres]", () => {
     expect((await identity.verifyRequest(browser.request())).identity?.user.id).toBe(user.id);
   });
 
+  it("with a passkey and no authenticator app, the password alone gives no session (and the wrong password learns nothing)", async () => {
+    const auth = makeAuth();
+    const { email } = await newUser(auth);
+    await registerPasskey(auth, email);
+    const wrong = await signIn(auth, email, "the wrong password entirely");
+    expect(wrong.response.status).toBe(401);
+    const right = await signIn(auth, email);
+    expect(right.response.status).toBe(403);
+    expect((await right.response.json()).code).toBe("PASSKEY_REQUIRED");
+    expect(right.browser.cookies.has(`${COOKIE_PREFIX}.session_token`)).toBe(false);
+  });
+
+  it("counts an authenticator app and each passkey towards the owner's two authenticators", async () => {
+    const auth = makeAuth();
+    const { identity, email, user } = await newUser(auth);
+    const { code } = await enrolTotp(auth, email);
+    const first = await signIn(auth, email);
+    await first.browser.call("POST", "/two-factor/verify-totp", { code: await code() });
+    expect((await identity.verifyRequest(first.browser.request())).identity?.authenticators).toBe(1);
+    const options = await (await first.browser.call("GET", "/passkey/generate-register-options")).json();
+    const key = new SoftAuthenticator("cms.example.test");
+    expect((await first.browser.call("POST", "/passkey/verify-registration", { response: key.register(options, BASE_URL) })).status).toBe(200);
+    const verified = await identity.verifyRequest(first.browser.request());
+    expect(verified.identity?.authenticators).toBe(2);
+    expect(verified.identity?.user.id).toBe(user.id);
+  });
+
   it("regression: a passkey from the wrong origin is refused, at registration and at sign-in", async () => {
     const auth = makeAuth();
     const { email } = await newUser(auth);

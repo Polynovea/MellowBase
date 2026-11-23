@@ -37,6 +37,11 @@ export interface RequestIdentity {
    */
   authenticatedAt: Date | null;
   transport: CredentialTransport;
+  /**
+   * Second factors the user has registered (an authenticator app and each passkey count one), or
+   * null when the provider does not report it (Supabase: GoTrue keeps its own MFA rules).
+   */
+  authenticators: number | null;
 }
 
 /**

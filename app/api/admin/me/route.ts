@@ -4,6 +4,7 @@ import { z } from "zod";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { normalizeAdminUser } from "@/lib/admin/access";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
+import { needsStepUp, securityResponse } from "@/lib/auth/requestSecurity";
 import { updateOwnDisplayName } from "@/lib/admin/adminUserService";
 import { getServerIdentityProvider } from "@/lib/auth/server";
 
@@ -17,7 +18,8 @@ const updateProfileSchema = z.object({
 });
 
 export async function GET(req: Request) {
-  const auth = await requireAdminRequest(req);
+  // The admin UI reads the profile to send an owner or admin without MFA to set it up.
+  const auth = await requireAdminRequest(req, { allowWithoutMfa: true });
   if (auth.error) return auth.error;
   return NextResponse.json({ success: true, data: auth.data!.profile, error: null, timestamp: ts() });
 }
@@ -28,6 +30,8 @@ export async function PATCH(req: Request) {
 
   try {
     const parsed = updateProfileSchema.parse(await req.json());
+    // Changing the password is a sign-in setting: it needs a recent sign-in.
+    if (parsed.password !== undefined && needsStepUp(auth.data!.identity)) return securityResponse("STEP_UP_REQUIRED");
     const identity = getServerIdentityProvider();
     const profile = auth.data!.profile;
     const authUser = auth.data!.user;
