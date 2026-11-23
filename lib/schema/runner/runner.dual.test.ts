@@ -266,7 +266,10 @@ describe("security review: what a stolen app login can no longer do", () => {
       await h.app.query("set local role polynovea_app");
       await h.app.query("set local search_path = public, pg_catalog");
       await h.app.query("set local polynovea.is_owner = 'true'");
-      await h.app.query("set local session_replication_role = 'replica'").catch(() => undefined);
+      // Turning triggers off needs superuser: refused (the savepoint keeps the transaction usable).
+      await h.app.query("savepoint try_replica");
+      await expect(h.app.query("set local session_replication_role = 'replica'")).rejects.toMatchObject({ code: "42501" });
+      await h.app.query("rollback to savepoint try_replica");
       const { rows: [row] } = await h.app.query(
         `insert into schema_migration_ledger (workspace_id, content_model_id, model_api_key, table_name, stage, plan_hash, plan_json)
          values ($1, $2, $3, $4, 'destructive', $5, '{}'::jsonb) returning status, attempts`,
