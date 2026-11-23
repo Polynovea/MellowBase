@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,6 +37,17 @@ describe("the shipped RDS bundle", () => {
     expect(bundleSha256(crlf)).toBe(RDS_BUNDLE_SHA256);
     const { dir } = bundleDir(crlf);
     expect(rdsRoots({ root: dir }).length).toBeGreaterThan(100);
+  });
+
+  it("keeps RDS_BUNDLE_SHA256 in the one-line form scripts/refresh-rds-ca.mjs rewrites", () => {
+    const code = readFileSync(path.join(process.cwd(), "lib", "setup", "database", "caBundles.mjs"), "utf8");
+    expect(code).toMatch(new RegExp(`^export const RDS_BUNDLE_SHA256 = ${RDS_BUNDLE_SHA256 === null ? "null" : `"${RDS_BUNDLE_SHA256}"`};$`, "m"));
+  });
+
+  it("loads in plain Node, without the app's path aliases (for scripts)", () => {
+    const script = "import('./lib/setup/database/caBundles.mjs').then((m) => console.log(m.certificateAuthoritiesFor(m.RDS_CA_BUNDLE_ID).length, m.certificateAuthoritiesFor(m.PUBLIC_CA_BUNDLE_ID).length))";
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    expect(output).toMatch(/^\d+ 2$/);
   });
 
   it("is recorded with the same hash in ca/README.md", () => {

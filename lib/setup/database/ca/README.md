@@ -8,7 +8,7 @@ pinned below the roots, because AWS rotates intermediate certificates without no
 - Downloaded: 2026-11-23
 - SHA-256: 90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b
 
-The same SHA-256 is recorded as `RDS_BUNDLE_SHA256` in `../caBundles.ts`. The CMS refuses a file that
+The same SHA-256 is recorded as `RDS_BUNDLE_SHA256` in `../caBundles.mjs`. The CMS refuses a file that
 does not match it, and `caBundles.test.ts` fails, so any change to the bundle is deliberate and reviewed.
 
 ## Refreshing the bundle
@@ -24,4 +24,4 @@ bundle expires (the refresh script prints every expiry date).
 
 Azure Database for PostgreSQL is verified with DigiCert Global Root G2 and Microsoft RSA Root
 Certificate Authority 2017 instead. Those come from Node.js's built-in root store, pinned by
-fingerprint in `../caBundles.ts`, so no file is shipped for them.
+fingerprint in `../caBundles.mjs`, so no file is shipped for them.

@@ -6,7 +6,7 @@
 // SHA-256 and each certificate's subject and expiry, then (unless --dry-run) writes:
 //   lib/setup/database/ca/rds-global-bundle.pem
 //   lib/setup/database/ca/README.md        (download date and SHA-256)
-//   lib/setup/database/caBundles.ts         (RDS_BUNDLE_SHA256)
+//   lib/setup/database/caBundles.mjs        (RDS_BUNDLE_SHA256)
 // Commit all three together. caBundles.test.ts fails if they disagree.
 
 import { createHash, X509Certificate } from "node:crypto";
@@ -17,10 +17,10 @@ const SOURCE = "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pe
 const root = process.cwd();
 const bundleFile = path.join(root, "lib", "setup", "database", "ca", "rds-global-bundle.pem");
 const readmeFile = path.join(root, "lib", "setup", "database", "ca", "README.md");
-const codeFile = path.join(root, "lib", "setup", "database", "caBundles.ts");
+const codeFile = path.join(root, "lib", "setup", "database", "caBundles.mjs");
 const dryRun = process.argv.includes("--dry-run");
 
-// Must match bundleSha256 in caBundles.ts: line endings normalised to LF before hashing.
+// Must match bundleSha256 in caBundles.mjs: line endings normalised to LF before hashing.
 const sha256 = (text) => createHash("sha256").update(String(text).replace(/\r\n/g, "\n"), "utf8").digest("hex");
 
 const response = await fetch(SOURCE, { redirect: "error" });
@@ -57,7 +57,7 @@ const readme = readFileSync(readmeFile, "utf8")
   .replace(/^- SHA-256: .*$/m, `- SHA-256: ${newHash}`);
 writeFileSync(readmeFile, readme);
 const code = readFileSync(codeFile, "utf8");
-const updated = code.replace(/export const RDS_BUNDLE_SHA256: string \| null = (?:null|"[0-9a-f]{64}");/, `export const RDS_BUNDLE_SHA256: string | null = "${newHash}";`);
-if (updated === code) throw new Error("Could not find RDS_BUNDLE_SHA256 in caBundles.ts");
+const updated = code.replace(/^export const RDS_BUNDLE_SHA256 = (?:null|"[0-9a-f]{64}");$/m, `export const RDS_BUNDLE_SHA256 = "${newHash}";`);
+if (updated === code) throw new Error("Could not find RDS_BUNDLE_SHA256 in caBundles.mjs");
 writeFileSync(codeFile, updated);
 console.log("\nUpdated the bundle, ca/README.md and RDS_BUNDLE_SHA256. Run the unit tests, then commit all three.");
