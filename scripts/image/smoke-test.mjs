@@ -9,7 +9,7 @@
  *   SETUP_CODE   the one-time code from the container's log (required for any step after "health")
  *   BASE_URL     where to reach the CMS (default http://localhost:3000: the SSH-tunnel route)
  *   EXPECT_RELEASE  the release ID /api/health must report (optional)
- *   STEPS        comma list of: health, code, local, owner-step, refused (default health,code,local,owner-step)
+ *   STEPS        comma list of: health, forged, code, local, owner-step, refused (default health,code,local,owner-step)
  *   INSECURE_TLS=1  accept Caddy's internal certificate (proxy-profile test only)
  *
  * Prints one line per check and exits non-zero on the first failure. Never prints the setup code.
@@ -53,6 +53,24 @@ if (STEPS.has("refused")) {
   const response = await post("/api/setup/code", { code: "not-the-code" });
   if (response.status !== 403) fail(`setup over this route should be refused with 403, got ${response.status}`);
   ok("setup refused on this route (403), as designed");
+}
+
+if (STEPS.has("forged")) {
+  // Tunnel mode trusts no proxy: forwarding headers from 127.0.0.1 must not make a request look like
+  // HTTPS or like another address, and their mere presence disqualifies the SSH-tunnel route.
+  const response = await fetch(`${BASE}/api/setup/code`, {
+    method: "POST",
+    headers: {
+      origin: "https://cms.example.com",
+      "content-type": "application/json",
+      "x-forwarded-for": "203.0.113.7",
+      "x-forwarded-proto": "https",
+      "x-forwarded-host": "cms.example.com",
+    },
+    body: JSON.stringify({ code: process.env.SETUP_CODE || "not-the-code" }),
+  });
+  if (response.status !== 403) fail(`forged forwarding headers from 127.0.0.1 should be refused with 403, got ${response.status}`);
+  ok("forged X-Forwarded-For/Proto/Host from 127.0.0.1 not trusted in tunnel mode (403; the code was not spent)");
 }
 
 if (STEPS.has("code")) {

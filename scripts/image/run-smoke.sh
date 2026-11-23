@@ -84,7 +84,7 @@ docker run -d --name "$PREFIX-tunnel" -v "$PREFIX-data:/var/lib/polynovea" "$IMA
 wait_healthy "$PREFIX-tunnel"
 docker logs "$PREFIX-tunnel" 2>&1 | grep -q "peer\|Setup code" || true
 CODE="$(setup_code "$PREFIX-tunnel")"
-smoke "$PREFIX-tunnel" -e SETUP_CODE="$CODE" -e EXPECT_RELEASE="$RELEASE_ID"
+smoke "$PREFIX-tunnel" -e SETUP_CODE="$CODE" -e EXPECT_RELEASE="$RELEASE_ID" -e STEPS=health,forged,code,local,owner-step
 
 step "Bundled database: 127.0.0.1 and socket only, no password sign-in, no remote roles"
 docker exec "$PREFIX-tunnel" sh -ec '
