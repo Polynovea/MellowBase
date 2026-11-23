@@ -167,3 +167,50 @@ describe("type change by expand and contract", () => {
     expect((await h.columns(model)).amount).toBe("numeric");
   });
 });
+
+describe("later steps on the renamed or retyped column", () => {
+  async function appliedHash(model: Model): Promise<string> {
+    const { rows: [row] } = await h.owner.query("select applied_shape_hash from content_model_tables where content_model_id = $1", [model.modelId]);
+    return row.applied_shape_hash;
+  }
+
+  it("a rename followed by making the new name required: runs once, ends at the plan's expanded shape", async () => {
+    const model = await h.newModel();
+    await h.createTable(model, [column("title", "text", { indexed: true })]);
+    const ids = await h.entries(model, 3);
+    await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'published', 'a'), ($2, '', 'draft', null)`, [ids[0], ids[1]]);
+    const expanded = shape(model.table, [column("headline", "text", { indexed: true, requiredWhenPublished: true })]);
+    const plan = h.plan(model, expanded, [
+      { kind: "rename_column", stage: "expand", from: "title", to: "headline", column: model.shape!.columns.title },
+      { kind: "set_required", stage: "expand", column: "headline" },
+    ]);
+    const ledgerId = await h.request(model, plan);
+    expect(await h.run(model)).toEqual({ ledgerId, outcome: "succeeded" });
+    expect(await appliedHash(model)).toBe(plan.expandedShapeHash);
+    expect((await h.runRow(ledgerId)).step_log.map((entry: { kind: string }) => entry.kind)).toEqual(["rename_column", "set_required"]);
+    const { rows: [check] } = await h.owner.query("select convalidated from pg_constraint where conname = $1", [derivedName("ck", model.table, "headline")]);
+    expect(check).toEqual({ convalidated: true });
+    expect(await h.indexes(model)).toContainEqual({ name: derivedName("ix", model.table, "headline"), valid: true });
+    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, headline) values ($1, '', 'published', null)`, [ids[2]])).rejects.toMatchObject({ code: "23514" });
+    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, headline) values ($1, '', 'draft', null)`, [ids[2]])).resolves.toBeTruthy();
+  });
+
+  it("a type change followed by a unique index on the column: runs once, ends at the plan's expanded shape", async () => {
+    const model = await h.newModel();
+    await h.createTable(model, [column("amount", "bigint")]);
+    const ids = await h.entries(model, 4);
+    for (const [i, id] of ids.entries()) await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, amount) values ($1, '', 'draft', $2)`, [id, i]);
+    const expanded = shape(model.table, [column("amount", "numeric", { unique: true })]);
+    const plan = h.plan(model, expanded, [
+      { kind: "change_type", stage: "expand", column: "amount", from: "bigint", to: "numeric", fromField: "integer", toField: "number" },
+      { kind: "add_index", stage: "expand", column: "amount", unique: true },
+    ]);
+    const ledgerId = await h.request(model, plan);
+    expect(await h.run(model)).toEqual({ ledgerId, outcome: "succeeded" });
+    expect(await appliedHash(model)).toBe(plan.expandedShapeHash);
+    expect((await h.columns(model)).amount).toBe("numeric");
+    expect(await h.indexes(model)).toContainEqual({ name: derivedName("uq", model.table, "amount"), valid: true });
+    const { rows } = await h.owner.query(`select amount from content.${model.table} order by amount`);
+    expect(rows.map((row) => Number(row.amount))).toEqual([0, 1, 2, 3]);
+  });
+});
