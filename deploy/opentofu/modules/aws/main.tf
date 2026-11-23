@@ -201,7 +201,7 @@ resource "aws_db_instance" "database" {
   count                      = local.managed ? 1 : 0
   identifier                 = "${var.name}-database"
   engine                     = "postgres"
-  engine_version             = "16.15" # a current 16.x minor; minor upgrades then install automatically
+  engine_version             = var.postgres_version
   auto_minor_version_upgrade = true
   instance_class             = var.database_instance_class
   db_name                    = "polynovea"
@@ -223,7 +223,7 @@ resource "aws_db_instance" "database" {
   copy_tags_to_snapshot      = true
   tags                       = merge(local.tags, { Name = "${var.name}-database" })
 
-  # Automatic minor upgrades move the instance past 16.15; don't try to "downgrade" it back.
+  # Automatic minor upgrades move the instance past postgres_version; don't "downgrade" it back.
   lifecycle {
     prevent_destroy = true
     ignore_changes  = [engine_version]

@@ -52,6 +52,21 @@ First boot **fails closed**. Images are pulled only by digest (`name@sha256:...`
 
 Plain Ubuntu plus a pinned container image is the default, because it works from a one-click link in every region. AMIs are per region and Azure images per subscription, so a Polynovea server image needs publishing (copied AMIs, or an Azure community gallery) before a link can use it. `CustomImageId` / `customImageId` takes one when it exists.
 
+## Paid hardening upgrades
+
+The templates are built for one small server at the lowest sensible cost, with security that costs nothing extra on by default: metadata tokens required, a private database, encryption at rest everywhere, deletion protection, and a server identity that can read one secret and use one bucket. Larger or regulated sites can add these paid upgrades. None is switched on by default, and each one raises the monthly bill:
+
+| Upgrade | What it adds | Roughly, per month |
+| --- | --- | --- |
+| Customer-managed encryption keys (AWS KMS, Azure Key Vault keys) | You control and can revoke the keys for the database, disks, bucket and secret | about US$1 per key, plus requests |
+| Multi-AZ database (AWS) / zone-redundant high availability (Azure) | A standby database in a second zone that takes over automatically | roughly doubles the database cost |
+| Geo-redundant backups (Azure) / cross-region bucket replication (AWS) | Backups survive the loss of a whole region | extra storage and transfer |
+| Private endpoints for Key Vault and storage (Azure) | Traffic to them never uses a public address | about US$7 each |
+| VPC flow logs, database query and audit logs, bucket access logs | A record of network and data access for investigations | log storage, priced per GB |
+| Enhanced and detailed monitoring | Per-minute server and database metrics | a few US$ |
+
+`deploy/scripts/checkov.yaml` lists each policy check these would satisfy, labelled "paid extra", next to the ones skipped "by design".
+
 ## Validating the templates (no cloud account)
 
 ```bash
