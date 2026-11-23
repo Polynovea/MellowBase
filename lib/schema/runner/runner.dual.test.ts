@@ -285,10 +285,6 @@ describe("security review: what a stolen app login can no longer do", () => {
     const model = await h.newModel();
     const other = await h.newModel();
     await h.createTable(model, [column("title", "text"), column("body", "text")]);
-    // Confirming an expand stage (not destructive): not found.
-    const expandId = await h.request(model, h.plan(model, shape(model.table, [column("title", "text"), column("body", "text"), column("x", "text")]),
-      [{ kind: "add_column", stage: "expand", column: column("x", "text") }]));
-    await expect(h.confirm(expandId, model.adminId, model.apiKey)).rejects.toMatchObject({ code: "P0002" });
     // Wrong key, including another model's key: mismatch, nothing recorded.
     const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body", field: "body" }], shape(model.table, [column("title", "text")]));
     const destructiveId = await h.request(model, plan, "destructive");
@@ -308,6 +304,11 @@ describe("security review: what a stolen app login can no longer do", () => {
     // An unknown ledger id: not found. Retrying a row that did not fail (pending, succeeded): refused.
     await expect(h.confirm("00000000-0000-4000-8000-000000000000", model.adminId, model.apiKey)).rejects.toMatchObject({ code: "P0002" });
     await expect(h.retry(destructiveId)).rejects.toMatchObject({ code: "55000" });
+    // Confirming an expand stage (not destructive): not found. (Its request supersedes the destructive one.)
+    const expandId = await h.request(model, h.plan(model, shape(model.table, [column("title", "text"), column("body", "text"), column("x", "text")]),
+      [{ kind: "add_column", stage: "expand", column: column("x", "text") }]));
+    await expect(h.confirm(expandId, model.adminId, model.apiKey)).rejects.toMatchObject({ code: "P0002" });
+    expect((await h.ledger(destructiveId)).status).toBe("superseded");
     expect(await h.run(model)).toEqual({ ledgerId: expandId, outcome: "succeeded" });
     await expect(h.retry(expandId)).rejects.toMatchObject({ code: "55000" });
     expect((await h.ledger(expandId)).status).toBe("succeeded");
