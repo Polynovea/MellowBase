@@ -10,7 +10,7 @@ import { uniqueKey } from "@/lib/schema/engine/testing";
 import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
 import { kyselyOn } from "@/lib/schema/runner/engine";
 import { productionEngine } from "@/lib/schema/runner/engineAdapter";
-import { confirmPlanStage, requestPlanStage } from "@/lib/schema/runner/request";
+import { confirmPlanStage, requestPlanStage, requestSchemaChange } from "@/lib/schema/runner/request";
 import { runNextStage } from "@/lib/schema/runner/runner";
 import { buildPlan, column, shape, TEST_LIMITS } from "@/lib/schema/runner/testing/plans";
 import { connect } from "@/lib/schema/runner/testing/dualFixtures";
@@ -35,12 +35,9 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
     if (!created.ok) throw new Error(created.error);
     return { workspaceId, adminUserId, apiKey, modelId: created.data.model.id, v1: created.data.version.id };
   }
-  /** What the request side does: plan from trusted state (read-only access is enough), then queue it. */
-  async function request(m: { modelId: string; adminUserId: string }, targetVersionId: string | null, stage: "expand" | "destructive", renames: Array<{ from: string; to: string }> = []) {
-    const plan = await buildPlanFromTrustedState(getDb(), { contentModelId: m.modelId, targetVersionId, renames, stage, limits: TEST_LIMITS });
-    const { ledgerId } = await requestPlanStage(kyselyOn(app), { plan, stage, requestedBy: m.adminUserId, targetVersionId, renames });
-    return { ledgerId, plan };
-  }
+  /** What the CMS does: plan the change from trusted state as the app role and queue its stages. */
+  const request = (m: { modelId: string; adminUserId: string }, targetVersionId: string | null, renames: Array<{ from: string; to: string }> = []) =>
+    requestSchemaChange(kyselyOn(app), { contentModelId: m.modelId, targetVersionId, renames, requestedBy: m.adminUserId, limits: TEST_LIMITS });
   const run = (modelId: string) => runNextStage(session, { engine, workerId: "trusted-test", releaseId: "test-release", limits: TEST_LIMITS, modelId });
   const columns = async (modelId: string) => {
     const [row] = await backend.query<{ table_name: string; fields: string[] }>(
@@ -52,8 +49,9 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
 
   it("an honest change runs through both stages: create, rename + add, then the confirmed deletion", async () => {
     const m = await model();
-    const first = await request(m, m.v1, "expand");
-    expect(await run(m.modelId)).toEqual({ ledgerId: first.ledgerId, outcome: "succeeded" });
+    const first = await request(m, m.v1);
+    expect(first.destructiveLedgerId).toBeNull();
+    expect(await run(m.modelId)).toEqual({ ledgerId: first.expandLedgerId, outcome: "succeeded" });
     expect((await columns(m.modelId))?.fields).toEqual(["secret", "title"]);
 
     const current = (await getModel(m.workspaceId, m.modelId))!;
@@ -62,21 +60,25 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
     const v2 = changed.data.version.id;
     const renames = [{ from: "title", to: "headline" }];
 
-    const second = await request(m, v2, "expand", renames);
+    // One request queues both stages; each row holds its own stage's hash, the renames only on expand.
+    const second = await request(m, v2, renames);
     expect(second.plan.steps.map((step) => step.kind)).toEqual(["rename_column", "add_column", "drop_column"]);
-    expect(await run(m.modelId)).toEqual({ ledgerId: second.ledgerId, outcome: "succeeded" });
+    const [destructiveRow] = await backend.query<{ status: string; renames: unknown }>("select status, renames from schema_migration_ledger where id = $1", [second.destructiveLedgerId]);
+    expect(destructiveRow).toEqual({ status: "awaiting_confirmation", renames: [] });
+    expect(await run(m.modelId)).toEqual({ ledgerId: second.expandLedgerId, outcome: "succeeded" });
 
-    const third = await request(m, v2, "destructive");
+    // The destructive stage is rebuilt from the table as it is now and still hashes as requested.
     expect(await run(m.modelId)).toBeNull();
-    await confirmPlanStage(kyselyOn(app), { ledgerId: third.ledgerId, confirmedBy: m.adminUserId, typedApiKey: m.apiKey });
-    expect(await run(m.modelId)).toEqual({ ledgerId: third.ledgerId, outcome: "succeeded" });
+    await confirmPlanStage(kyselyOn(app), { ledgerId: second.destructiveLedgerId!, confirmedBy: m.adminUserId, typedApiKey: m.apiKey });
+    expect(await run(m.modelId)).toEqual({ ledgerId: second.destructiveLedgerId, outcome: "succeeded" });
     expect((await columns(m.modelId))?.fields).toEqual(["body", "headline"]);
   });
 
   it("refuses a request whose hash is not the rebuilt plan's (stale_plan); nothing runs", async () => {
     const m = await model();
     const honest = await buildPlanFromTrustedState(getDb(), { contentModelId: m.modelId, targetVersionId: m.v1, stage: "expand", limits: TEST_LIMITS });
-    const forged: MigrationPlan = { ...honest, planHash: "f".repeat(64) };
+    // Any change to what the stage says changes its hash: the rebuilt stage no longer matches.
+    const forged: MigrationPlan = { ...honest, targetSchemaHash: "f".repeat(64) };
     const { ledgerId } = await requestPlanStage(kyselyOn(app), { plan: forged, stage: "expand", requestedBy: m.adminUserId, targetVersionId: m.v1 });
     expect(await run(m.modelId)).toEqual({ ledgerId, outcome: "refused", code: "stale_plan" });
     expect(await columns(m.modelId)).toBeNull();
@@ -84,8 +86,8 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
 
   it("(e) a correctly hashed drop_table the target version does not imply is refused; the table stays", async () => {
     const m = await model();
-    const first = await request(m, m.v1, "expand");
-    expect(await run(m.modelId)).toEqual({ ledgerId: first.ledgerId, outcome: "succeeded" });
+    const first = await request(m, m.v1);
+    expect(await run(m.modelId)).toEqual({ ledgerId: first.expandLedgerId, outcome: "succeeded" });
     const recorded = await columns(m.modelId);
     const tableShape = shape(recorded!.table_name, [column("title", "text"), column("secret", "text")]);
     const dropTable = buildPlan({

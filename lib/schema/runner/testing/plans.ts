@@ -1,6 +1,6 @@
 // TEST ONLY. Hand-built plans for the runner's tests, hashed and validated by the real schema engine
 // (phase 3 wave 1), and the engine itself as the runner's adapter. Never imported outside tests.
-import { computePlanHash, hashCanonical, hashShape } from "@/lib/schema/engine";
+import { computePlanHash, computeStageHash, hashCanonical, hashShape } from "@/lib/schema/engine";
 import type { ColumnShape, MigrationPlan, PlanStep, TableShape } from "@/lib/schema/engine/plan";
 import { sql } from "kysely";
 import type { SchemaEngine } from "@/lib/schema/runner/engine";
@@ -22,9 +22,12 @@ export const testEngine: SchemaEngine = {
   rebuildRequestedPlan: async (db, request) => {
     const { rows: [row] } = await sql<{ plan_json: MigrationPlan }>`
       select plan_json from public.schema_migration_ledger
-       where content_model_id = ${request.contentModelId} and plan_hash = ${request.requestedPlanHash} and stage = ${request.stage}
+       where content_model_id = ${request.content_model_id} and plan_hash = ${request.plan_hash} and stage = ${request.stage}
        order by created_at desc limit 1`.execute(db);
     if (!row) throw Object.assign(new Error("not found"), { name: "SchemaEngineError", code: "not_found" });
+    if (computeStageHash(row.plan_json, request.stage as "expand" | "destructive") !== request.plan_hash) {
+      throw Object.assign(new Error("stale"), { name: "SchemaEngineError", code: "stale_plan" });
+    }
     return row.plan_json;
   },
 };

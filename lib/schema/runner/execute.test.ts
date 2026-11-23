@@ -5,7 +5,7 @@ import { compile } from "@/lib/schema/runner/engine";
 import { groupStatements } from "@/lib/schema/runner/execute";
 import { renderStep } from "@/lib/schema/engine";
 
-const statement = (transactional: boolean, lockSensitive: boolean): RenderedStatement => ({ sql: sql`select 1`, transactional, lockSensitive });
+const statement = (transactional: boolean, lockSensitive: boolean, ownTransaction = false): RenderedStatement => ({ sql: sql`select 1`, transactional, lockSensitive, ownTransaction });
 
 describe("groupStatements", () => {
   it("never puts a NOT VALID constraint and its VALIDATE in one transaction", () => {
@@ -26,9 +26,22 @@ describe("groupStatements", () => {
     ]);
   });
 
-  it("keeps a table's create, grant, row-level security and policy in one transaction", () => {
+  it("keeps a table's create, grant, row-level security and policy together; its entry foreign key commits on its own", () => {
     const statements = renderStep({ kind: "create_table", stage: "expand", summary: "", table: "m_posts", columns: [] });
-    expect(groupStatements(statements)).toEqual([{ start: 0, end: 4, transactional: true }]);
+    const groups = groupStatements(statements);
+    expect(groups[0]).toEqual({ start: 0, end: 4, transactional: true });
+    // Every later statement (FK add NOT VALID, VALIDATE) is marked ownTransaction and stands alone.
+    for (const group of groups.slice(1)) expect(group.end - group.start).toBe(1);
+    expect(groups.at(-1)?.end).toBe(statements.length);
+  });
+
+  it("never groups a statement marked ownTransaction with its neighbours", () => {
+    const groups = groupStatements([statement(true, false), statement(true, false, true), statement(true, false), statement(true, false)]);
+    expect(groups).toEqual([
+      { start: 0, end: 1, transactional: true },
+      { start: 1, end: 2, transactional: true },
+      { start: 2, end: 4, transactional: true },
+    ]);
   });
 
   it("builds indexes CONCURRENTLY by default, alone and outside a transaction", () => {

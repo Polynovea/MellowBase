@@ -289,6 +289,7 @@ export async function runExpandStep(ctx: ExpandContext, stepIndex: number, planI
         sql: sql`create index concurrently if not exists ${sql.id(guard)} on ${tbl} (${ENTRY}) where ${unconverted(task, fromType)}`,
         transactional: false,
         lockSensitive: true,
+        ownTransaction: false,
       };
       lockRetries += (await executeStatements(ctx, [statement], 0, true, async () => setPhase(client, task.id, "backfill"), stepIndex)).lockRetries;
       task.phase = "backfill";

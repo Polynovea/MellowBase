@@ -11,19 +11,16 @@ import type { DbExecutor, DbTransaction } from "@/lib/db";
 import type { DB } from "@/lib/db/generated/database";
 import type { SchemaLimits } from "@/lib/schema/engine/limits";
 import type { MigrationPlan, PlanStage, PlanStep, RenderedStatement, SchemaHash } from "@/lib/schema/engine/plan";
-import type { FieldRename } from "@/lib/schema/engine/planner";
 
-/** What a ledger row asks for: the engine rebuilds the plan from this and trusted state (never from plan_json). */
-export interface RequestedPlan {
-  contentModelId: string;
-  /** The version to build toward; null deletes the model's table (the model must be archived). */
-  targetVersionId: string | null;
-  /** Field renames the request carries; the engine re-validates them. */
-  renames: FieldRename[];
-  stage: PlanStage;
-  /** The ledger row's plan_hash: the hash of that stage's own plan. */
-  requestedPlanHash: string;
-  limits?: SchemaLimits;
+/** The only ledger-row columns the engine reads to rebuild a plan (never its plan_json, table or api key). */
+export interface LedgerPlanRequest {
+  content_model_id: string | null;
+  target_version_id: string | null;
+  stage: string;
+  /** The stage hash the request stored (computeStageHash). */
+  plan_hash: string;
+  /** Requested renames (expand stage only). */
+  renames?: unknown;
 }
 
 export interface SchemaEngine {
@@ -33,7 +30,7 @@ export interface SchemaEngine {
    * (stale_plan, not_found, invalid_plan, stage_not_ready) unless it hashes as requested. The worker
    * runs only this plan; plan_json is never executed.
    */
-  rebuildRequestedPlan(db: DbExecutor, request: RequestedPlan): Promise<MigrationPlan>;
+  rebuildRequestedPlan(db: DbExecutor, request: LedgerPlanRequest, options?: { limits?: SchemaLimits }): Promise<MigrationPlan>;
   /** The SQL for one step, in order, each with how it must run. */
   renderStep(step: PlanStep): RenderedStatement[];
   /** The plan's identity hash, recomputed from its contents. */

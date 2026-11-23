@@ -30,7 +30,6 @@ import { hashShape } from "@/lib/schema/engine/hash";
 import { schemaLimitsFromEnv, type SchemaLimits } from "@/lib/schema/engine/limits";
 import { COLUMN_NAME_PATTERN, nameProblem, TABLE_NAME_PATTERN, tableNameCandidates } from "@/lib/schema/engine/names";
 import { PG_COLUMN_TYPES, type MigrationPlan, type PlanStage, type PlanStep, type TableShape } from "@/lib/schema/engine/plan";
-import type { FieldRename } from "@/lib/schema/engine/planner";
 import { RefusedError } from "@/lib/schema/runner/errors";
 import { kyselyOn, type SchemaEngine } from "@/lib/schema/runner/engine";
 
@@ -239,10 +238,10 @@ export function verifyRowAgainstPlan(
   } catch {
     throw new RefusedError("plan_malformed");
   }
-  // The row's plan_hash is the hash of exactly this stage's plan (the destructive stage is planned
-  // again from the table as it is after the expand stage, on both sides).
-  if (recomputed !== plan.planHash || row.plan_hash !== plan.planHash) throw new RefusedError("plan_hash_mismatch");
-  if (row.base_shape_hash !== stageBaseHash(plan, stage)) throw new RefusedError("ledger_base_hash_mismatch");
+  // The plan must be internally consistent. (That it is exactly the stage the row asked for, the row's
+  // plan_hash being computeStageHash of it, is the engine's rebuild's check; the row's other hashes
+  // are app-supplied and ignored.)
+  if (recomputed !== plan.planHash) throw new RefusedError("plan_hash_mismatch");
   // The row's model and workspace say which model the request is for; its table_name, model_api_key
   // and plan_json are never relied on (the trusted plan and content_model_tables decide the table).
   if (row.workspace_id !== plan.workspaceId || row.content_model_id !== plan.modelId) throw new RefusedError("plan_target_mismatch");
@@ -287,19 +286,19 @@ export async function verifyLedgerRow(
   engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan" | "rebuildRequestedPlan">,
   limits: SchemaLimits = schemaLimitsFromEnv(),
 ): Promise<VerifiedStage> {
-  // The plan to run comes from trusted state, never from plan_json, and must hash as requested.
+  // The plan to run comes from trusted state, never from plan_json, and must hash as requested: the
+  // engine reads only the row's model id, target version, stage, renames and stage hash.
   if (!row.content_model_id) throw new RefusedError("plan_target_mismatch");
   if (row.stage !== "expand" && row.stage !== "destructive") throw new RefusedError("ledger_stage_invalid");
   let trusted: MigrationPlan;
   try {
     trusted = await engine.rebuildRequestedPlan(kyselyOn(client), {
-      contentModelId: row.content_model_id,
-      targetVersionId: row.target_version_id,
-      renames: Array.isArray(row.renames) ? (row.renames as FieldRename[]) : [],
+      content_model_id: row.content_model_id,
+      target_version_id: row.target_version_id,
       stage: row.stage,
-      requestedPlanHash: row.plan_hash,
-      limits,
-    });
+      plan_hash: row.plan_hash,
+      renames: row.renames,
+    }, { limits });
   } catch (error) {
     const code = (error as { code?: unknown }).code;
     throw new RefusedError(typeof code === "string" && /^[a-z0-9_]{1,80}$/.test(code) ? code : "trusted_plan_unavailable");

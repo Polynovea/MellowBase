@@ -1,9 +1,10 @@
 // Runs one plan step's statements, as rendered by the engine, the way each must run.
 //
 // - Consecutive transactional statements with the same lockSensitive flag share one short
-//   transaction. A NOT VALID constraint (lock-sensitive, instant) and its VALIDATE (a long scan that
-//   lets reads and writes continue) therefore never share one: the brief exclusive lock is released
-//   before the scan starts.
+//   transaction, except a statement marked ownTransaction (a foreign key add, VALIDATE, a backfill),
+//   which always commits on its own. A NOT VALID constraint (lock-sensitive, instant) and its VALIDATE
+//   (a long scan that lets reads and writes continue) therefore never share one: the brief lock is
+//   released before the scan starts.
 // - Each transaction sets lock_timeout to 3 seconds and is retried with backoff after a lock conflict
 //   (lockRetry.ts); it is never held open across a sleep.
 // - The run's position (schema_migration_runs.next_statement) moves in the same transaction as the
@@ -119,6 +120,7 @@ export function groupStatements(statements: readonly RenderedStatement[]): State
     const previous = statements[index - 1];
     if (
       statement.transactional && last?.transactional && previous?.transactional
+      && !statement.ownTransaction && !previous.ownTransaction
       && previous.lockSensitive === statement.lockSensitive && last.end === index
     ) {
       last.end = index + 1;

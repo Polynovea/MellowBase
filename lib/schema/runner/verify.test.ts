@@ -49,7 +49,8 @@ describe("verifyRowAgainstPlan", () => {
     const p = plan();
     const tampered = { ...p, steps: [{ ...p.steps[0], column: column("views", "text") }] };
     expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: tampered }), engine))).toBe("plan_hash_mismatch");
-    expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_hash: "0".repeat(64) }), engine))).toBe("plan_hash_mismatch");
+    // The row's own plan_hash (a stage hash) is checked by the engine's rebuild, not here.
+    expect(verifyRowAgainstPlan(row(p, { plan_hash: "0".repeat(64) }), engine).plan.planHash).toBe(p.planHash);
   });
 
   it("(b) refuses any step aimed at a table other than the model's own content table", () => {
@@ -113,8 +114,8 @@ describe("verifyRowAgainstPlan", () => {
     expect(refusal(() => verifyRowAgainstPlan(row(plan()), engine, { maxModels: 200, maxFieldsPerModel: 1, maxIndexesPerModel: 50 }))).toBe("cap_fields_exceeded");
   });
 
-  it("refuses a row whose base hash is not the stage's starting hash", () => {
+  it("ignores the row's app-supplied base hash: the trusted plan decides where the stage starts", () => {
     const p = plan();
-    expect(refusal(() => verifyRowAgainstPlan(row(p, { base_shape_hash: hashShape(null) }), engine))).toBe("ledger_base_hash_mismatch");
+    expect(verifyRowAgainstPlan(row(p, { base_shape_hash: hashShape(null) }), engine).stage).toBe("expand");
   });
 });

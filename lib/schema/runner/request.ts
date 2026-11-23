@@ -4,7 +4,10 @@
 // (polynovea_owner, its own process and pool) rebuilds the plan from trusted state and applies it.
 import { sql } from "kysely";
 import type { DbExecutor } from "@/lib/db";
+import type { SchemaLimits } from "@/lib/schema/engine/limits";
 import type { MigrationPlan, PlanStage } from "@/lib/schema/engine/plan";
+import { computeStageHash } from "@/lib/schema/engine/planner";
+import { buildPlanFromTrustedState } from "@/lib/schema/engine/trusted";
 
 export interface PlanStageRequest {
   plan: MigrationPlan;
@@ -13,15 +16,35 @@ export interface PlanStageRequest {
   requestedBy: string | null;
   /** The content_model_versions row the change is for (the worker rebuilds the plan from it). */
   targetVersionId?: string | null;
-  /** Field renames the user asked for; a version cannot express them. */
+  /** Field renames the user asked for (a version cannot express them). Stored on the expand row only. */
   renames?: Array<{ from: string; to: string }>;
-  /** This stage's hash (the engine's computeStageHash); the plan's own hash until wave 1 provides it. */
-  stageHash?: string;
 }
 
 /**
- * Queues one stage of a plan. The expand stage is pending at once; a destructive stage waits as
- * awaiting_confirmation until confirmPlanStage.
+ * Plans a change from trusted state (the model's table, the target version, the renames; read-only
+ * access is enough) and queues it: an expand row if the plan has expand steps (pending at once), a
+ * destructive row if it has destructive steps (awaiting_confirmation until confirmPlanStage). Each
+ * row's plan_hash is computeStageHash of the full plan for its stage; the worker rebuilds that stage
+ * and runs it only if it hashes the same.
+ */
+export async function requestSchemaChange(
+  db: DbExecutor,
+  input: { contentModelId: string; targetVersionId: string | null; renames?: Array<{ from: string; to: string }>; requestedBy: string | null; limits?: SchemaLimits },
+): Promise<{ plan: MigrationPlan; expandLedgerId: string | null; destructiveLedgerId: string | null }> {
+  const plan = await buildPlanFromTrustedState(db, {
+    contentModelId: input.contentModelId, targetVersionId: input.targetVersionId, renames: input.renames ?? [], stage: "expand", limits: input.limits,
+  });
+  const base = { plan, requestedBy: input.requestedBy, targetVersionId: input.targetVersionId };
+  const hasStage = (stage: PlanStage) => plan.steps.some((step) => step.stage === stage);
+  const expand = hasStage("expand") ? await requestPlanStage(db, { ...base, stage: "expand", renames: input.renames ?? [] }) : null;
+  const destructive = hasStage("destructive") ? await requestPlanStage(db, { ...base, stage: "destructive" }) : null;
+  return { plan, expandLedgerId: expand?.ledgerId ?? null, destructiveLedgerId: destructive?.ledgerId ?? null };
+}
+
+/**
+ * Queues one stage of an already planned change (requestSchemaChange does both). Its plan_hash is
+ * computeStageHash(plan, stage). The expand stage is pending at once; a destructive stage waits as
+ * awaiting_confirmation until confirmPlanStage. Renames go on the expand row only.
  */
 export async function requestPlanStage(db: DbExecutor, request: PlanStageRequest): Promise<{ ledgerId: string; status: string }> {
   const { plan, stage } = request;
@@ -30,9 +53,9 @@ export async function requestPlanStage(db: DbExecutor, request: PlanStageRequest
     insert into public.schema_migration_ledger
       (workspace_id, content_model_id, model_api_key, table_name, stage, plan_hash, base_shape_hash, target_schema_hash, plan_json, requested_by,
        target_version_id, renames)
-    values (${plan.workspaceId}, ${plan.modelId}, ${plan.modelApiKey}, ${plan.table}, ${stage}, ${request.stageHash ?? plan.planHash},
+    values (${plan.workspaceId}, ${plan.modelId}, ${plan.modelApiKey}, ${plan.table}, ${stage}, ${computeStageHash(plan, stage)},
             ${baseShapeHash}, ${plan.targetSchemaHash}, ${JSON.stringify(plan)}::jsonb, ${request.requestedBy}, ${request.targetVersionId ?? null},
-            ${JSON.stringify(request.renames ?? [])}::jsonb)
+            ${JSON.stringify(stage === "expand" ? request.renames ?? [] : [])}::jsonb)
     returning id, status`.execute(db);
   return { ledgerId: row.id, status: row.status };
 }
