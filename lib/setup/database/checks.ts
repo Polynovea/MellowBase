@@ -142,8 +142,8 @@ export function dnsFix(error: unknown): string {
       return "\"localhost\" is this server itself. To keep the database here, go back and choose \"On this server\".";
     case "blocked-address":
       return "That address belongs to this server or to the cloud platform, and can never be used for the database. Enter the endpoint name from your cloud console.";
-    case "private-literal":
-      return "Enter the database's endpoint name, not an IP address: private IP addresses are not accepted, and a managed database's address can change.";
+    case "ip-literal":
+      return "Enter the database's hostname, not an IP address: the database's TLS identity is checked against its name, and a managed database's address can change.";
     case "private-not-allowed":
       return "That name points to a private network address. Private addresses are accepted only for Amazon RDS (…rds.amazonaws.com) and Azure Database for PostgreSQL (…postgres.database.azure.com) endpoints, or for hosts the server's operator lists in POLYNOVEA_SETUP_DB_ALLOWLIST.";
     case "invalid-host":

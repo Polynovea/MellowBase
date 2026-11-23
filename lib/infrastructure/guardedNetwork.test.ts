@@ -144,10 +144,10 @@ describe("resolveDatabaseTarget", () => {
       ["::ffff:127.0.0.1", "blocked-address"],
       ["[::ffff:169.254.169.254]", "blocked-address"],
       ["::ffff:7f00:1", "blocked-address"],
-      ["::ffff:10.0.0.5", "private-literal"],
+      ["::ffff:10.0.0.5", "ip-literal"],
       ["168.63.129.16", "blocked-address"],
       ["fd00:ec2::254", "blocked-address"],
-      ["10.0.0.5", "private-literal"],
+      ["10.0.0.5", "ip-literal"],
     ])("%s", async (host, expected) => {
       const { resolve, calls } = dns({});
       expect(await reason(resolveDatabaseTarget(host, 5432, { resolve }))).toBe(expected);
@@ -202,9 +202,17 @@ describe("resolveDatabaseTarget", () => {
     expect(await reason(resolveDatabaseTarget("far.corp.internal", 5432, { resolve }))).toBe("private-not-allowed");
   });
 
-  it("accepts a public IP literal without DNS", async () => {
-    await expect(resolveDatabaseTarget("93.184.216.34", 5432)).resolves.toMatchObject({ address: "93.184.216.34", allowedBy: "public" });
-    await expect(resolveDatabaseTarget("[2606:4700::1111]", 5432)).resolves.toMatchObject({ address: "2606:4700::1111", family: 6 });
+  it("refuses every IP literal, public ones too, without DNS (TLS needs the name)", async () => {
+    const { resolve, calls } = dns({});
+    for (const host of ["93.184.216.34", "[2606:4700::1111]", "2606:4700::1111", "8.8.8.8"]) {
+      expect(await reason(resolveDatabaseTarget(host, 5432, { resolve }))).toBe("ip-literal");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("still accepts a name that resolves to a public address", async () => {
+    const { resolve } = dns({ "db.example.com": ["93.184.216.34"] });
+    await expect(resolveDatabaseTarget("db.example.com", 5432, { resolve })).resolves.toMatchObject({ address: "93.184.216.34", allowedBy: "public" });
   });
 
   it.each([0, 65536, 5432.5, Number.NaN, "5432"])("refuses the port %s", async (port) => {

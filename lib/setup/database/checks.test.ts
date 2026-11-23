@@ -143,7 +143,7 @@ describe("runDatabaseChecks", () => {
 
 describe("plain fixes", () => {
   const messages = [
-    ...["localhost", "blocked-address", "private-literal", "private-not-allowed", "invalid-host", "invalid-port", "not-found", "dns-timeout"].map((reason) => dnsFix({ reason })),
+    ...["localhost", "blocked-address", "ip-literal", "private-not-allowed", "invalid-host", "invalid-port", "not-found", "dns-timeout"].map((reason) => dnsFix({ reason })),
     tcpFix(new ProbeError("ETIMEDOUT"), 5432), tcpFix(new ProbeError("ECONNREFUSED"), 5432), tcpFix(new ProbeError("EHOSTUNREACH"), 5432),
     ...["ENOTLS", "ETIMEDOUT", "EPROTOCOL", "ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED", "OTHER"].map((code) => tlsFix(new ProbeError(code), HOST)),
     tlsFix(new ProbeError("OTHER"), "db.example.com"), tlsFix(new CaBundleError("x", "rds"), HOST), tlsFix(new CaBundleError("x", "public"), HOST),

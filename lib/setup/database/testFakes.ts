@@ -46,15 +46,31 @@ export function fakeClient(routes: Route[] = [], config?: pg.ClientConfig): Fake
 }
 
 /** Routes that make a fake admin client look like a managed-database admin on PostgreSQL 16. */
-export function adminRoutes(state: { ledger?: boolean; core?: boolean; installation?: boolean; installed?: boolean; installationOwner?: string } = {}): Route[] {
+export interface FakeDatabaseState {
+  ledger?: boolean;
+  core?: boolean;
+  installation?: boolean;
+  admins?: boolean;
+  /** Result of the "installation row, admin user or real workspace" check, read as the owner. */
+  inUse?: boolean;
+  /** Owners of the Polynovea tables that exist (default polynovea_owner). */
+  owners?: readonly string[];
+  /** Other databases relying on the cluster-wide roles. */
+  rolesElsewhere?: { role: string; database: string }[];
+}
+
+export function adminRoutes(state: FakeDatabaseState = {}): Route[] {
+  const anyTable = state.ledger || state.installation || state.admins || state.core;
   return [
-    [/to_regclass\('public\.installation'\) is not null as has_installation/, () => ({ rows: [{
-      has_installation: state.installation ?? false,
+    [/to_regclass\('public\.polynovea_migration_ledger'\) is not null as has_ledger/, () => ({ rows: [{
       has_ledger: state.ledger ?? false,
+      has_installation: state.installation ?? false,
+      has_admins: state.admins ?? false,
       has_core: state.core ?? false,
-      installation_owner: state.installation ? (state.installationOwner ?? "polynovea_owner") : null,
+      owners: state.owners ?? (anyTable ? ["polynovea_owner"] : []),
     }] })],
-    [/select exists \(select 1 from public\.installation\)/, () => ({ rows: [{ installed: state.installed ?? false }] })],
+    [/as in_use$/, () => ({ rows: [{ in_use: state.inUse ?? false }] })],
+    [/with roles as/, () => ({ rows: state.rolesElsewhere ?? [] })],
     [/as superuser, current_setting/, () => ({ rows: [{ superuser: false, member: false, version: 160000 }] })],
     [/unnest\(\$1::text\[\]\)/, () => ({ rows: [] })],
     [/rolsuper or rolcreaterole or rolcreatedb or rolbypassrls\)/, () => ({ rows: [] })],

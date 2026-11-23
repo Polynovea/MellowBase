@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ClientBase } from "pg";
 import { createHash, createHmac, pbkdf2Sync } from "node:crypto";
-import { appRoleProblems, bootstrapInstallRoles, ensureCompatibilityRoles, installationState, scramSha256Verifier, tablesMissingAppPolicy, withOwnerRole } from "@/lib/db/roles.mjs";
+import { appRoleProblems, bootstrapInstallRoles, ensureCompatibilityRoles, installationState, rolesInUseElsewhere, scramSha256Verifier, tablesMissingAppPolicy, withOwnerRole } from "@/lib/db/roles.mjs";
 import { adminRoutes, fakeClient as routedClient } from "@/lib/setup/database/testFakes";
 
 function fakeClient(missing: string[], canCreate: boolean, opts: { superuser?: boolean; bypassRoles?: string[]; version?: number } = {}) {
@@ -113,18 +113,50 @@ describe("installationState", () => {
     [{}, "fresh"],
     [{ core: true }, "foreign"],
     [{ installation: true }, "foreign"],
+    [{ admins: true }, "foreign"],
     [{ ledger: true }, "resumable"],
-    [{ ledger: true, installation: true, installed: false }, "resumable"],
-    [{ ledger: true, installation: true, installed: true }, "installed"],
-    [{ ledger: true, installation: true, installed: true, installationOwner: "postgres" }, "foreign"],
+    [{ ledger: true, core: true, admins: true, installation: true, inUse: false }, "resumable"],
+    [{ ledger: true, installation: true, inUse: true }, "installed"],
+    // An install from before migration 0072: admins, no installation table.
+    [{ ledger: true, core: true, admins: true, inUse: true }, "installed"],
+    [{ ledger: true, core: true, admins: true, owners: ["polynovea_owner", "postgres"] }, "foreign"],
   ] as const)("%j is %s", async (state, expected) => {
     const fake = routedClient(adminRoutes(state));
     await expect(installationState(fake.client)).resolves.toBe(expected);
   });
 
+  it("checks for admins and any workspace but the seeded one, as the tables' owner", async () => {
+    const fake = routedClient(adminRoutes({ ledger: true, core: true, admins: true, installation: true }));
+    await installationState(fake.client);
+    const check = fake.statements.find((sql) => sql.endsWith("as in_use"))!;
+    expect(check).toContain("exists (select 1 from public.installation)");
+    expect(check).toContain("exists (select 1 from public.admin_users)");
+    expect(check).toContain("exists (select 1 from public.workspaces where slug is distinct from 'polynovea')");
+    const index = fake.statements.indexOf(check);
+    expect(fake.statements[index - 1]).toBe('set role "polynovea_owner"');
+    expect(fake.statements[index + 1]).toBe("reset role");
+  });
+
+  it("does not query tables that do not exist yet (a part-migrated database)", async () => {
+    const fake = routedClient(adminRoutes({ ledger: true, core: true }));
+    await expect(installationState(fake.client)).resolves.toBe("resumable");
+    const check = fake.statements.find((sql) => sql.endsWith("as in_use"))!;
+    expect(check).not.toMatch(/installation|admin_users/);
+  });
+
   it("treats a database whose roles another admin created as foreign", async () => {
     const fake = routedClient([[/^grant "polynovea_owner"/, () => Object.assign(new Error("permission denied to grant role"), { code: "42501" })], ...adminRoutes({ ledger: true, installation: true })]);
     await expect(installationState(fake.client)).resolves.toBe("foreign");
+  });
+});
+
+describe("rolesInUseElsewhere", () => {
+  it("returns the other databases relying on the shared roles, checking explicit grants and dependencies", async () => {
+    const fake = routedClient(adminRoutes({ rolesElsewhere: [{ role: "polynovea_app", database: "polynovea" }] }));
+    await expect(rolesInUseElsewhere(fake.client)).resolves.toEqual([{ role: "polynovea_app", database: "polynovea" }]);
+    const sql = fake.statements[0];
+    for (const part of ["d.datdba = roles.oid", "aclexplode", "has_database_privilege", "pg_shdepend", "current_database()"]) expect(sql).toContain(part);
+    expect(fake.params[0]).toEqual([["polynovea_owner", "polynovea_app"]]);
   });
 });
 

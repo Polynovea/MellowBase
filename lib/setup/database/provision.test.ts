@@ -6,7 +6,7 @@ import { localEndpoint, type DatabaseEndpoint, type DatabaseLogin } from "./conn
 import { DatabaseSetupError } from "./errors";
 import { runManagedDatabaseSetup } from "./flow";
 import { MigrationLockError } from "./migrate";
-import { ALREADY_INSTALLED, FOREIGN_DATABASE, generateRolePassword, provisionDatabase, type ProvisionedDatabase } from "./provision";
+import { ALREADY_INSTALLED, FOREIGN_DATABASE, generateRolePassword, provisionDatabase, ROLES_IN_USE, type ProvisionedDatabase } from "./provision";
 import { setupEventStream, type SetupEvent } from "./stream";
 import { adminRoutes, fakeClient, ownerRoutes, type FakeClient } from "./testFakes";
 
@@ -65,7 +65,7 @@ describe("provisionDatabase", () => {
   });
 
   it("refuses a database whose installation row exists, before touching any role", async () => {
-    const s = setup({ state: { ledger: true, installation: true, installed: true } });
+    const s = setup({ state: { ledger: true, installation: true, inUse: true } });
     const error = await provisionDatabase({ adminClient: s.admin.client, endpoint: REMOTE, database: "postgres", mode: "managed", emit: (e) => s.events.push(e) }, s.deps).then(() => new Error("did not fail"), (e: Error) => e);
     expect(error).toBeInstanceOf(DatabaseSetupError);
     expect(error.message).toBe(ALREADY_INSTALLED);
@@ -79,6 +79,25 @@ describe("provisionDatabase", () => {
     expect(s.openClient).not.toHaveBeenCalled();
   });
 
+  it("refuses when the shared users serve another database, without changing any password", async () => {
+    const s = setup({ state: { rolesElsewhere: [{ role: "polynovea_owner", database: "other_cms" }] } });
+    const error = await provisionDatabase({ adminClient: s.admin.client, endpoint: REMOTE, database: "postgres", mode: "managed", emit: (e) => s.events.push(e) }, s.deps).then(() => new Error("did not fail"), (e: Error) => e);
+    expect(error).toBeInstanceOf(DatabaseSetupError);
+    expect(error.message).toBe(ROLES_IN_USE);
+    expect(s.admin.statements.some((sql) => /alter role|create role|grant connect/.test(sql))).toBe(false);
+    expect(s.openClient).not.toHaveBeenCalled();
+    expect(s.events.at(-1)).toMatchObject({ type: "step", id: "inspect", status: "failed" });
+    // The browser gets the plain message; the database's name goes to the server log only.
+    expect(error.message).not.toContain("other_cms");
+  });
+
+  it("refuses an install from before migration 0072 (admins, no installation table)", async () => {
+    const s = setup({ state: { ledger: true, core: true, admins: true, inUse: true } });
+    const error = await provisionDatabase({ adminClient: s.admin.client, endpoint: REMOTE, database: "postgres", mode: "managed", emit: () => {} }, s.deps).then(() => new Error("did not fail"), (e: Error) => e);
+    expect(error.message).toBe(ALREADY_INSTALLED);
+    expect(s.admin.statements.some((sql) => /alter role/.test(sql))).toBe(false);
+  });
+
   it("refuses Polynovea tables without our ledger", async () => {
     const s = setup({ state: { core: true } });
     const error = await provisionDatabase({ adminClient: s.admin.client, endpoint: REMOTE, database: "postgres", mode: "managed", emit: () => {} }, s.deps).then(() => new Error("did not fail"), (e: Error) => e);
@@ -86,7 +105,7 @@ describe("provisionDatabase", () => {
   });
 
   it("resumes a database with our ledger and no installation row", async () => {
-    const s = setup({ state: { ledger: true, installation: true, installed: false } });
+    const s = setup({ state: { ledger: true, installation: true, inUse: false } });
     await expect(provisionDatabase({ adminClient: s.admin.client, endpoint: REMOTE, database: "postgres", mode: "managed", emit: () => {} }, s.deps)).resolves.toMatchObject({ databaseMode: "managed" });
     expect(s.migrate).toHaveBeenCalledTimes(1);
   });
