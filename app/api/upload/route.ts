@@ -3,7 +3,7 @@ import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { getStorageProvider } from "@/lib/media/storageProvider";
 import { assertCanonicalMediaFilename, assertMediaSignature } from "@/lib/media/uploadValidation";
 import { clientErrorMessage } from "@/lib/http/clientError";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as routeData from "@/lib/http/routeData";
 import { logPlatformEvent } from "@/lib/platform/audit";
 import { isWorkspaceStorageKey } from "@/lib/media/storageKeys";
 import { checkWorkspaceQuota } from "@/lib/media/uploadLimits";
@@ -46,9 +46,7 @@ export async function DELETE(req: Request) {
     // Only objects this workspace uploaded, addressed by a clean relative key, may be removed here.
     if (!isWorkspaceStorageKey(workspaceId, filename)) return NextResponse.json({success:false,data:null,error:"filename is not a storage key owned by this workspace",timestamp:ts()},{status:403});
     // Registered assets have usage, replacement and audit history; they are retired through the asset API, never deleted raw.
-    const {data:registered,error:lookupError}=await createServiceRoleClient().from("assets").select("id").eq("storage_key",filename).limit(1);
-    if (lookupError) throw lookupError;
-    if (registered?.length) return NextResponse.json({success:false,data:null,error:"This file is a registered asset; archive it from the media library instead",timestamp:ts()},{status:409});
+    if (await routeData.storageKeyRegistered(workspaceId, filename)) return NextResponse.json({success:false,data:null,error:"This file is a registered asset; archive it from the media library instead",timestamp:ts()},{status:409});
     const provider=await getStorageProvider({workspaceId,environmentId:environmentId||null,storageProviderKey:storageProvider||null});
     await provider.remove(filename);
     await logPlatformEvent({workspaceId,actorAdminUserId:auth.data!.actor.adminUserId,action:"media.object.deleted",entityType:"storage_object",entityId:filename,metadata:{storageProvider:provider.key}});

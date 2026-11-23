@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 5: the queries API routes made directly move to the direct path (routes switch). Security: on the Supabase path the developer API's release check never denied versions from models outside a token's allowlist, and restricted tokens saw every release, because two PostgREST embeds were ambiguous and failed silently; the relationships are now named and a failed read refuses instead of allowing. The platform PATCH route no longer writes arbitrary body fields.
 Phase 1 wave 5: schema deployments, backups and restores, portability, upgrades, website bindings, approval requests and component actions on the direct path, which finishes lib/infrastructure. Each deployment, backup, binding, component action and upgrade completion commits with its approval or audit event. Backups and upgrade plans now refuse another workspace's environment, and an upgrade run only records a verified backup of its own workspace.
 Phase 1 wave 5: environment components, System Doctor, the operability overview and provisioning runs on the direct path. A doctor run commits with the environment's health and its audit event; a provisioning run's completion commits with the environment's status, its approval and its audit event; component re-evaluation commits as one transaction.
 Phase 1 wave 5: workspace connections on the direct path. Creating a GA4 connection and linking it to analytics commit together, and a duplicate connection name is reported as a conflict without the database's constraint text.
