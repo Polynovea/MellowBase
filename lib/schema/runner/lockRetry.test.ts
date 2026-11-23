@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { errorCode, RefusedError, RunnerError } from "@/lib/schema/runner/errors";
-import { BACKOFF_MS, backoffDelay, JITTER, MAX_LOCK_RETRIES, withLockRetry } from "@/lib/schema/runner/lockRetry";
+import { BACKOFF_MS, backoffDelay, concurrentLockTimeoutMs, DEFAULT_CONCURRENT_LOCK_TIMEOUT_MS, JITTER, MAX_LOCK_RETRIES, withLockRetry } from "@/lib/schema/runner/lockRetry";
 
 const pgError = (code: string) => Object.assign(new Error(`pg ${code}`), { code });
 
@@ -48,6 +48,15 @@ describe("withLockRetry", () => {
       expect(backoffDelay(retry, BACKOFF_MS, () => 0)).toBe(Math.round(base * (1 - JITTER)));
       expect(backoffDelay(retry, BACKOFF_MS, () => 1)).toBe(Math.round(base * (1 + JITTER)));
     }
+  });
+});
+
+describe("concurrentLockTimeoutMs", () => {
+  it("is 10 minutes unless the operator sets a positive whole number", () => {
+    expect(concurrentLockTimeoutMs({})).toBe(DEFAULT_CONCURRENT_LOCK_TIMEOUT_MS);
+    expect(DEFAULT_CONCURRENT_LOCK_TIMEOUT_MS).toBe(600_000);
+    expect(concurrentLockTimeoutMs({ POLYNOVEA_MIGRATION_CONCURRENT_LOCK_TIMEOUT_MS: "90000" })).toBe(90_000);
+    for (const bad of ["0", "-5", "abc", "1.5"]) expect(concurrentLockTimeoutMs({ POLYNOVEA_MIGRATION_CONCURRENT_LOCK_TIMEOUT_MS: bad })).toBe(DEFAULT_CONCURRENT_LOCK_TIMEOUT_MS);
   });
 });
 

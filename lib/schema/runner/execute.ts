@@ -9,7 +9,8 @@
 // - The run's position (schema_migration_runs.next_statement) moves in the same transaction as the
 //   statements it covers, so a run that crashes is resumed exactly after the last committed statement.
 // - Non-transactional statements (CREATE / DROP INDEX CONCURRENTLY) run alone on the session, outside
-//   any transaction. A failed concurrent build leaves an INVALID index behind; the runner drops every
+//   any transaction, with the patient lock wait of lockRetry.ts (they wait for every older transaction
+//   in the database but never block reads or writes), then the session goes back to 3 seconds. A failed concurrent build leaves an INVALID index behind; the runner drops every
 //   invalid index on the model's table before such a statement and after it fails, then retries. When a
 //   resumed run repeats one that had in fact finished, "already exists" / "does not exist" count as done.
 import type pg from "pg";
@@ -17,7 +18,7 @@ import { sql } from "kysely";
 import type { PlanStep, RenderedStatement } from "@/lib/schema/engine/plan";
 import { compile, type SchemaEngine } from "@/lib/schema/runner/engine";
 import { RunnerError, sqlState } from "@/lib/schema/runner/errors";
-import { LOCK_TIMEOUT_MS, withLockRetry, type LockRetryOptions } from "@/lib/schema/runner/lockRetry";
+import { concurrentLockTimeoutMs, LOCK_TIMEOUT_MS, withLockRetry, type LockRetryOptions } from "@/lib/schema/runner/lockRetry";
 import { setProgress } from "@/lib/schema/runner/ledger";
 
 /** Test hooks: throwing from one simulates a crash at that point. */
@@ -38,6 +39,8 @@ export interface StepContext {
   table: string;
   retry?: LockRetryOptions;
   hooks?: RunnerHooks;
+  /** Lock wait for CONCURRENTLY statements; default concurrentLockTimeoutMs(). */
+  concurrentLockTimeoutMs?: number;
 }
 
 export interface StatementGroup {
@@ -108,20 +111,25 @@ export async function dropInvalidIndexes(client: pg.ClientBase, table: string, r
 async function runNonTransactional(ctx: StepContext, statement: RenderedStatement, resumedHere: boolean): Promise<number> {
   const { client, table, retry } = ctx;
   const compiled = compile(statement.sql);
-  await client.query(`set lock_timeout = '${LOCK_TIMEOUT_MS}ms'`);
-  await dropInvalidIndexes(client, table, retry);
-  const { retries } = await withLockRetry(async () => {
-    try {
-      await client.query(compiled.text, compiled.values);
-    } catch (error) {
-      const state = sqlState(error);
-      // A resumed run repeating a statement that had finished before the crash.
-      if (resumedHere && (state === "42P07" || state === "42704")) return;
-      await dropInvalidIndexes(client, table, retry).catch(() => undefined);
-      throw error;
-    }
-  }, retry);
-  return retries;
+  const patient = Math.max(LOCK_TIMEOUT_MS, Math.floor(ctx.concurrentLockTimeoutMs ?? concurrentLockTimeoutMs()));
+  await client.query(`set lock_timeout = '${patient}ms'`);
+  try {
+    await dropInvalidIndexes(client, table, retry);
+    const { retries } = await withLockRetry(async () => {
+      try {
+        await client.query(compiled.text, compiled.values);
+      } catch (error) {
+        const state = sqlState(error);
+        // A resumed run repeating a statement that had finished before the crash.
+        if (resumedHere && (state === "42P07" || state === "42704")) return;
+        await dropInvalidIndexes(client, table, retry).catch(() => undefined);
+        throw error;
+      }
+    }, retry);
+    return retries;
+  } finally {
+    await client.query(`set lock_timeout = '${LOCK_TIMEOUT_MS}ms'`).catch(() => undefined);
+  }
 }
 
 export interface StepResult {
