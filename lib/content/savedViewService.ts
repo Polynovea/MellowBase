@@ -1,5 +1,7 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
-import { logPlatformEvent } from "@/lib/platform/audit";
+// Content area, saved entry views: types, filter normalization and the backend dispatcher.
+import { usesDirectPostgres } from "@/lib/db/backend";
+import * as postgres from "@/lib/content/savedViewService.postgres";
+import * as supabase from "@/lib/content/savedViewService.supabase";
 
 export interface SavedEntryViewFilters {
   modelId?: string;
@@ -19,7 +21,7 @@ export interface SavedEntryView {
   updated_at: string;
 }
 
-function normalizeFilters(value: unknown): SavedEntryViewFilters {
+export function normalizeFilters(value: unknown): SavedEntryViewFilters {
   const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const result: SavedEntryViewFilters = {};
   if (typeof raw.modelId === "string" && raw.modelId) result.modelId = raw.modelId;
@@ -29,38 +31,10 @@ function normalizeFilters(value: unknown): SavedEntryViewFilters {
   return result;
 }
 
-export async function listSavedEntryViews(workspaceId: string, actorAdminUserId: string): Promise<SavedEntryView[]> {
-  const { data } = await createServiceRoleClient()
-    .from("content_entry_saved_views")
-    .select("*")
-    .eq("workspace_id", workspaceId)
-    .eq("created_by", actorAdminUserId)
-    .order("updated_at", { ascending: false });
-  return (data ?? []) as SavedEntryView[];
-}
+// Compile-time check that the direct implementation matches the Supabase one exactly.
+const direct: typeof supabase = postgres;
+const impl = (): typeof supabase => (usesDirectPostgres("content") ? direct : supabase);
 
-export async function createSavedEntryView(params: { workspaceId: string; actorAdminUserId: string; name: string; filters: unknown }): Promise<{ ok: true; data: SavedEntryView } | { ok: false; error: string; status: number }> {
-  const name = params.name.trim();
-  if (!name || name.length > 120) return { ok: false, error: "View name must be between 1 and 120 characters", status: 400 };
-  const filters = normalizeFilters(params.filters);
-  const { data, error } = await createServiceRoleClient().from("content_entry_saved_views").insert({
-    workspace_id: params.workspaceId,
-    content_model_id: filters.modelId ?? null,
-    name,
-    filters_json: filters,
-    created_by: params.actorAdminUserId,
-  }).select().single();
-  if (error || !data) return { ok: false, error: error?.message ?? "Could not save view", status: error?.code === "23505" ? 409 : 500 };
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorAdminUserId, action: "content.entry_view.created", entityType: "content_entry_saved_view", entityId: data.id, afterJson: filters, metadata: { name } });
-  return { ok: true, data: data as SavedEntryView };
-}
-
-export async function deleteSavedEntryView(params: { workspaceId: string; actorAdminUserId: string; viewId: string }): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
-  const db = createServiceRoleClient();
-  const { data: existing } = await db.from("content_entry_saved_views").select("id, name, filters_json").eq("id", params.viewId).eq("workspace_id", params.workspaceId).eq("created_by", params.actorAdminUserId).maybeSingle();
-  if (!existing) return { ok: false, error: "Saved view not found", status: 404 };
-  const { error } = await db.from("content_entry_saved_views").delete().eq("id", params.viewId).eq("workspace_id", params.workspaceId).eq("created_by", params.actorAdminUserId);
-  if (error) return { ok: false, error: "Could not delete saved view", status: 500 };
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorAdminUserId, action: "content.entry_view.deleted", entityType: "content_entry_saved_view", entityId: params.viewId, beforeJson: existing.filters_json, metadata: { name: existing.name } });
-  return { ok: true };
-}
+export const listSavedEntryViews: typeof supabase.listSavedEntryViews = (...args) => impl().listSavedEntryViews(...args);
+export const createSavedEntryView: typeof supabase.createSavedEntryView = (...args) => impl().createSavedEntryView(...args);
+export const deleteSavedEntryView: typeof supabase.deleteSavedEntryView = (...args) => impl().deleteSavedEntryView(...args);

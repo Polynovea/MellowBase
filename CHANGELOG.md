@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed: release previews (`/preview/<token>` for a release) always came back empty on Supabase, because their lookup of entries and models was ambiguous. Preview tokens and saved entry views can run on the direct PostgreSQL path (`content=postgres`).
 - Content search and saved searches can run on the direct PostgreSQL path (`content=postgres`); the saved-search filter uses bound parameters instead of a PostgREST filter string, and a malformed ID filter returns no results instead of an error.
 - Editorial workflow and collaboration (assignments, comments, watchers, the editorial queue) can run on the direct PostgreSQL path (`content=postgres`). **Security:** comment mentions are limited to active workspace members on both paths (a mention notifies its recipient about the entry), and an entry's workflow is read only through the entry's workspace. Fixed: the "My work" queue never listed entry assignments on Supabase (ambiguous relationship).
 - Content releases and the editorial calendar can run on the direct PostgreSQL path (`content=postgres`). The release detail and list read their items, entries, versions and history with explicit queries scoped by workspace on every table, return child lists in a fixed order, and never pass database text to the browser.
