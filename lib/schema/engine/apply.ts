@@ -21,7 +21,7 @@ import { DEFAULT_SCHEMA_LIMITS, POSTGRES_MAX_COLUMNS, type SchemaLimits } from "
 import { tableNameCandidates } from "@/lib/schema/engine/names";
 import type { MigrationPlan, PlanResult, PlanStage, PlanStep, TableShape } from "@/lib/schema/engine/plan";
 import { applyStepToShape, buildMigrationPlan, type FieldRename } from "@/lib/schema/engine/planner";
-import { CONTENT_SCHEMA, renderStep } from "@/lib/schema/engine/render";
+import { CONTENT_SCHEMA, renderStep, trigramSchema } from "@/lib/schema/engine/render";
 import { validatePlan } from "@/lib/schema/engine/validate";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 
@@ -265,8 +265,9 @@ export async function applyStageBookkeeping(trx: Transaction<DB>, plan: Migratio
  */
 async function runStage(trx: Transaction<DB>, plan: MigrationPlan, stage: PlanStage): Promise<void> {
   await sql`select set_config('lock_timeout', ${DDL_LOCK_TIMEOUT}, true)`.execute(trx);
+  const trgmSchema = (await trigramSchema(trx)) ?? undefined;
   for (const step of stageSteps(plan, stage)) {
-    for (const statement of renderStep(step, { concurrentIndexes: false })) await statement.sql.execute(trx);
+    for (const statement of renderStep(step, { concurrentIndexes: false, trgmSchema })) await statement.sql.execute(trx);
   }
 }
 

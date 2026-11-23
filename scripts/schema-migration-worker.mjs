@@ -8,6 +8,7 @@
  *
  *   npm run worker:schema            # poll every 1.5 s
  *   npm run worker:schema -- --once  # run what is waiting, then exit
+ *   --model <id>                     # only that model's stages (contracts only with --contracts)
  *
  * Start it with the project's module loader, like the certification scripts (Node strips the
  * TypeScript types itself; the loader resolves the "@/lib/..." imports):
@@ -45,8 +46,13 @@ const { createOwnerPool, assertOwnerSession } = await import("../lib/schema/runn
 const { runNextStage, runDueContracts } = await import("../lib/schema/runner/runner.ts");
 const { productionEngine } = await import("../lib/schema/runner/engineAdapter.ts");
 const { errorCode } = await import("../lib/schema/runner/errors.ts");
+const { trigramSchema } = await import("../lib/schema/engine/render.ts");
+const { kyselyOn } = await import("../lib/schema/runner/engine.ts");
 
 const once = process.argv.includes("--once");
+const modelFlag = process.argv.indexOf("--model");
+const modelId = modelFlag > 0 && /^[0-9a-f-]{36}$/i.test(process.argv[modelFlag + 1] ?? "") ? process.argv[modelFlag + 1] : undefined;
+const contracts = !modelId || process.argv.includes("--contracts");
 const pollMs = Math.max(250, Number(process.env.SCHEMA_WORKER_POLL_MS || 1500));
 const workerId = process.env.SCHEMA_WORKER_ID || `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 const releaseId = process.env.POLYNOVEA_RELEASE_ID?.trim() || JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -55,8 +61,8 @@ const log = (event, fields = {}) => console.log(JSON.stringify({ at: new Date().
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
 
-const engine = productionEngine();
 const pool = createOwnerPool();
+let engine;
 let client;
 try {
   client = await pool.connect();
@@ -69,14 +75,16 @@ try {
 }
 try {
   await assertOwnerSession(client);
+  // Search indexes name pg_trgm's operator class in the schema it is installed in.
+  engine = productionEngine(undefined, { trgmSchema: (await trigramSchema(kyselyOn(client))) ?? undefined });
   log("started", { workerId, releaseId, once });
   while (!stopping) {
     let worked = false;
     try {
       // The pool's spare connection watches long CONCURRENTLY statements ("waiting_for_older_transactions").
-      const outcome = await runNextStage(client, { engine, workerId, releaseId, log, observer: pool });
+      const outcome = await runNextStage(client, { engine, workerId, releaseId, log, observer: pool, modelId });
       if (outcome) worked = true;
-      else await runDueContracts(client, { releaseId, log });
+      else if (contracts) await runDueContracts(client, { releaseId, log });
     } catch (error) {
       log("loop_error", { code: errorCode(error) });
     }

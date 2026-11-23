@@ -199,6 +199,8 @@ function constraintStatements(ctx: ExpandContext, target: ColumnShape, onColumn:
   if (which === "indexes") {
     if (target.unique) steps.push({ ...base, kind: "add_index", unique: true });
     else if (target.indexed) steps.push({ ...base, kind: "add_index", unique: false });
+    // The old column's search index goes with it at the contract.
+    if (target.searchIndexed) steps.push({ ...base, kind: "add_search_index" });
   } else {
     if (target.requiredWhenPublished) steps.push({ ...base, kind: "set_required" });
     if (target.foreignKey) steps.push({ ...base, kind: "add_foreign_key", onDelete: target.foreignKey.onDelete });

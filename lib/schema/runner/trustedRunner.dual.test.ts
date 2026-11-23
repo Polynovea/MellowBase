@@ -62,7 +62,7 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
 
     // One request queues both stages; each row holds its own stage's hash, the renames only on expand.
     const second = await request(m, v2, renames);
-    expect(second.plan.steps.map((step) => step.kind)).toEqual(["rename_column", "add_column", "drop_column"]);
+    expect(second.plan.steps.map((step) => step.kind)).toEqual(["rename_column", "add_column", "add_search_index", "drop_column"]);
     const [destructiveRow] = await backend.query<{ status: string; renames: unknown }>("select status, renames from schema_migration_ledger where id = $1", [second.destructiveLedgerId]);
     expect(destructiveRow).toEqual({ status: "awaiting_confirmation", renames: [] });
     expect(await run(m.modelId)).toEqual({ ledgerId: second.expandLedgerId, outcome: "succeeded" });

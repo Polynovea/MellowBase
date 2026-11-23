@@ -89,6 +89,7 @@ const columnShape = z.strictObject({
   unique: z.boolean(),
   indexed: z.boolean(),
   foreignKey: z.strictObject({ onDelete: z.enum(["restrict", "set_null"]) }).optional(),
+  searchIndexed: z.literal(true).optional(),
 });
 
 const tableShape = z.strictObject({ table: name, columns: z.record(name, columnShape) });
@@ -110,6 +111,8 @@ const planStep = z.discriminatedUnion("kind", [
   z.strictObject({ ...stepBase, kind: z.literal("drop_required"), column: name }),
   z.strictObject({ ...stepBase, kind: z.literal("add_index"), column: name, unique: z.boolean(), blockingRows: count }),
   z.strictObject({ ...stepBase, kind: z.literal("drop_index"), column: name, unique: z.boolean() }),
+  z.strictObject({ ...stepBase, kind: z.literal("add_search_index"), column: name }),
+  z.strictObject({ ...stepBase, kind: z.literal("drop_search_index"), column: name }),
   z.strictObject({ ...stepBase, kind: z.literal("add_foreign_key"), column: name, onDelete: z.enum(["restrict", "set_null"]) }),
   z.strictObject({ ...stepBase, kind: z.literal("drop_foreign_key"), column: name }),
 ]);
@@ -215,7 +218,7 @@ function assertShape(shape: TableShape | null, expectedHash: string, table: stri
 
 function indexCount(shape: TableShape | null): number {
   if (!shape) return 0;
-  return Object.values(shape.columns).filter((column) => column.unique || column.indexed || column.foreignKey).length;
+  return Object.values(shape.columns).reduce((sum, column) => sum + (column.unique || column.indexed || column.foreignKey ? 1 : 0) + (column.searchIndexed ? 1 : 0), 0);
 }
 
 /**
