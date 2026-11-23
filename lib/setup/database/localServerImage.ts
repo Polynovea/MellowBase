@@ -5,10 +5,10 @@ import pg from "pg";
 import { createSystemLocalServerHost, type LocalServerHost } from "./localServer";
 
 /**
- * "On this server" inside the Polynovea server image (Dockerfile, deploy/image/).
+ * "On this server" inside the Polynovea server image (Dockerfile, docker/).
  *
  * The image runs as one non-root user (`polynovea`, uid 10001). The bundled PostgreSQL 16 runs as that
- * same user, with its data on the data disk mounted at /var/lib/polynovea. deploy/image/local-db.sh
+ * same user, with its data on the data disk mounted at /var/lib/polynovea. docker/local-db.sh
  * creates the cluster on first use and writes its settings:
  *
  * - it listens on 127.0.0.1 and on a unix socket in /var/run/postgresql (mode 0700) only;

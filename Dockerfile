@@ -20,7 +20,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund --loglevel=error
 COPY . .
 RUN POLYNOVEA_STANDALONE=1 npm run build \
- && node deploy/image/trace-runtime.mjs /src /src/.next/standalone \
+ && node docker/trace-runtime.mjs /src /src/.next/standalone \
  && rm -rf /src/.next/standalone/node_modules/sharp /src/.next/standalone/node_modules/@img
 
 # sharp (image resizing) is the one native module: fetch the binary for the image's architecture.
@@ -89,8 +89,8 @@ COPY --from=build --chown=0:0 /src/supabase/migrations ./supabase/migrations
 COPY --from=build --chown=0:0 /src/lib/setup/database/ca ./lib/setup/database/ca
 COPY --from=sharp --chown=0:0 /sharp/node_modules/sharp ./node_modules/sharp
 COPY --from=sharp --chown=0:0 /sharp/node_modules/@img ./node_modules/@img
-COPY --chown=0:0 --chmod=0755 deploy/image/local-db.sh /opt/polynovea/bin/local-db.sh
-COPY --chown=0:0 --chmod=0755 deploy/image/entrypoint.mjs /opt/polynovea/bin/entrypoint.mjs
+COPY --chown=0:0 --chmod=0755 docker/local-db.sh /opt/polynovea/bin/local-db.sh
+COPY --chown=0:0 --chmod=0755 docker/entrypoint.mjs /opt/polynovea/bin/entrypoint.mjs
 # Files checked out on Windows may have CRLF endings; the shell script must not.
 RUN sed -i 's/\r$//' /opt/polynovea/bin/local-db.sh
 

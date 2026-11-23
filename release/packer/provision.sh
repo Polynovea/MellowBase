@@ -3,7 +3,7 @@
 # (aws.pkr.hcl, azure.pkr.hcl). On a plain Ubuntu VM, the cloud templates can run the same steps.
 #
 # Needs: POLYNOVEA_IMAGE_REF (pinned by digest), POLYNOVEA_CADDY_IMAGE_REF, POLYNOVEA_RELEASE_ID,
-# POLYNOVEA_CLOUD (aws|azure), and the files from deploy/packer/files in /tmp/polynovea-files.
+# POLYNOVEA_CLOUD (aws|azure), and the files from release/packer/files in /tmp/polynovea-files.
 set -eu
 
 : "${POLYNOVEA_IMAGE_REF:?}" "${POLYNOVEA_CADDY_IMAGE_REF:?}" "${POLYNOVEA_RELEASE_ID:?}" "${POLYNOVEA_CLOUD:?}"

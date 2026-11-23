@@ -3,7 +3,7 @@
  * Adds the delivery worker and the operator commands to the Next.js standalone output, so the server
  * image carries one pruned node_modules for everything.
  *
- *   node deploy/image/trace-runtime.mjs <repo root> <standalone dir>
+ *   node docker/trace-runtime.mjs <repo root> <standalone dir>
  *
  * It traces each entry point's imports with the same tracer `next build` uses for the standalone
  * output (@vercel/nft, bundled with Next.js) and copies every traced file that the standalone output

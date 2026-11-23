@@ -36,12 +36,12 @@ So use one of these:
 | **SSH tunnel** (host networking) | You have no domain yet, or you want setup to stay private | `http://localhost:3000/setup` through `ssh -L`. Free; no certificate needed |
 | **HTTPS proxy** (Caddy) | The server has a domain pointing at it, with ports 80 and 443 open | `https://your-domain/setup`, with a Let's Encrypt certificate |
 
-Both are in [`deploy/docker/compose.yaml`](../../deploy/docker/compose.yaml) as Compose profiles.
+Both are in [`docker/compose.yaml`](../../docker/compose.yaml) as Compose profiles.
 
 ### Route 1: SSH tunnel (`tunnel` profile)
 
 ```
-POLYNOVEA_IMAGE=registry.example/polynovea-cms@sha256:<digest> docker compose -f deploy/docker/compose.yaml --profile tunnel up -d
+POLYNOVEA_IMAGE=registry.example/polynovea-cms@sha256:<digest> docker compose -f docker/compose.yaml --profile tunnel up -d
 ```
 
 or, without Compose:
@@ -67,7 +67,7 @@ Point your domain's DNS at the server, open ports 80 and 443, then:
 
 ```
 POLYNOVEA_IMAGE=registry.example/polynovea-cms@sha256:<digest> POLYNOVEA_DOMAIN=cms.example.com \
-  docker compose -f deploy/docker/compose.yaml --profile proxy up -d
+  docker compose -f docker/compose.yaml --profile proxy up -d
 ```
 
 Caddy (its own container, pinned by digest) gets a certificate from Let's Encrypt and forwards to the CMS. Caddy shares the CMS container's network, so the CMS sees it at `127.0.0.1`. The profile sets:

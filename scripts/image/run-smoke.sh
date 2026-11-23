@@ -113,9 +113,9 @@ smoke "$PREFIX-public" -e STEPS=health,refused
 step "Proxy route: HTTPS through Caddy in the CMS's network namespace"
 docker volume create "$PREFIX-data3" >/dev/null
 docker run -d --name "$PREFIX-proxy" -e POLYNOVEA_TRUSTED_PROXIES=127.0.0.1 -e POLYNOVEA_PUBLIC_URL=https://localhost -v "$PREFIX-data3:/var/lib/polynovea" "$IMAGE" >/dev/null
-CADDY_IMAGE="$(sed -n 's/^ *image: \(caddy:.*\)$/\1/p' deploy/docker/compose.yaml)"
+CADDY_IMAGE="$(sed -n 's/^ *image: \(caddy:.*\)$/\1/p' docker/compose.yaml)"
 docker run -d --name "$PREFIX-caddy" --network "container:$PREFIX-proxy" -e POLYNOVEA_DOMAIN=localhost \
-  -v "$ROOT/deploy/docker/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" >/dev/null
+  -v "$ROOT/docker/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" >/dev/null
 wait_healthy "$PREFIX-proxy"
 CODE3="$(setup_code "$PREFIX-proxy")"
 sleep 3

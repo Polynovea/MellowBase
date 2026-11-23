@@ -39,7 +39,7 @@
  * - Keep the private key on an encrypted disk, readable only by the release user; keep an offline,
  *   encrypted backup. The password lives in a password manager, and is given to this script only
  *   through COSIGN_PASSWORD in the environment of the one command.
- * - Publish the public key (deploy/image/polynovea-release.pub, the website, the README). Rotating it
+ * - Publish the public key (the release folder's cosign.pub, the website, the README). Rotating it
  *   means publishing the new public key in a release signed by the old one.
  */
 import { spawnSync } from "node:child_process";

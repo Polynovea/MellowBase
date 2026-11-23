@@ -1,6 +1,6 @@
 # VM images for AWS and Azure
 
-The VM images are Ubuntu 24.04 LTS with Docker and one signed Polynovea CMS release already on board. The cloud templates (`deploy/aws`, `deploy/azure`) launch them; you can also launch one by hand. Definitions: [`deploy/packer/`](../../deploy/packer/).
+The VM images are Ubuntu 24.04 LTS with Docker and one signed Polynovea CMS release already on board. The cloud templates (`deploy/aws`, `deploy/azure`) launch them; you can also launch one by hand. Definitions: [`release/packer/`](../../release/packer/).
 
 | | AWS (AMI) | Azure (managed image) |
 | --- | --- | --- |
@@ -66,9 +66,9 @@ aws_region = "eu-west-1"
 azure_location       = "westeurope"
 azure_resource_group = "polynovea-images"
 EOF
-packer init deploy/packer
-packer build -only='polynovea-aws.*'   -var-file=release.pkrvars.hcl deploy/packer
-packer build -only='polynovea-azure.*' -var-file=release.pkrvars.hcl deploy/packer   # after az login
+packer init release/packer
+packer build -only='polynovea-aws.*'   -var-file=release.pkrvars.hcl release/packer
+packer build -only='polynovea-azure.*' -var-file=release.pkrvars.hcl release/packer   # after az login
 ```
 
 A build launches one small temporary VM in your account for about 10 minutes and stores one image (a few GB of snapshot storage). Packer removes the temporary VM; delete old images yourself.
@@ -76,8 +76,8 @@ A build launches one small temporary VM in your account for about 10 minutes and
 ## Checking the definitions without a cloud account
 
 ```
-docker run --rm -v "$PWD:/w" -w /w hashicorp/packer:1.14.2@sha256:250bf3081634255dcabb112ceefd8c77f0b9093e16b21a15516d03a7e996d239 init deploy/packer
-docker run --rm -v "$PWD:/w" -w /w hashicorp/packer:1.14.2@sha256:250bf3081634255dcabb112ceefd8c77f0b9093e16b21a15516d03a7e996d239 validate -syntax-only deploy/packer
+docker run --rm -v "$PWD:/w" -w /w hashicorp/packer:1.14.2@sha256:250bf3081634255dcabb112ceefd8c77f0b9093e16b21a15516d03a7e996d239 init release/packer
+docker run --rm -v "$PWD:/w" -w /w hashicorp/packer:1.14.2@sha256:250bf3081634255dcabb112ceefd8c77f0b9093e16b21a15516d03a7e996d239 validate -syntax-only release/packer
 ```
 
-plus `shellcheck` on `deploy/packer/provision.sh` and `deploy/packer/files/*.sh`. These need no credentials and create nothing.
+plus `shellcheck` on `release/packer/provision.sh` and `release/packer/files/*.sh`. These need no credentials and create nothing.

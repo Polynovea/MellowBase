@@ -1,7 +1,7 @@
 # Polynovea CMS AMI: Ubuntu 24.04 LTS + Docker + the signed CMS image, IMDSv2 only.
 # Build from a release machine with AWS credentials (never from GitHub Actions):
-#   packer init deploy/packer
-#   packer build -only='polynovea-aws.*' -var-file=release.pkrvars.hcl deploy/packer
+#   packer init release/packer
+#   packer build -only='polynovea-aws.*' -var-file=release.pkrvars.hcl release/packer
 # See docs/self-hosting/vm-images.md.
 
 packer {
@@ -78,7 +78,7 @@ build {
   }
 
   provisioner "file" {
-    source      = "${path.root}/../docker/Caddyfile"
+    source      = "${path.root}/../../docker/Caddyfile"
     destination = "/tmp/polynovea-files/Caddyfile"
   }
 

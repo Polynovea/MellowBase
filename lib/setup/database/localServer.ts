@@ -15,7 +15,7 @@ import { imageLocalServerHost, imagePaths } from "./localServerImage";
  * test needs a scratch database and time, so it is recorded as the worker's first job instead.
  *
  * Everything that touches the operating system goes through LocalServerHost, so this flow is tested
- * with fakes here; the real host is the server image's (localServerImage.ts and deploy/image/local-db.sh:
+ * with fakes here; the real host is the server image's (localServerImage.ts and docker/local-db.sh:
  * start command, socket path, the local admin login and the archive_command in postgresql.conf).
  */
 

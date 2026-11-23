@@ -1,7 +1,7 @@
 # Polynovea CMS Azure managed image: Ubuntu 24.04 LTS + Docker + the signed CMS image.
 # Build from a release machine signed in with `az login` (never from GitHub Actions):
-#   packer init deploy/packer
-#   packer build -only='polynovea-azure.*' -var-file=release.pkrvars.hcl deploy/packer
+#   packer init release/packer
+#   packer build -only='polynovea-azure.*' -var-file=release.pkrvars.hcl release/packer
 #
 # IMDS: Azure's instance metadata service already refuses requests without a `Metadata: true` header
 # and requests carrying X-Forwarded-For, so there is no IMDSv2-style switch to turn on.
@@ -41,7 +41,7 @@ build {
   }
 
   provisioner "file" {
-    source      = "${path.root}/../docker/Caddyfile"
+    source      = "${path.root}/../../docker/Caddyfile"
     destination = "/tmp/polynovea-files/Caddyfile"
   }
 

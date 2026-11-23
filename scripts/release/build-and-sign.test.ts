@@ -54,8 +54,8 @@ describe("pinned base images", () => {
   });
 
   it("pins Caddy by digest in compose and the VM image", () => {
-    const compose = readFileSync(path.join(root, "deploy/docker/compose.yaml"), "utf8");
-    const packer = readFileSync(path.join(root, "deploy/packer/variables.pkr.hcl"), "utf8");
+    const compose = readFileSync(path.join(root, "docker/compose.yaml"), "utf8");
+    const packer = readFileSync(path.join(root, "release/packer/variables.pkr.hcl"), "utf8");
     const caddy = /image: (caddy:\S+)/.exec(compose)?.[1];
     expect(caddy).toMatch(/@sha256:[0-9a-f]{64}$/);
     expect(packer).toContain(caddy);
