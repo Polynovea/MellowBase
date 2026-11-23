@@ -1,6 +1,8 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as mlData from "@/lib/intelligence/mlData";
 import { sha256Canonical } from "@/lib/intelligence/operationalCanonical";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { logPlatformEventFor } from "@/lib/platform/audit";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const MODEL_DEFINITIONS = [
   { key: "migration-change-risk", family: "migration_change_risk", task: "probability", title: "Migration / Change Risk", minimumSupport: 20, description: "Calibrated local probability of an adverse execution outcome, conditioned on deterministic classification." },
@@ -63,13 +65,7 @@ function meanAbsoluteError(rows: Array<{ actual: number; predicted: number }>) {
 }
 
 export async function getOperationalLearningPolicy(workspaceId: string) {
-  const db = createServiceRoleClient();
-  const { data: existing, error } = await db.from("operational_learning_policies").select("*").eq("workspace_id", workspaceId).maybeSingle();
-  if (error) throw new Error(error.message);
-  if (existing) return existing;
-  const { data, error: createError } = await db.from("operational_learning_policies").insert({ workspace_id: workspaceId }).select().single();
-  if (createError || !data) throw new Error(createError?.message || "Could not initialize operational learning policy");
-  return data;
+  return mlData.learningPolicy(workspaceId);
 }
 
 export async function updateOperationalLearningPolicy(params: {
@@ -82,8 +78,7 @@ export async function updateOperationalLearningPolicy(params: {
 }) {
   const retentionDays = params.retentionDays ?? 365;
   if (!Number.isInteger(retentionDays) || retentionDays < 7 || retentionDays > 3650) throw Object.assign(new Error("Retention days must be between 7 and 3650"), { status: 400 });
-  const db = createServiceRoleClient();
-  const { data, error } = await db.from("operational_learning_policies").upsert({
+  return mlData.saveLearningPolicy({
     workspace_id: params.workspaceId,
     local_learning_enabled: params.localLearningEnabled,
     cross_install_learning_opt_in: params.crossInstallLearningOptIn,
@@ -91,16 +86,11 @@ export async function updateOperationalLearningPolicy(params: {
     retention_days: retentionDays,
     updated_by: params.actorId,
     updated_at: new Date().toISOString(),
-  }, { onConflict: "workspace_id" }).select().single();
-  if (error || !data) throw new Error(error?.message || "Could not update operational learning policy");
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.policy.updated", entityType: "workspace", entityId: params.workspaceId, metadata: { localLearningEnabled: data.local_learning_enabled, crossInstallLearningOptIn: data.cross_install_learning_opt_in, contentLevelFeaturesEnabled: data.content_level_features_enabled, retentionDays: data.retention_days } });
-  return data;
+  }, (data) => ({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.policy.updated", entityType: "workspace", entityId: params.workspaceId, metadata: { localLearningEnabled: data.local_learning_enabled, crossInstallLearningOptIn: data.cross_install_learning_opt_in, contentLevelFeaturesEnabled: data.content_level_features_enabled, retentionDays: data.retention_days } }));
 }
 
 export async function ensureOperationalModelRegistry(workspaceId: string) {
-  const db = createServiceRoleClient();
-  for (const definition of MODEL_DEFINITIONS) {
-    const { error } = await db.from("operational_model_registry").upsert({
+  return mlData.ensureRegistry(workspaceId, MODEL_DEFINITIONS.map((definition) => ({
       workspace_id: workspaceId,
       model_key: definition.key,
       model_family: definition.family,
@@ -113,37 +103,18 @@ export async function ensureOperationalModelRegistry(workspaceId: string) {
       minimum_support: definition.minimumSupport,
       feature_contract_json: { version: 1, privacy: "operational_minimized", contentValues: false, credentialValues: false },
       updated_at: new Date().toISOString(),
-    }, { onConflict: "workspace_id,model_key" });
-    if (error) throw new Error(error.message);
-  }
-  const { data, error } = await db.from("operational_model_registry").select("*").eq("workspace_id", workspaceId).order("model_family");
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  })));
 }
 
 async function localEvents(workspaceId: string, environmentId: string, retentionDays: number): Promise<OperationalEvent[]> {
   const start = new Date(Date.now() - retentionDays * 86400000).toISOString();
-  const { data, error } = await createServiceRoleClient().from("operational_events")
-    .select("id,event_type,occurred_at,features_json,outcome_json")
-    .eq("workspace_id", workspaceId)
-    .eq("environment_id", environmentId)
-    .eq("eligible_for_local_learning", true)
-    .gte("occurred_at", start)
-    .order("occurred_at", { ascending: true })
-    .limit(10000);
-  if (error) throw new Error(error.message);
-  return (data ?? []) as OperationalEvent[];
+  return (await mlData.localEvents(workspaceId, environmentId, start)) as OperationalEvent[];
 }
 
 export async function captureOperationalFeatureSnapshot(params: { workspaceId: string; environmentId: string; featureFamily?: string }) {
-  const db = createServiceRoleClient();
   const policy = await getOperationalLearningPolicy(params.workspaceId);
   const events = await localEvents(params.workspaceId, params.environmentId, policy.retention_days);
-  const [{ data: environment }, { data: worldNodes }, { data: drifts }] = await Promise.all([
-    db.from("workspace_environments").select("kind,status").eq("workspace_id", params.workspaceId).eq("id", params.environmentId).maybeSingle(),
-    db.from("operational_world_nodes").select("state,is_stale,node_type").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId),
-    db.from("operational_drift_items").select("severity,state,category,action_class").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).in("state", ["open", "acknowledged", "planned"]),
-  ]);
+  const { environment, worldNodes, drifts } = await mlData.snapshotInputs(params.workspaceId, params.environmentId);
   if (!environment) throw Object.assign(new Error("Environment not found"), { status: 404 });
 
   const planEvents = events.filter((event) => event.event_type === "plan.execution");
@@ -183,7 +154,7 @@ export async function captureOperationalFeatureSnapshot(params: { workspaceId: s
     capturedAt,
   };
   const checksum = sha256Canonical(document);
-  const { data, error } = await db.from("operational_feature_snapshots").insert({
+  return mlData.insertSnapshot({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     feature_family: document.featureFamily,
@@ -197,22 +168,12 @@ export async function captureOperationalFeatureSnapshot(params: { workspaceId: s
     checksum_sha256: checksum,
     captured_at: capturedAt,
     expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-  }).select().single();
-  if (error || !data) throw new Error(error?.message || "Could not persist operational feature snapshot");
-  return data;
-}
-
-async function nextVersion(modelId: string) {
-  const { data } = await createServiceRoleClient().from("operational_model_versions").select("version").eq("model_id", modelId).order("version", { ascending: false }).limit(1).maybeSingle();
-  return Number(data?.version ?? 0) + 1;
+  });
 }
 
 async function persistModelVersion(params: { workspaceId: string; actorId: string; model: any; technique: string; train: OperationalEvent[]; validation: OperationalEvent[]; holdout: OperationalEvent[]; artifact: Record<string, unknown>; metrics: Record<string, unknown>; calibration: Record<string, unknown> }) {
-  const db = createServiceRoleClient();
-  const version = await nextVersion(params.model.id);
-  const artifactDocument = { modelKey: params.model.model_key, version, technique: params.technique, artifact: params.artifact, featureContract: params.model.feature_contract_json };
-  const integrity = sha256Canonical(artifactDocument);
-  const { data, error } = await db.from("operational_model_versions").insert({
+  const valid = params.validation.length > 0 && params.holdout.length > 0 && params.train.length >= Number(params.model.minimum_support);
+  return mlData.persistModelVersion(params.workspaceId, params.model.id, (version) => ({
     workspace_id: params.workspaceId,
     model_id: params.model.id,
     version,
@@ -227,22 +188,13 @@ async function persistModelVersion(params: { workspaceId: string; actorId: strin
     artifact_json: params.artifact,
     metrics_json: params.metrics,
     calibration_json: params.calibration,
-    integrity_sha256: integrity,
+    integrity_sha256: sha256Canonical({ modelKey: params.model.model_key, version, technique: params.technique, artifact: params.artifact, featureContract: params.model.feature_contract_json }),
     created_by: params.actorId,
-  }).select().single();
-  if (error || !data) throw new Error(error?.message || "Could not persist model version");
-
-  const valid = params.validation.length > 0 && params.holdout.length > 0 && params.train.length >= Number(params.model.minimum_support);
-  const status = valid ? "deployed" : "candidate";
-  if (status === "deployed") await db.from("operational_model_versions").update({ status: "retired" }).eq("model_id", params.model.id).eq("status", "deployed");
-  const { data: updated, error: updateError } = await db.from("operational_model_versions").update({ status, deployed_at: status === "deployed" ? new Date().toISOString() : null }).eq("id", data.id).select().single();
-  if (updateError || !updated) throw new Error(updateError?.message || "Could not finalize model version");
-  await db.from("operational_model_evaluations").insert([
-    { workspace_id: params.workspaceId, model_version_id: data.id, evaluation_kind: "validation", sample_count: params.validation.length, metrics_json: params.metrics.validation ?? {}, distribution_json: { chronologicalHoldout: true }, status: "recorded" },
-    { workspace_id: params.workspaceId, model_version_id: data.id, evaluation_kind: "holdout", sample_count: params.holdout.length, metrics_json: params.metrics.holdout ?? {}, distribution_json: { chronologicalHoldout: true }, status: "recorded" },
-    { workspace_id: params.workspaceId, model_version_id: data.id, evaluation_kind: "calibration", sample_count: params.validation.length + params.holdout.length, metrics_json: params.calibration, distribution_json: {}, status: params.calibration.state === "calibrated" ? "recorded" : "warning" },
+  }), valid, (versionId) => [
+    { workspace_id: params.workspaceId, model_version_id: versionId, evaluation_kind: "validation", sample_count: params.validation.length, metrics_json: params.metrics.validation ?? {}, distribution_json: { chronologicalHoldout: true }, status: "recorded" },
+    { workspace_id: params.workspaceId, model_version_id: versionId, evaluation_kind: "holdout", sample_count: params.holdout.length, metrics_json: params.metrics.holdout ?? {}, distribution_json: { chronologicalHoldout: true }, status: "recorded" },
+    { workspace_id: params.workspaceId, model_version_id: versionId, evaluation_kind: "calibration", sample_count: params.validation.length + params.holdout.length, metrics_json: params.calibration, distribution_json: {}, status: params.calibration.state === "calibrated" ? "recorded" : "warning" },
   ]);
-  return updated;
 }
 
 function riskArtifact(events: OperationalEvent[]) {
@@ -379,26 +331,24 @@ export async function trainSupportedOperationalModels(params: { workspaceId: str
     });
     trained.push({ modelKey: model.model_key, family: model.model_family, modelVersionId: version.id, version: version.version, status: version.status, support: relevant.length, technique });
   }
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.training.completed", entityType: "workspace_environment", entityId: params.environmentId, metadata: { trained: trained.map((item) => ({ modelKey: item.modelKey, version: item.version, status: item.status, support: item.support })), insufficientCount: insufficient.length } });
+  await logPlatformEventFor("intelligence", { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.training.completed", entityType: "workspace_environment", entityId: params.environmentId, metadata: { trained: trained.map((item) => ({ modelKey: item.modelKey, version: item.version, status: item.status, support: item.support })), insufficientCount: insufficient.length } });
   return { status: trained.some((item) => item.status === "deployed") ? "models_available" : "insufficient_data", trained, insufficient };
 }
 
 async function deployedModel(workspaceId: string, family: ModelFamily) {
-  const db = createServiceRoleClient();
-  const { data: model } = await db.from("operational_model_registry").select("*").eq("workspace_id", workspaceId).eq("model_family", family).eq("enabled", true).maybeSingle();
+  const { model, version } = await mlData.deployedModelRows(workspaceId, family);
   if (!model) return { model: null, version: null, integrity: "unavailable" as const };
-  const { data: version } = await db.from("operational_model_versions").select("*").eq("model_id", model.id).eq("status", "deployed").maybeSingle();
   if (!version) return { model, version: null, integrity: "unavailable" as const };
   const expected = sha256Canonical({ modelKey: model.model_key, version: version.version, technique: version.technique, artifact: version.artifact_json, featureContract: version.feature_contract_json });
   if (expected !== version.integrity_sha256) {
-    await db.from("operational_model_versions").update({ status: "failed" }).eq("id", version.id).eq("status", "deployed");
+    await mlData.failDeployedVersion(workspaceId, version.id);
     return { model, version: null, integrity: "failed" as const };
   }
   return { model, version, integrity: "verified" as const };
 }
 
 async function persistPrediction(params: { workspaceId: string; environmentId: string; model: any; version?: any; snapshot?: any; predictionKey: string; subjectType: string; subjectId?: string | null; status: string; predictedLabel?: string | null; probability?: number | null; estimate?: number | null; lower?: number | null; upper?: number | null; confidence?: number | null; supportCount?: number; calibrationState?: string; distributionState?: string; prediction?: Record<string, unknown>; explanation?: Record<string, unknown> }) {
-  const { data, error } = await createServiceRoleClient().from("operational_predictions").insert({
+  return mlData.insertPrediction({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     model_id: params.model.id,
@@ -420,16 +370,13 @@ async function persistPrediction(params: { workspaceId: string; environmentId: s
     prediction_json: params.prediction ?? {},
     explanation_json: params.explanation ?? {},
     expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-  }).select().single();
-  if (error || !data) throw new Error(error?.message || "Could not persist operational prediction");
-  return data;
+  });
 }
 
 export async function predictOperationalPlan(params: { workspaceId: string; environmentId: string; planId: string; actorId?: string | null }) {
-  const db = createServiceRoleClient();
   await ensureOperationalModelRegistry(params.workspaceId);
   const policy = await getOperationalLearningPolicy(params.workspaceId);
-  const { data: plan } = await db.from("operational_change_plans").select("id,deterministic_classification,requires_approval,immutable_plan_json,plan_checksum_sha256,source_discovery_run_id,created_at").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("id", params.planId).maybeSingle();
+  const plan = UUID.test(params.environmentId) && UUID.test(params.planId) ? await mlData.planForPrediction(params.workspaceId, params.environmentId, params.planId) : null;
   if (!plan) throw Object.assign(new Error("Operational plan not found"), { status: 404 });
   const snapshot = await captureOperationalFeatureSnapshot({ workspaceId: params.workspaceId, environmentId: params.environmentId, featureFamily: "plan_prediction_v1" });
   const results: any[] = [];
@@ -469,7 +416,7 @@ export async function predictOperationalPlan(params: { workspaceId: string; envi
       }
     }
   }
-  if (params.actorId) await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.plan_predicted", entityType: "operational_change_plan", entityId: plan.id, metadata: { predictionIds: results.map((item) => item.id), statuses: results.map((item) => item.status), deterministicClassification: plan.deterministic_classification } });
+  if (params.actorId) await logPlatformEventFor("intelligence", { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.ml.plan_predicted", entityType: "operational_change_plan", entityId: plan.id, metadata: { predictionIds: results.map((item) => item.id), statuses: results.map((item) => item.status), deterministicClassification: plan.deterministic_classification } });
   return { plan: { id: plan.id, deterministicClassification: plan.deterministic_classification, requiresApproval: plan.requires_approval, checksum: plan.plan_checksum_sha256 }, featureSnapshot: snapshot, predictions: results, deterministicSafetyAuthority: true };
 }
 
@@ -486,25 +433,16 @@ export async function predictRemediationSuccess(params: { workspaceId: string; e
 }
 
 export async function listOperationalMlOverview(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
   const models = await ensureOperationalModelRegistry(workspaceId);
-  const [policy, versions, predictions, snapshots, evaluations] = await Promise.all([
-    getOperationalLearningPolicy(workspaceId),
-    db.from("operational_model_versions").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending: false }).limit(100),
-    db.from("operational_predictions").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("created_at", { ascending: false }).limit(100),
-    db.from("operational_feature_snapshots").select("id,feature_family,sample_support,checksum_sha256,captured_at,expires_at,provenance_json").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("captured_at", { ascending: false }).limit(50),
-    db.from("operational_model_evaluations").select("*").eq("workspace_id", workspaceId).order("evaluated_at", { ascending: false }).limit(100),
-  ]);
-  return { policy, models, modelVersions: versions.data ?? [], predictions: predictions.data ?? [], featureSnapshots: snapshots.data ?? [], evaluations: evaluations.data ?? [] };
+  const [policy, rows] = await Promise.all([getOperationalLearningPolicy(workspaceId), mlData.overviewRows(workspaceId, environmentId)]);
+  return { policy, models, ...rows };
 }
 
 export async function recordPlanPredictionOutcomes(params: { workspaceId: string; environmentId: string; planId: string; executionRunId: string; status: string; durationMs: number | null; downstreamImpactCount?: number | null; observedAt?: string }) {
-  const db = createServiceRoleClient();
-  const { data: predictions, error } = await db.from("operational_predictions").select("id,prediction_key,status,probability,estimate,interval_lower,interval_upper,model_id,model_version_id").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("subject_type", "operational_change_plan").eq("subject_id", params.planId).order("created_at", { ascending: false });
-  if (error) throw new Error(error.message);
+  const predictions = await mlData.planPredictions(params.workspaceId, params.environmentId, params.planId);
   const observedAt = params.observedAt ?? new Date().toISOString();
   const adverse = params.status === "succeeded" ? 0 : 1;
-  const rows = (predictions ?? []).filter((prediction) => prediction.status === "ready").map((prediction) => {
+  const rows = predictions.filter((prediction) => prediction.status === "ready").map((prediction) => {
     const evaluation: Record<string, unknown> = { executionRunId: params.executionRunId, actualStatus: params.status };
     if (prediction.probability !== null && prediction.probability !== undefined) {
       const probability = Math.max(1e-6, Math.min(1 - 1e-6, Number(prediction.probability)));
@@ -521,9 +459,6 @@ export async function recordPlanPredictionOutcomes(params: { workspaceId: string
     }
     return { workspace_id: params.workspaceId, prediction_id: prediction.id, outcome_json: { executionRunId: params.executionRunId, status: params.status, adverseOutcome: Boolean(adverse), downstreamImpactCount: params.downstreamImpactCount ?? null, durationMs: params.durationMs }, evaluation_json: evaluation, observed_at: observedAt };
   });
-  if (rows.length) {
-    const { error: outcomeError } = await db.from("operational_prediction_outcomes").upsert(rows, { onConflict: "prediction_id" });
-    if (outcomeError) throw new Error(outcomeError.message);
-  }
+  await mlData.upsertOutcomes(rows);
   return { evaluatedPredictions: rows.length };
 }
