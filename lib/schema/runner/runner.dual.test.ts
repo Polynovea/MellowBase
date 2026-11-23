@@ -67,7 +67,7 @@ describe("the ledger", () => {
 
     const { rows: [table] } = await h.owner.query("select table_name, applied_shape_hash from content_model_tables where content_model_id = $1", [model.modelId]);
     expect(table).toEqual({ table_name: model.table, applied_shape_hash: plan.expandedShapeHash });
-    expect(await h.columns(model)).toMatchObject({ entry_id: "uuid", title: "text" });
+    expect(await h.columns(model)).toMatchObject({ _entry_id: "uuid", title: "text" });
   });
 
   it("refuses a stage built from a shape that is no longer current, and runs nothing", async () => {
@@ -92,7 +92,7 @@ describe("never trusting the ledger row", () => {
     const tampered = { ...plan, steps: [{ ...plan.steps[0], column: column("hijack", "bigint") }] } as typeof plan;
     const ledgerId = await h.request(model, tampered);
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "refused", code: "plan_hash_mismatch" });
-    expect(Object.keys(await h.columns(model)).sort()).toEqual(["entry_id", "locale", "title", "variant"]);
+    expect(Object.keys(await h.columns(model)).sort()).toEqual(["_entry_id", "_locale", "_variant", "title"]);
     expect(await h.ledger(ledgerId)).toMatchObject({ status: "failed", error_ref: "plan_hash_mismatch" });
     expect((await h.runRow(ledgerId)).status).toBe("refused");
   });
@@ -118,7 +118,7 @@ describe("never trusting the ledger row", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text"), column("body", "text")]);
     const after = shape(model.table, [column("title", "text")]);
-    const forged = h.plan(model, after, [{ kind: "drop_column", stage: "expand", column: "body" }]);
+    const forged = h.plan(model, after, [{ kind: "drop_column", stage: "expand", column: "body", field: "body" }]);
     const ledgerId = await h.request(model, forged);
     expect((await h.ledger(ledgerId)).status).toBe("pending");
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "refused", code: "plan_destructive_in_expand" });
@@ -156,7 +156,7 @@ describe("security review: what a stolen app login can no longer do", () => {
   it("(c) can only insert a request: no UPDATE or DELETE of the ledger, no status of its own", async () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text"), column("body", "text")]);
-    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body" }], shape(model.table, [column("title", "text")]));
+    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body", field: "body" }], shape(model.table, [column("title", "text")]));
     const ledgerId = await h.request(model, plan, "destructive");
     // The trigger set the status from the stage.
     expect(await h.ledger(ledgerId)).toMatchObject({ status: "awaiting_confirmation", attempts: 0, confirmed_by: null });
@@ -190,8 +190,8 @@ describe("security review: what a stolen app login can no longer do", () => {
       [{ kind: "add_column", stage: "expand", column: column("y", "text") }]);
     const reverseId = await h.request({ ...victim, table: attacker.table }, reverse);
     expect(await h.run(victim)).toEqual({ ledgerId: reverseId, outcome: "refused", code: "plan_target_mismatch" });
-    expect(Object.keys(await h.columns(victim)).sort()).toEqual(["entry_id", "locale", "secret", "variant"]);
-    expect(Object.keys(await h.columns(attacker)).sort()).toEqual(["entry_id", "locale", "title", "variant"]);
+    expect(Object.keys(await h.columns(victim)).sort()).toEqual(["_entry_id", "_locale", "_variant", "secret"]);
+    expect(Object.keys(await h.columns(attacker)).sort()).toEqual(["_entry_id", "_locale", "_variant", "title"]);
   });
 
   // The worker rebuilds every plan from content_model_tables + the target content_model_versions row
@@ -212,7 +212,7 @@ describe("security review: what a stolen app login can no longer do", () => {
   it("(f) a destructive stage with no confirmation row never runs; the owner-side confirmation does", async () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text"), column("body", "text")]);
-    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body" }], shape(model.table, [column("title", "text")]));
+    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body", field: "body" }], shape(model.table, [column("title", "text")]));
     const ledgerId = await h.request(model, plan, "destructive");
     expect(await h.run(model)).toBeNull();
     // Even if the status were moved some other way, and confirmed_by filled in, there is no confirmation row.
@@ -259,7 +259,7 @@ describe("security review: what a stolen app login can no longer do", () => {
   it("no setting the app can change gets it past the trigger: the status is always forced", async () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text")]);
-    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "title" }], shape(model.table, []));
+    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "title", field: "title" }], shape(model.table, []));
     await expect(h.app.query("set role polynovea_owner")).rejects.toMatchObject({ code: "42501" });
     await h.app.query("begin");
     try {
@@ -290,7 +290,7 @@ describe("security review: what a stolen app login can no longer do", () => {
       [{ kind: "add_column", stage: "expand", column: column("x", "text") }]));
     await expect(h.confirm(expandId, model.adminId, model.apiKey)).rejects.toMatchObject({ code: "P0002" });
     // Wrong key, including another model's key: mismatch, nothing recorded.
-    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body" }], shape(model.table, [column("title", "text")]));
+    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body", field: "body" }], shape(model.table, [column("title", "text")]));
     const destructiveId = await h.request(model, plan, "destructive");
     await expect(h.confirm(destructiveId, model.adminId, other.apiKey)).rejects.toMatchObject({ code: "22023" });
     // The confirming user must be a real, active admin user.
@@ -321,7 +321,7 @@ describe("required fields: NOT VALID, then VALIDATE (no SET NOT NULL)", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text")]);
     const [draft, published] = await h.entries(model, 3);
-    await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'draft', null), ($2, '', 'published', 'Hello')`, [draft, published]);
+    await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, title) values ($1, '', 'draft', null), ($2, '', 'published', 'Hello')`, [draft, published]);
     const required = shape(model.table, [column("title", "text", { requiredWhenPublished: true })]);
     const ledgerId = await h.request(model, h.plan(model, required, [{ kind: "set_required", stage: "expand", column: "title" }]));
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "succeeded" });
@@ -331,8 +331,8 @@ describe("required fields: NOT VALID, then VALIDATE (no SET NOT NULL)", () => {
     const { rows: [nullable] } = await h.owner.query("select is_nullable from information_schema.columns where table_schema = 'content' and table_name = $1 and column_name = 'title'", [model.table]);
     expect(nullable.is_nullable).toBe("YES");
     const [, , third] = await h.entries(model, 3);
-    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'draft', null)`, [third])).resolves.toBeTruthy();
-    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'published', null)`, [third])).rejects.toMatchObject({ code: "23514" });
+    await expect(h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, title) values ($1, '', 'draft', null)`, [third])).resolves.toBeTruthy();
+    await expect(h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, title) values ($1, '', 'published', null)`, [third])).rejects.toMatchObject({ code: "23514" });
     expect((await h.runRow(ledgerId)).step_log[0]).toMatchObject({ kind: "set_required", statements: 2 });
   });
 
@@ -340,7 +340,7 @@ describe("required fields: NOT VALID, then VALIDATE (no SET NOT NULL)", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text")]);
     const [entry] = await h.entries(model, 1);
-    await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'published', null)`, [entry]);
+    await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, title) values ($1, '', 'published', null)`, [entry]);
     const required = shape(model.table, [column("title", "text", { requiredWhenPublished: true })]);
     const ledgerId = await h.request(model, h.plan(model, required, [{ kind: "set_required", stage: "expand", column: "title" }]));
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "failed", code: "check_violation" });
@@ -364,13 +364,13 @@ describe("indexes CONCURRENTLY", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("slug", "text")]);
     const [a, b] = await h.entries(model, 2);
-    await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, slug) values ($1, '', 'draft', 'same'), ($2, '', 'draft', 'same')`, [a, b]);
+    await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, slug) values ($1, '', 'draft', 'same'), ($2, '', 'draft', 'same')`, [a, b]);
     const unique = shape(model.table, [column("slug", "text", { unique: true })]);
     const ledgerId = await h.request(model, h.plan(model, unique, [{ kind: "add_index", stage: "expand", column: "slug", unique: true }]));
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "failed", code: "unique_violation" });
     expect((await h.indexes(model)).filter((index) => !index.valid)).toEqual([]);
 
-    await h.owner.query(`update content.${model.table} set slug = 'other' where entry_id = $1`, [b]);
+    await h.owner.query(`update content.${model.table} set slug = 'other' where _entry_id = $1`, [b]);
     await h.retry(ledgerId);
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "succeeded" });
     expect(await h.indexes(model)).toContainEqual({ name: derivedName("uq", model.table, "slug"), valid: true });

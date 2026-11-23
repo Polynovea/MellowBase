@@ -37,6 +37,7 @@ describe("0074: read-only tables for the app role", () => {
       if (pass !== "after the migrations") await owner.query("select public.polynovea_apply_app_access()");
       for (const table of READ_ONLY) expect({ table, ...(await privileges(table)) }).toEqual({ table, s: true, i: false, u: false, d: false, t: false });
       expect(await privileges("installation")).toEqual({ s: true, i: true, u: false, d: false, t: false });
+      expect(await privileges("content_model_versions")).toEqual({ s: true, i: true, u: false, d: false, t: false });
       // The ledger: read, and insert the request columns only; never update or delete.
       expect(await privileges("schema_migration_ledger")).toEqual({ s: true, i: false, u: false, d: false, t: false });
       const { rows: insertable } = await owner.query(

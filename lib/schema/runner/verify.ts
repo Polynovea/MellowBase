@@ -28,8 +28,9 @@ import type pg from "pg";
 import { FIELD_TYPES } from "@/lib/schema/fields/types";
 import { hashShape } from "@/lib/schema/engine/hash";
 import { schemaLimitsFromEnv, type SchemaLimits } from "@/lib/schema/engine/limits";
-import { nameProblem, TABLE_NAME_PATTERN, tableNameCandidates } from "@/lib/schema/engine/names";
+import { COLUMN_NAME_PATTERN, nameProblem, TABLE_NAME_PATTERN, tableNameCandidates } from "@/lib/schema/engine/names";
 import { PG_COLUMN_TYPES, type MigrationPlan, type PlanStage, type PlanStep, type TableShape } from "@/lib/schema/engine/plan";
+import type { FieldRename } from "@/lib/schema/engine/planner";
 import { RefusedError } from "@/lib/schema/runner/errors";
 import { kyselyOn, type SchemaEngine } from "@/lib/schema/runner/engine";
 
@@ -73,12 +74,16 @@ export interface VerifiedStage {
 // ── Plan schema (strict: unknown keys are refused at every level) ───────────────────────────────────
 
 const hash = z.string().regex(/^[0-9a-f]{64}$/);
+/** Physical names (columns, tables): 63 bytes at most. */
 const name = z.string().max(63);
+/** Field keys and model api keys: the key rule has no length cap of its own. */
+const key = z.string().max(1_000);
 const pgType = z.enum(PG_COLUMN_TYPES);
 const fieldType = z.enum(FIELD_TYPES);
 
 const columnShape = z.strictObject({
   name,
+  field: key,
   fieldType,
   pgType,
   requiredWhenPublished: z.boolean(),
@@ -95,10 +100,10 @@ const planStep = z.discriminatedUnion("kind", [
   z.strictObject({ ...stepBase, kind: z.literal("create_table"), columns: z.array(columnShape).max(2_000) }),
   z.strictObject({ ...stepBase, kind: z.literal("drop_table"), affectedRows: count }),
   z.strictObject({ ...stepBase, kind: z.literal("add_column"), column: columnShape }),
-  z.strictObject({ ...stepBase, kind: z.literal("drop_column"), column: name, affectedValues: count }),
-  z.strictObject({ ...stepBase, kind: z.literal("rename_column"), from: name, to: name, column: columnShape }),
+  z.strictObject({ ...stepBase, kind: z.literal("drop_column"), column: name, field: key, affectedValues: count }),
+  z.strictObject({ ...stepBase, kind: z.literal("rename_column"), from: name, to: name, field: key, column: columnShape }),
   z.strictObject({ ...stepBase, kind: z.literal("backfill_column"), column: name, pgType, value: z.unknown() }),
-  z.strictObject({ ...stepBase, kind: z.literal("drop_field_metadata"), field: name }),
+  z.strictObject({ ...stepBase, kind: z.literal("drop_field_metadata"), field: key }),
   z.strictObject({ ...stepBase, kind: z.literal("change_type"), column: name, from: pgType, to: pgType, fromField: fieldType, toField: fieldType }),
   z.strictObject({ ...stepBase, kind: z.literal("change_field_type"), column: name, fromField: fieldType, toField: fieldType }),
   z.strictObject({ ...stepBase, kind: z.literal("replace_column"), column: columnShape, fromField: fieldType, fromPgType: pgType, affectedValues: count }),
@@ -114,12 +119,13 @@ const planSchema = z.strictObject({
   formatVersion: z.literal(1),
   workspaceId: z.uuid(),
   modelId: z.uuid(),
-  modelApiKey: name,
+  modelApiKey: key,
   table: name,
   baseShapeHash: hash,
   expandedShapeHash: hash,
   targetShapeHash: hash,
   targetSchemaHash: hash.nullable(),
+  targetVersionId: z.uuid().nullable(),
   planHash: hash,
   baseShape: tableShape.nullable(),
   expandedShape: tableShape.nullable(),
@@ -153,26 +159,47 @@ export function stageBaseHash(plan: MigrationPlan, stage: PlanStage): string {
   return stage === "expand" ? plan.baseShapeHash : plan.expandedShapeHash;
 }
 
-/** Every column name a step refers to. */
+/** Every physical column name a step refers to (a field without a column has none). */
 export function stepColumnNames(step: PlanStep): string[] {
   switch (step.kind) {
     case "create_table":
       return step.columns.map((column) => column.name);
     case "drop_table":
+    case "drop_field_metadata":
       return [];
     case "add_column":
     case "replace_column":
       return [step.column.name];
     case "rename_column":
       return [step.from, step.to, step.column.name];
-    case "drop_field_metadata":
-      return [step.field];
     default:
       return [step.column];
   }
 }
 
-function assertFieldName(value: string) {
+/** Every field key a step refers to. */
+function stepFieldKeys(step: PlanStep): string[] {
+  switch (step.kind) {
+    case "create_table":
+      return step.columns.map((column) => column.field);
+    case "add_column":
+    case "replace_column":
+      return [step.column.field];
+    case "rename_column":
+      return [step.field, step.column.field];
+    case "drop_column":
+    case "drop_field_metadata":
+      return [step.field];
+    default:
+      return [];
+  }
+}
+
+function assertColumnName(value: string) {
+  if (typeof value !== "string" || !COLUMN_NAME_PATTERN.test(value)) throw new RefusedError("plan_name_rejected");
+}
+
+function assertFieldKey(value: string) {
   if (nameProblem(value, "field")) throw new RefusedError("plan_name_rejected");
 }
 
@@ -182,7 +209,8 @@ function assertShape(shape: TableShape | null, expectedHash: string, table: stri
   if (shape.table !== table) throw new RefusedError("plan_target_mismatch");
   for (const [key, column] of Object.entries(shape.columns)) {
     if (column.name !== key) throw new RefusedError("plan_malformed");
-    assertFieldName(key);
+    assertColumnName(key);
+    assertFieldKey(column.field);
   }
 }
 
@@ -197,7 +225,7 @@ function indexCount(shape: TableShape | null): number {
  */
 export function verifyRowAgainstPlan(
   row: LedgerRow,
-  engine: Pick<SchemaEngine, "computePlanHash" | "computeStageHash" | "validatePlan">,
+  engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan">,
   limits: SchemaLimits = schemaLimitsFromEnv(),
   planSource: unknown = row.plan_json,
 ): Omit<VerifiedStage, "createsTable"> {
@@ -206,16 +234,14 @@ export function verifyRowAgainstPlan(
   const plan = parsePlan(planSource);
 
   let recomputed: string;
-  let stageHash: string;
   try {
     recomputed = engine.computePlanHash(plan);
-    stageHash = engine.computeStageHash(plan, stage);
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    throw new RefusedError(code === "stage_hash_unavailable" ? code : "plan_malformed");
+  } catch {
+    throw new RefusedError("plan_malformed");
   }
-  // The request asked for exactly this stage: the row's hash is the stage's hash, recomputed here.
-  if (recomputed !== plan.planHash || row.plan_hash !== stageHash) throw new RefusedError("plan_hash_mismatch");
+  // The row's plan_hash is the hash of exactly this stage's plan (the destructive stage is planned
+  // again from the table as it is after the expand stage, on both sides).
+  if (recomputed !== plan.planHash || row.plan_hash !== plan.planHash) throw new RefusedError("plan_hash_mismatch");
   if (row.base_shape_hash !== stageBaseHash(plan, stage)) throw new RefusedError("ledger_base_hash_mismatch");
   // The row's model and workspace say which model the request is for; its table_name, model_api_key
   // and plan_json are never relied on (the trusted plan and content_model_tables decide the table).
@@ -229,7 +255,8 @@ export function verifyRowAgainstPlan(
 
   for (const step of plan.steps) {
     if (step.table !== plan.table) throw new RefusedError("plan_target_mismatch");
-    for (const column of stepColumnNames(step)) assertFieldName(column);
+    for (const column of stepColumnNames(step)) assertColumnName(column);
+    for (const field of stepFieldKeys(step)) assertFieldKey(field);
     if (DESTRUCTIVE_KINDS.has(step.kind) && step.stage !== "destructive") throw new RefusedError("plan_destructive_in_expand");
   }
 
@@ -257,13 +284,22 @@ export function verifyRowAgainstPlan(
 export async function verifyLedgerRow(
   client: pg.ClientBase,
   row: LedgerRow,
-  engine: Pick<SchemaEngine, "computePlanHash" | "computeStageHash" | "validatePlan" | "buildPlanFromTrustedState">,
+  engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan" | "rebuildRequestedPlan">,
   limits: SchemaLimits = schemaLimitsFromEnv(),
 ): Promise<VerifiedStage> {
-  // The plan to run comes from trusted state, never from plan_json.
+  // The plan to run comes from trusted state, never from plan_json, and must hash as requested.
+  if (!row.content_model_id) throw new RefusedError("plan_target_mismatch");
+  if (row.stage !== "expand" && row.stage !== "destructive") throw new RefusedError("ledger_stage_invalid");
   let trusted: MigrationPlan;
   try {
-    trusted = await engine.buildPlanFromTrustedState(kyselyOn(client), row);
+    trusted = await engine.rebuildRequestedPlan(kyselyOn(client), {
+      contentModelId: row.content_model_id,
+      targetVersionId: row.target_version_id,
+      renames: Array.isArray(row.renames) ? (row.renames as FieldRename[]) : [],
+      stage: row.stage,
+      requestedPlanHash: row.plan_hash,
+      limits,
+    });
   } catch (error) {
     const code = (error as { code?: unknown }).code;
     throw new RefusedError(typeof code === "string" && /^[a-z0-9_]{1,80}$/.test(code) ? code : "trusted_plan_unavailable");

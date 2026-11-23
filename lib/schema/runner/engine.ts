@@ -11,38 +11,33 @@ import type { DbExecutor, DbTransaction } from "@/lib/db";
 import type { DB } from "@/lib/db/generated/database";
 import type { SchemaLimits } from "@/lib/schema/engine/limits";
 import type { MigrationPlan, PlanStage, PlanStep, RenderedStatement, SchemaHash } from "@/lib/schema/engine/plan";
+import type { FieldRename } from "@/lib/schema/engine/planner";
 
-/** The request columns of a ledger row the engine rebuilds a plan from (never its plan_json). */
-export interface PlanRequest {
-  id: string;
-  workspace_id: string;
-  content_model_id: string | null;
-  model_api_key: string;
-  table_name: string;
-  stage: string;
-  plan_hash: string;
-  target_version_id: string | null;
-  /** [{ from, to }] field renames the request carries (re-validated by the engine). */
-  renames?: unknown;
-  created_at?: string | Date;
+/** What a ledger row asks for: the engine rebuilds the plan from this and trusted state (never from plan_json). */
+export interface RequestedPlan {
+  contentModelId: string;
+  /** The version to build toward; null deletes the model's table (the model must be archived). */
+  targetVersionId: string | null;
+  /** Field renames the request carries; the engine re-validates them. */
+  renames: FieldRename[];
+  stage: PlanStage;
+  /** The ledger row's plan_hash: the hash of that stage's own plan. */
+  requestedPlanHash: string;
+  limits?: SchemaLimits;
 }
 
 export interface SchemaEngine {
   /**
-   * Rebuilds the request's plan from trusted state only: the model's recorded table
-   * (content_model_tables), the target content_model_versions row and the stage. The worker runs this
-   * plan, and only if its hash equals the ledger row's plan_hash; plan_json is never executed.
+   * Rebuilds the request's plan from trusted state only (the model's recorded table, the target
+   * content_model_versions row, the model row, the re-validated renames and the stage) and throws
+   * (stale_plan, not_found, invalid_plan, stage_not_ready) unless it hashes as requested. The worker
+   * runs only this plan; plan_json is never executed.
    */
-  buildPlanFromTrustedState(db: DbExecutor, request: PlanRequest): Promise<MigrationPlan>;
+  rebuildRequestedPlan(db: DbExecutor, request: RequestedPlan): Promise<MigrationPlan>;
   /** The SQL for one step, in order, each with how it must run. */
   renderStep(step: PlanStep): RenderedStatement[];
   /** The plan's identity hash, recomputed from its contents. */
   computePlanHash(plan: MigrationPlan): SchemaHash;
-  /**
-   * One stage's hash: what the ledger row's plan_hash holds. The worker rebuilds the stage from the
-   * current applied shape, the target version and the renames, and runs it only if this matches.
-   */
-  computeStageHash(plan: MigrationPlan, stage: PlanStage): SchemaHash;
   /** Throws unless the plan is well formed, within the name rules and caps, and its hashes replay. Pure. */
   validatePlan(plan: MigrationPlan, options?: { limits?: SchemaLimits }): void;
   /**

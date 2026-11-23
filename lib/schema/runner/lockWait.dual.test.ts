@@ -17,7 +17,7 @@ describe("a schema change while a 30-second query holds a lock", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text")]);
     const ids = await h.entries(model, 50);
-    for (const id of ids) await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'published', 'x')`, [id]);
+    for (const id of ids) await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, title) values ($1, '', 'published', 'x')`, [id]);
     const ledgerId = await h.request(model, h.plan(model, shape(model.table, [column("title", "text"), column("views", "bigint")]),
       [{ kind: "add_column", stage: "expand", column: column("views", "bigint") }]));
 
@@ -40,7 +40,7 @@ describe("a schema change while a 30-second query holds a lock", () => {
       const probing = (async () => {
         while (!done) {
           const started = Date.now();
-          await prober.query(`select title from content.${model.table} where entry_id = $1`, [ids[0]]);
+          await prober.query(`select title from content.${model.table} where _entry_id = $1`, [ids[0]]);
           latencies.push(Date.now() - started);
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
@@ -89,7 +89,7 @@ describe("an index built CONCURRENTLY while a 30-second transaction runs elsewhe
     const model = await h.newModel();
     await h.createTable(model, [column("slug", "text")]);
     const ids = await h.entries(model, 20);
-    for (const id of ids) await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, slug) values ($1, '', 'draft', $2)`, [id, id]);
+    for (const id of ids) await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, slug) values ($1, '', 'draft', $2)`, [id, id]);
     const ledgerId = await h.request(model, h.plan(model, shape(model.table, [column("slug", "text", { unique: true })]),
       [{ kind: "add_index", stage: "expand", column: "slug", unique: true }]));
 
@@ -109,8 +109,8 @@ describe("an index built CONCURRENTLY while a 30-second transaction runs elsewhe
       const probing = (async () => {
         while (!done) {
           const started = Date.now();
-          await prober.query(`select slug from content.${model.table} where entry_id = $1`, [ids[0]]);
-          await prober.query(`update content.${model.table} set slug = slug where entry_id = $1`, [ids[1]]);
+          await prober.query(`select slug from content.${model.table} where _entry_id = $1`, [ids[0]]);
+          await prober.query(`update content.${model.table} set slug = slug where _entry_id = $1`, [ids[1]]);
           latencies.push(Date.now() - started);
           await new Promise((resolve) => setTimeout(resolve, 100));
         }

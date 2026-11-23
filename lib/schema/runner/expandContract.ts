@@ -35,7 +35,7 @@
 import { createHash } from "node:crypto";
 import { sql, type RawBuilder } from "kysely";
 import type pg from "pg";
-import { assertIdentifier, derivedName, TABLE_NAME_PATTERN, type DerivedNameKind } from "@/lib/schema/engine/names";
+import { assertIdentifier, derivedName, STORAGE_COLUMNS, TABLE_NAME_PATTERN, type DerivedNameKind } from "@/lib/schema/engine/names";
 import { PG_COLUMN_TYPES, type ColumnShape, type MigrationPlan, type PgColumnType, type PlanStep, type RenderedStatement, type TableShape } from "@/lib/schema/engine/plan";
 import { applyStepToShape } from "@/lib/schema/engine/planner";
 import { compile } from "@/lib/schema/runner/engine";
@@ -43,6 +43,11 @@ import { RefusedError, RunnerError } from "@/lib/schema/runner/errors";
 import { executeStatements, inLockTimedTransaction, type StepContext, type StepResult } from "@/lib/schema/runner/execute";
 
 export const BACKFILL_BATCH_SIZE = 1_000;
+
+// The storage columns every model table has (the primary key), from the engine.
+const ENTRY = sql.id(STORAGE_COLUMNS.entryId);
+const VARIANT = sql.id(STORAGE_COLUMNS.variant);
+const LOCALE = sql.id(STORAGE_COLUMNS.locale);
 export const CONTRACT_MIN_DELAY_MS = 15 * 60_000;
 export const CONTRACT_MAX_DELAY_MS = 7 * 24 * 60 * 60_000;
 
@@ -59,6 +64,7 @@ interface TaskRow {
   status: "expanding" | "awaiting_contract" | "contracted" | "failed";
   phase: Phase;
   phase_statement: number;
+  /** The last primary key the backfill finished (JSON keys are the logical names). */
   backfill_cursor: { entry_id: string; variant: string; locale: string } | null;
 }
 
@@ -156,20 +162,20 @@ async function backfill(ctx: ExpandContext, stepIndex: number, task: TaskRow): P
   let batch = 0;
   let retries = 0;
   for (;;) {
-    const after = cursor ? sql`where (entry_id, variant, locale) > (${cursor.entry_id}, ${cursor.variant}, ${cursor.locale})` : sql``;
+    const after = cursor ? sql`where (${ENTRY}, ${VARIANT}, ${LOCALE}) > (${cursor.entry_id}, ${cursor.variant}, ${cursor.locale})` : sql``;
     const result = await inLockTimedTransaction(ctx.client, async () => {
       const { rows: [row] } = await run(ctx.client, sql`
         with batch as (
-          select entry_id, variant, locale from ${table(task.table_name)} ${after}
-          order by entry_id, variant, locale limit ${size}
+          select ${ENTRY}, ${VARIANT}, ${LOCALE} from ${table(task.table_name)} ${after}
+          order by ${ENTRY}, ${VARIANT}, ${LOCALE} limit ${size}
         ), touched as (
           update ${table(task.table_name)} t set ${column(task.old_column)} = t.${column(task.old_column)}
-            from batch b where t.entry_id = b.entry_id and t.variant = b.variant and t.locale = b.locale
+            from batch b where t.${ENTRY} = b.${ENTRY} and t.${VARIANT} = b.${VARIANT} and t.${LOCALE} = b.${LOCALE}
           returning 1
         )
         select (select count(*) from touched)::int as rows,
-               (select jsonb_build_object('entry_id', entry_id, 'variant', variant, 'locale', locale)
-                  from batch order by entry_id desc, variant desc, locale desc limit 1) as last`);
+               (select jsonb_build_object('entry_id', ${ENTRY}, 'variant', ${VARIANT}, 'locale', ${LOCALE})
+                  from batch order by ${ENTRY} desc, ${VARIANT} desc, ${LOCALE} desc limit 1) as last`);
       const { rows: count, last } = row as { rows: number; last: TaskRow["backfill_cursor"] };
       await run(ctx.client, sql`
         update public.schema_expand_contract_tasks
@@ -247,7 +253,7 @@ export async function runExpandStep(ctx: ExpandContext, stepIndex: number, planI
   if (step.kind === "change_type" && step.from !== fromType) throw new RefusedError("plan_malformed");
   const toType = isRename ? fromType : step.to;
   // What the column must be once this step is done: renamed, or of the new type, constraints kept.
-  const target: ColumnShape = isRename ? { ...source, name: step.to } : { ...source, pgType: toType, fieldType: step.toField };
+  const target: ColumnShape = isRename ? { ...source, name: step.to, field: step.field } : { ...source, pgType: toType, fieldType: step.toField };
 
   let task = await openTask(ctx, planIndex, step);
   if (task.status === "awaiting_contract" || task.status === "contracted") return { statements: 0, lockRetries: 0 };
@@ -280,7 +286,7 @@ export async function runExpandStep(ctx: ExpandContext, stepIndex: number, planI
     if (task.phase === "guard_index") {
       const guard = derived("cx", task.id);
       const statement: RenderedStatement = {
-        sql: sql`create index concurrently if not exists ${sql.id(guard)} on ${tbl} (entry_id) where ${unconverted(task, fromType)}`,
+        sql: sql`create index concurrently if not exists ${sql.id(guard)} on ${tbl} (${ENTRY}) where ${unconverted(task, fromType)}`,
         transactional: false,
         lockSensitive: true,
       };

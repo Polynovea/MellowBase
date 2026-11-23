@@ -59,7 +59,7 @@ describe("verifyRowAgainstPlan", () => {
     expect(refusal(() => verifyRowAgainstPlan(row(qualified), engine))).toBe("plan_target_mismatch");
     const wholePlan = buildPlan({
       workspaceId: WS, modelId: MODEL, modelApiKey: "posts", table: "workspaces", base: null, expanded: shape("workspaces", []),
-      steps: [{ kind: "drop_column", stage: "destructive", column: "slug" }],
+      steps: [{ kind: "drop_column", stage: "destructive", column: "slug", field: "slug" }],
     });
     expect(refusal(() => verifyRowAgainstPlan(row(wholePlan), engine))).toBe("plan_target_mismatch");
     const otherRow = plan();
@@ -71,7 +71,7 @@ describe("verifyRowAgainstPlan", () => {
   it("(c) checks the destructive stage on its own; the confirmation itself is a row (runner.dual.test.ts)", () => {
     const p = plan({
       base: expanded, expanded, target: base,
-      steps: [{ kind: "drop_column", stage: "destructive", column: "views" }],
+      steps: [{ kind: "drop_column", stage: "destructive", column: "views", field: "views" }],
     });
     const destructive = { stage: "destructive", base_shape_hash: p.expandedShapeHash };
     // The row's own confirmed_by/confirmed_at are not evidence of anything: they are ignored.
@@ -80,7 +80,7 @@ describe("verifyRowAgainstPlan", () => {
   });
 
   it("refuses data-deleting steps placed in the expand stage", () => {
-    const p = plan({ base: expanded, expanded: base, steps: [{ kind: "drop_column", stage: "expand", column: "views" }] });
+    const p = plan({ base: expanded, expanded: base, steps: [{ kind: "drop_column", stage: "expand", column: "views", field: "views" }] });
     expect(refusal(() => verifyRowAgainstPlan(row(p), engine))).toBe("plan_destructive_in_expand");
   });
 
@@ -100,9 +100,13 @@ describe("verifyRowAgainstPlan", () => {
   });
 
   it("re-runs the name rules and caps", () => {
-    const badName = shape("m_posts", [column("title", "text"), column("select", "bigint")]);
-    const p = plan({ expanded: badName, steps: [{ kind: "add_column", stage: "expand", column: column("select", "bigint") }] });
+    // Reserved words are fine as (quoted) column names now; a name outside the rules is not.
+    const badName = shape("m_posts", [column("title", "text"), column("Views", "bigint")]);
+    const p = plan({ expanded: badName, steps: [{ kind: "add_column", stage: "expand", column: column("Views", "bigint") }] });
     expect(refusal(() => verifyRowAgainstPlan(row(p), engine))).toBe("plan_name_rejected");
+    const badKey = shape("m_posts", [column("title", "text"), column("views", "bigint", { field: "Views Count" })]);
+    const k = plan({ expanded: badKey, steps: [{ kind: "add_column", stage: "expand", column: column("views", "bigint", { field: "Views Count" }) }] });
+    expect(refusal(() => verifyRowAgainstPlan(row(k), engine))).toBe("plan_name_rejected");
     const injected = shape("m_posts", [column("title", "text"), column('x" text); drop table y; --', "bigint")]);
     const q = plan({ expanded: injected, steps: [{ kind: "add_column", stage: "expand", column: column('x" text); drop table y; --', "bigint") }] });
     expect(["plan_malformed", "plan_name_rejected"]).toContain(refusal(() => verifyRowAgainstPlan(row(q), engine)));

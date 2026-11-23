@@ -33,16 +33,16 @@ describe("rename by expand and contract", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text", { unique: true })]);
     const ids = await h.entries(model, 36);
-    for (const [i, id] of ids.slice(0, 35).entries()) await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'draft', $2)`, [id, `t${i}`]);
+    for (const [i, id] of ids.slice(0, 35).entries()) await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, title) values ($1, '', 'draft', $2)`, [id, `t${i}`]);
 
     const renamed = shape(model.table, [column("headline", "text", { unique: true })]);
-    const ledgerId = await h.request(model, h.plan(model, renamed, [{ kind: "rename_column", stage: "expand", from: "title", to: "headline", column: model.shape!.columns.title }]));
+    const ledgerId = await h.request(model, h.plan(model, renamed, [{ kind: "rename_column", stage: "expand", from: "title", to: "headline", field: "headline", column: model.shape!.columns.title }]));
     const hooks = {
       async afterBackfillBatch({ batch }: { batch: number }) {
         if (batch === 1) {
           // Writers that know only the old name, and writers that know only the new one, during the expand.
-          await h.app.query(`update content.${model.table} set title = 'via-old' where entry_id = $1`, [ids[0]]);
-          await h.app.query(`insert into content.${model.table} (entry_id, locale, variant, headline) values ($1, '', 'draft', 'via-new')`, [ids[35]]);
+          await h.app.query(`update content.${model.table} set title = 'via-old' where _entry_id = $1`, [ids[0]]);
+          await h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, headline) values ($1, '', 'draft', 'via-new')`, [ids[35]]);
         }
         if (batch === 2) throw new Error("simulated crash");
       },
@@ -51,7 +51,7 @@ describe("rename by expand and contract", () => {
     const crashed = await task(model);
     expect(crashed).toMatchObject({ status: "failed", phase: "backfill", backfilled_rows: "20" });
     const { rows: [{ rest }] } = await h.owner.query(
-      `select count(*)::int as rest from content.${model.table} where (entry_id, variant, locale) > ($1::uuid, $2, $3)`,
+      `select count(*)::int as rest from content.${model.table} where (_entry_id, _variant, _locale) > ($1::uuid, $2, $3)`,
       [crashed.backfill_cursor.entry_id, crashed.backfill_cursor.variant, crashed.backfill_cursor.locale],
     );
 
@@ -65,14 +65,14 @@ describe("rename by expand and contract", () => {
       `select count(*)::int as total, count(*) filter (where headline is distinct from title)::int as differ from content.${model.table}`,
     );
     expect(counts).toEqual({ total: 36, differ: 0 });
-    expect((await h.owner.query(`select title, headline from content.${model.table} where entry_id = $1`, [ids[35]])).rows[0]).toEqual({ title: "via-new", headline: "via-new" });
+    expect((await h.owner.query(`select title, headline from content.${model.table} where _entry_id = $1`, [ids[35]])).rows[0]).toEqual({ title: "via-new", headline: "via-new" });
     expect(await h.indexes(model)).toContainEqual({ name: derivedName("uq", model.table, "headline"), valid: true });
     // The old column's unique index went once the new one carried it.
     expect((await h.indexes(model)).map((index) => index.name)).not.toContain(derivedName("uq", model.table, "title"));
 
     // After the switch, a writer of the new name keeps the old one in step until the contract.
-    await h.app.query(`update content.${model.table} set headline = 'renamed' where entry_id = $1`, [ids[1]]);
-    expect((await h.owner.query(`select title from content.${model.table} where entry_id = $1`, [ids[1]])).rows[0].title).toBe("renamed");
+    await h.app.query(`update content.${model.table} set headline = 'renamed' where _entry_id = $1`, [ids[1]]);
+    expect((await h.owner.query(`select title from content.${model.table} where _entry_id = $1`, [ids[1]])).rows[0].title).toBe("renamed");
 
     const ctx = { client: h.session, retry: FAST_RETRY };
     const soon = new Date(Date.now() + 60_000);
@@ -80,7 +80,7 @@ describe("rename by expand and contract", () => {
     expect(await contractDue(ctx, { releaseId: "next-release", modelId: model.modelId, now: soon })).toBe(0);
     const later = new Date(Date.now() + 16 * 60_000);
     expect(await contractDue(ctx, { releaseId: "next-release", modelId: model.modelId, now: later })).toBe(1);
-    expect(Object.keys(await h.columns(model)).sort()).toEqual(["entry_id", "headline", "locale", "variant"]);
+    expect(Object.keys(await h.columns(model)).sort()).toEqual(["_entry_id", "_locale", "_variant", "headline"]);
     expect(await triggers(model)).toEqual([]);
     expect(await task(model)).toMatchObject({ status: "contracted" });
   });
@@ -88,7 +88,7 @@ describe("rename by expand and contract", () => {
   it("contracts after 7 days even when no new release came", async () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text")]);
-    await h.request(model, h.plan(model, shape(model.table, [column("name", "text")]), [{ kind: "rename_column", stage: "expand", from: "title", to: "name", column: model.shape!.columns.title }]));
+    await h.request(model, h.plan(model, shape(model.table, [column("name", "text")]), [{ kind: "rename_column", stage: "expand", from: "title", to: "name", field: "name", column: model.shape!.columns.title }]));
     expect(await h.run(model)).toMatchObject({ outcome: "succeeded" });
     const ctx = { client: h.session, retry: FAST_RETRY };
     expect(await contractDue(ctx, { releaseId: "test-release", modelId: model.modelId, now: new Date(Date.now() + 6 * 86_400_000) })).toBe(0);
@@ -101,7 +101,7 @@ describe("type change by expand and contract", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("amount", "text", { requiredWhenPublished: true, indexed: true })]);
     const ids = await h.entries(model, rows + 2);
-    for (const [i, id] of ids.slice(0, rows).entries()) await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, amount) values ($1, '', 'published', $2)`, [id, String(i * 10)]);
+    for (const [i, id] of ids.slice(0, rows).entries()) await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, amount) values ($1, '', 'published', $2)`, [id, String(i * 10)]);
     const numeric = shape(model.table, [column("amount", "numeric", { requiredWhenPublished: true, indexed: true })]);
     const plan = h.plan(model, numeric, [{ kind: "change_type", stage: "expand", column: "amount", from: "text", to: "numeric", fromField: "text", toField: "number" }]);
     return { model, ids, plan };
@@ -112,7 +112,7 @@ describe("type change by expand and contract", () => {
     const ledgerId = await h.request(model, plan);
     const hooks = {
       async afterBackfillBatch({ batch }: { batch: number }) {
-        if (batch === 1) await h.app.query(`insert into content.${model.table} (entry_id, locale, variant, amount) values ($1, '', 'published', 'abc')`, [ids[12]]);
+        if (batch === 1) await h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, amount) values ($1, '', 'published', 'abc')`, [ids[12]]);
       },
     };
     expect(await h.run(model, { hooks, batchSize: 5 })).toEqual({ ledgerId, outcome: "failed", code: "type_conversion_failed" });
@@ -123,7 +123,7 @@ describe("type change by expand and contract", () => {
     expect(await task(model)).toMatchObject({ status: "failed", phase: "precheck", error_ref: "type_conversion_failed" });
 
     // Fix the value and retry: resumes at the check, switches, and the column is numeric.
-    await h.app.query(`update content.${model.table} set amount = '42' where entry_id = $1`, [ids[12]]);
+    await h.app.query(`update content.${model.table} set amount = '42' where _entry_id = $1`, [ids[12]]);
     await h.retry(ledgerId);
     expect(await h.run(model, { batchSize: 5 })).toEqual({ ledgerId, outcome: "succeeded" });
     const columns = await h.columns(model);
@@ -138,8 +138,8 @@ describe("type change by expand and contract", () => {
     expect(check.convalidated).toBe(true);
     expect(check.def).toMatch(/amount IS NOT NULL/);
     expect(await triggers(model)).toEqual([]);
-    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, amount) values ($1, '', 'published', null)`, [ids[13]])).rejects.toMatchObject({ code: "23514" });
-    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, amount) values ($1, '', 'draft', null)`, [ids[13]])).resolves.toBeTruthy();
+    await expect(h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, amount) values ($1, '', 'published', null)`, [ids[13]])).rejects.toMatchObject({ code: "23514" });
+    await expect(h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, amount) values ($1, '', 'draft', null)`, [ids[13]])).resolves.toBeTruthy();
 
     // Contract drops the retired column.
     expect(await contractDue({ client: h.session, retry: FAST_RETRY }, { releaseId: "x", modelId: model.modelId, dueOnly: false })).toBe(1);
@@ -155,17 +155,17 @@ describe("type change by expand and contract", () => {
         // 1st: the guard index; 2nd: the new column's index, after the pre-check passed.
         concurrentStatements += 1;
         if (concurrentStatements === 2) {
-          await h.app.query(`insert into content.${model.table} (entry_id, locale, variant, amount) values ($1, '', 'published', 'twelve')`, [ids[4]]);
+          await h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, amount) values ($1, '', 'published', 'twelve')`, [ids[4]]);
         }
       },
     };
     expect(await h.run(model, { hooks })).toEqual({ ledgerId, outcome: "failed", code: "type_conversion_failed" });
     expect(concurrentStatements).toBe(2);
     expect((await h.columns(model)).amount).toBe("text");
-    expect((await h.owner.query(`select amount from content.${model.table} where entry_id = $1`, [ids[4]])).rows[0].amount).toBe("twelve");
+    expect((await h.owner.query(`select amount from content.${model.table} where _entry_id = $1`, [ids[4]])).rows[0].amount).toBe("twelve");
     expect(await task(model)).toMatchObject({ status: "failed", phase: "switch" });
 
-    await h.app.query(`update content.${model.table} set amount = '12' where entry_id = $1`, [ids[4]]);
+    await h.app.query(`update content.${model.table} set amount = '12' where _entry_id = $1`, [ids[4]]);
     await h.retry(ledgerId);
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "succeeded" });
     expect((await h.columns(model)).amount).toBe("numeric");
@@ -182,10 +182,10 @@ describe("later steps on the renamed or retyped column", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text", { indexed: true })]);
     const ids = await h.entries(model, 3);
-    await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'published', 'a'), ($2, '', 'draft', null)`, [ids[0], ids[1]]);
+    await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, title) values ($1, '', 'published', 'a'), ($2, '', 'draft', null)`, [ids[0], ids[1]]);
     const expanded = shape(model.table, [column("headline", "text", { indexed: true, requiredWhenPublished: true })]);
     const plan = h.plan(model, expanded, [
-      { kind: "rename_column", stage: "expand", from: "title", to: "headline", column: model.shape!.columns.title },
+      { kind: "rename_column", stage: "expand", from: "title", to: "headline", field: "headline", column: model.shape!.columns.title },
       { kind: "set_required", stage: "expand", column: "headline" },
     ]);
     const ledgerId = await h.request(model, plan);
@@ -195,15 +195,15 @@ describe("later steps on the renamed or retyped column", () => {
     const { rows: [check] } = await h.owner.query("select convalidated from pg_constraint where conname = $1", [derivedName("ck", model.table, "headline")]);
     expect(check).toEqual({ convalidated: true });
     expect(await h.indexes(model)).toContainEqual({ name: derivedName("ix", model.table, "headline"), valid: true });
-    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, headline) values ($1, '', 'published', null)`, [ids[2]])).rejects.toMatchObject({ code: "23514" });
-    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, headline) values ($1, '', 'draft', null)`, [ids[2]])).resolves.toBeTruthy();
+    await expect(h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, headline) values ($1, '', 'published', null)`, [ids[2]])).rejects.toMatchObject({ code: "23514" });
+    await expect(h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, headline) values ($1, '', 'draft', null)`, [ids[2]])).resolves.toBeTruthy();
   });
 
   it("a type change followed by a unique index on the column: runs once, ends at the plan's expanded shape", async () => {
     const model = await h.newModel();
     await h.createTable(model, [column("amount", "bigint")]);
     const ids = await h.entries(model, 4);
-    for (const [i, id] of ids.entries()) await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, amount) values ($1, '', 'draft', $2)`, [id, i]);
+    for (const [i, id] of ids.entries()) await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, amount) values ($1, '', 'draft', $2)`, [id, i]);
     const expanded = shape(model.table, [column("amount", "numeric", { unique: true })]);
     const plan = h.plan(model, expanded, [
       { kind: "change_type", stage: "expand", column: "amount", from: "bigint", to: "numeric", fromField: "integer", toField: "number" },

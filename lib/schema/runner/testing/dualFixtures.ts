@@ -8,7 +8,7 @@ import type { ColumnShape, MigrationPlan, PlanStage, TableShape } from "@/lib/sc
 import { kyselyOn } from "@/lib/schema/runner/engine";
 import { confirmPlanStage, requestPlanStage, retryPlanStage } from "@/lib/schema/runner/request";
 import { runNextStage, type RunnerOptions, type StageOutcome } from "@/lib/schema/runner/runner";
-import { bare, buildPlan, constraintSteps, shape, testEngine } from "@/lib/schema/runner/testing/plans";
+import { bare, buildPlan, constraintSteps, shape, TEST_LIMITS, testEngine } from "@/lib/schema/runner/testing/plans";
 
 function url(name: string): string {
   const value = process.env[name];
@@ -77,7 +77,7 @@ export class RunnerHarness {
 
   async run(model: Model, options: Partial<RunnerOptions> = {}): Promise<StageOutcome | null> {
     return runNextStage(this.session, {
-      engine: testEngine, workerId: "test-worker", releaseId: "test-release", retry: FAST_RETRY, ...options, modelId: model.modelId,
+      engine: testEngine, workerId: "test-worker", releaseId: "test-release", retry: FAST_RETRY, limits: TEST_LIMITS, ...options, modelId: model.modelId,
     });
   }
 

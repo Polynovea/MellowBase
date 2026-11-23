@@ -341,7 +341,9 @@ grant execute on function public.polynovea_retry_schema_stage(uuid) to polynovea
 --   schema_migration_confirmations written only by polynovea_confirm_schema_stage()
 --
 -- schema_migration_ledger: SELECT, and INSERT of the request columns only (ledger_request_columns);
--- no UPDATE or DELETE. content_field_permissions stays app-writable (the admin UI edits field
+-- no UPDATE or DELETE. content_model_versions: SELECT and INSERT only: the worker rebuilds every plan
+-- from these rows, so a stolen app login must not be able to rewrite a model's history (saving a model
+-- only ever adds a version; deleting a model cascades with the table owner's rights). content_field_permissions stays app-writable (the admin UI edits field
 -- permissions). installation keeps its 0072 rule (SELECT and INSERT only).
 create or replace function public.polynovea_apply_app_access()
 returns void
@@ -385,6 +387,9 @@ begin
       foreach grantee in array api_roles loop
         execute format('revoke all on public.schema_migration_ledger from %I', grantee);
       end loop;
+    elsif item.relname = 'content_model_versions' then
+      execute 'grant select, insert on public.content_model_versions to polynovea_app';
+      execute 'revoke update, delete, truncate on public.content_model_versions from polynovea_app';
     elsif item.relname = 'installation' then
       -- Read, and insert once at the end of setup. Never change or delete (0072).
       execute 'grant select, insert on public.installation to polynovea_app';

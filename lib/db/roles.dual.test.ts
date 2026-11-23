@@ -50,6 +50,13 @@ function catalogChecks(label: string, url: () => string | undefined) {
         "content_model_tables", "polynovea_migration_ledger", "schema_expand_contract_tasks", "schema_migration_confirmations",
         "schema_migration_ledger", "schema_migration_runs", "schema_name_reservations",
       ]);
+      // 0074: model versions are history the migration worker rebuilds plans from: insert-only.
+      const { rows: [versions] } = await db.query(`
+        select has_table_privilege('polynovea_app', 'public.content_model_versions', 'select') as s,
+               has_table_privilege('polynovea_app', 'public.content_model_versions', 'insert') as i,
+               has_table_privilege('polynovea_app', 'public.content_model_versions', 'update') as u,
+               has_table_privilege('polynovea_app', 'public.content_model_versions', 'delete') as d`);
+      expect(versions).toEqual({ s: true, i: true, u: false, d: false });
     });
 
     it("polynovea_app executes every SQL function and PUBLIC executes none", async () => {
