@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/supabase", () => ({ supabase: {}, supabaseUrl: "" }));
 vi.mock("@/lib/admin/serviceRole", () => ({ createServiceRoleClient: vi.fn() }));
 
-const { toIdentitySession, toIdentityUser } = await import("@/lib/auth/supabaseProvider");
+const { authenticatedAtFromAccessToken, bearerToken, toIdentitySession, toIdentityUser } = await import("@/lib/auth/supabaseProvider");
 
 const gotrueUser = {
   id: "8f9a0c1e-0000-4000-8000-000000000001",
@@ -35,5 +35,23 @@ describe("Supabase identity mapping", () => {
     expect(session).toEqual({ accessToken: "jwt", expiresAt: 1_800_000_000, user: toIdentityUser(gotrueUser as never) });
     expect(JSON.stringify(session)).not.toContain("refresh");
     expect(toIdentitySession(null)).toBeNull();
+  });
+});
+
+const jwt = (claims: Record<string, unknown>) => `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+
+describe("Supabase request credentials", () => {
+  it("reads only a well-formed Bearer header", () => {
+    expect(bearerToken(new Request("https://x.test", { headers: { authorization: "Bearer abc" } }))).toBe("abc");
+    expect(bearerToken(new Request("https://x.test", { headers: { authorization: "Basic abc" } }))).toBeNull();
+    expect(bearerToken(new Request("https://x.test", { headers: { cookie: "sb=abc" } }))).toBeNull();
+  });
+
+  it("takes the latest amr timestamp as the authentication time, and fails closed without one", () => {
+    expect(authenticatedAtFromAccessToken(jwt({ amr: [{ method: "password", timestamp: 1_800_000_000 }, { method: "totp", timestamp: 1_800_000_060 }] }))?.getTime())
+      .toBe(1_800_000_060_000);
+    expect(authenticatedAtFromAccessToken(jwt({ iat: 1_800_000_000 }))).toBeNull();
+    expect(authenticatedAtFromAccessToken("not-a-jwt")).toBeNull();
+    expect(authenticatedAtFromAccessToken(jwt({ amr: [{ timestamp: "soon" }] }))).toBeNull();
   });
 });

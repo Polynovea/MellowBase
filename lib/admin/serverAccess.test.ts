@@ -60,6 +60,85 @@ describe("requireAdminRequest", () => {
     expect(result.error?.status).toBe(401);
   });
 
+  it("uses the built-in provider's cookie session when AUTH_PROVIDER=builtin, with no Supabase key", async () => {
+    const identityProvider = await import("@/lib/auth/betterAuth/instance");
+    const verifyRequest = vi.fn().mockResolvedValue({
+      identity: { user: { id: "u9", email: "editor@example.com", emailConfirmedAt: null, metadata: {} }, sessionId: "s1", authenticatedAt: new Date(), transport: "cookie", authenticators: 0 },
+      error: null,
+    });
+    const spy = vi.spyOn(identityProvider, "getBuiltinServerIdentityProvider").mockReturnValue({ verifyRequest } as never);
+    process.env.AUTH_PROVIDER = "builtin";
+    try {
+      mockCreateServiceRoleClient.mockReturnValue(fakeDb({ getUser: { data: { user: null }, error: null }, adminUserRow: editorRow }));
+      const result = await requireAdminRequest(new Request("https://example.com/api/test", { headers: { cookie: "__Host-polynovea.session_token=x" } }));
+      expect(verifyRequest).toHaveBeenCalledOnce();
+      expect(result.data?.identity.transport).toBe("cookie");
+      expect(result.data?.profile.username).toBe("editor");
+    } finally {
+      delete process.env.AUTH_PROVIDER;
+      spy.mockRestore();
+    }
+  });
+
+  describe("built-in auth: CSRF, MFA and step-up", () => {
+    const secret = "t".repeat(40);
+    async function run(
+      profileRow: Record<string, unknown>,
+      identity: Record<string, unknown>,
+      request: Request,
+      options: Parameters<typeof requireAdminRequest>[1] = {},
+    ) {
+      const instance = await import("@/lib/auth/betterAuth/instance");
+      const verifyRequest = vi.fn().mockResolvedValue({
+        identity: { user: { id: "u10", email: "x@example.com", emailConfirmedAt: null, metadata: {} }, sessionId: "s1", authenticatedAt: new Date(), transport: "cookie", authenticators: 2, ...identity },
+        error: null,
+      });
+      const spy = vi.spyOn(instance, "getBuiltinServerIdentityProvider").mockReturnValue({ verifyRequest } as never);
+      Object.assign(process.env, { AUTH_PROVIDER: "builtin", POLYNOVEA_AUTH_SECRET: secret, POLYNOVEA_PUBLIC_URL: "https://cms.example.test" });
+      try {
+        mockCreateServiceRoleClient.mockReturnValue(fakeDb({ getUser: { data: { user: null }, error: null }, adminUserRow: profileRow }));
+        return await requireAdminRequest(request, options);
+      } finally {
+        for (const key of ["AUTH_PROVIDER", "POLYNOVEA_AUTH_SECRET", "POLYNOVEA_PUBLIC_URL"]) delete process.env[key];
+        spy.mockRestore();
+      }
+    }
+    const post = async (withToken: boolean) => {
+      const { csrfToken } = await import("@/lib/auth/requestSecurity");
+      return new Request("https://cms.example.test/api/test", {
+        method: "POST",
+        headers: { origin: "https://cms.example.test", ...(withToken ? { "x-polynovea-csrf": csrfToken("s1", secret) } : {}) },
+      });
+    };
+    const code = async (result: { error?: Response }) => (result.error ? (await result.error.json()).code : null);
+
+    it("refuses a state-changing cookie request without the session's CSRF token", async () => {
+      expect(await code(await run(editorRow, {}, await post(false)))).toBe("CSRF_FAILED");
+      expect((await run(editorRow, {}, await post(true))).data?.profile.username).toBe("editor");
+    });
+
+    it("sends an owner with fewer than two authenticators, or an admin with none, to set up MFA", async () => {
+      const master = { ...editorRow, role: "master" };
+      const admin = { ...editorRow, role: "admin" };
+      const get = new Request("https://cms.example.test/api/test");
+      expect(await code(await run(master, { authenticators: 1 }, get))).toBe("MFA_REQUIRED");
+      expect(await code(await run(admin, { authenticators: 0 }, get))).toBe("MFA_REQUIRED");
+      expect((await run(admin, { authenticators: 1 }, get)).data).toBeTruthy();
+      expect((await run(master, { authenticators: 1 }, get, { allowWithoutMfa: true })).data).toBeTruthy();
+      expect((await run(editorRow, { authenticators: 0 }, get)).data).toBeTruthy();
+    });
+
+    it("asks for a recent sign-in on step-up actions, after the permission checks", async () => {
+      const stale = { authenticatedAt: new Date(Date.now() - 30 * 60_000) };
+      expect(await code(await run(editorRow, stale, await post(true), { stepUp: true }))).toBe("STEP_UP_REQUIRED");
+      expect((await run(editorRow, {}, await post(true), { stepUp: true })).data).toBeTruthy();
+      // Someone without the module is refused for that, not asked to re-authenticate.
+      const refused = await run(editorRow, stale, await post(true), { stepUp: true, requiredWriteModule: "cms.metrics" });
+      expect(refused.error?.status).toBe(403);
+      expect(await code(refused)).toBeUndefined();
+    });
+  });
+
   it("returns 500 when the service role key is not configured", async () => {
     mockCreateServiceRoleClient.mockImplementation(() => {
       throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");

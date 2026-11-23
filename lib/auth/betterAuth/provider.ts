@@ -1,18 +1,15 @@
 /**
- * ServerIdentityProvider on Better Auth (phase 0 spike).
+ * ServerIdentityProvider on Better Auth.
  *
- * Fits the interface without forking the library: sessions are checked through auth.api.getSession,
- * and admin-side user management goes through the documented $context.internalAdapter.
- *
- * Interface finding: Better Auth is cookie-first. The "bearer token" here is the signed session
- * cookie value; the browser cannot read it (HttpOnly), so BrowserIdentityProvider's
- * Session.accessToken has no Better Auth equivalent. Phase 1 should change the server interface to
- * verifyRequest(request) and move the admin UI's API client to the session cookie (the plan already
- * schedules that), rather than adding the bearer plugin.
+ * Fits the interface without forking the library: sessions are checked through auth.api.getSession
+ * (database only; the cookie cache is off), and admin-side user management goes through the
+ * documented $context.internalAdapter. Better Auth is cookie-first, so verifyRequest reads the
+ * session cookie from the request; the browser never sees the token (HttpOnly).
  */
-import type { ServerIdentityProvider, User } from "@/lib/auth/provider";
+import type { RequestIdentity, ServerIdentityProvider, User } from "@/lib/auth/provider";
 import { hashPassword } from "@/lib/auth/betterAuth/passwordHash";
-import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, type PolynoveaAuth } from "@/lib/auth/betterAuth/server";
+import { ABSOLUTE_TIMEOUT_SECONDS, type PolynoveaAuth } from "@/lib/auth/betterAuth/server";
+import { assertAcceptablePassword, PasswordPolicyError, type PwnedRangeFetch } from "@/lib/auth/passwordPolicy";
 
 type BetterAuthUser = { id: string; email: string; emailVerified: boolean; updatedAt: Date | string; metadata?: unknown };
 
@@ -37,30 +34,61 @@ function safeJson(value: string): unknown {
 
 const genericError = (message: string) => new Error(message);
 
-// A Better Auth session cookie value is the token, a dot and its base64 signature (it may arrive
-// URL-encoded). Anything else, such as a ";" or a newline, is rejected before it reaches a Cookie
-// header, where it could add or split cookies.
-const SESSION_TOKEN = /^[A-Za-z0-9._~+/=%-]{1,512}$/;
+type BetterAuthSession = { id: string; createdAt: Date | string };
 
-export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth): ServerIdentityProvider {
+/** The password rules, as a provider error (the policy message is safe to show the user). */
+async function passwordProblem(input: { password: string; hasMfa: boolean; email: string | null; lookup?: PwnedRangeFetch }): Promise<Error | null> {
+  try {
+    await assertAcceptablePassword(input);
+    return null;
+  } catch (error) {
+    return error instanceof PasswordPolicyError ? genericError(error.message) : genericError("Could not check the password");
+  }
+}
+
+export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth, options: { pwnedLookup?: PwnedRangeFetch } = {}): ServerIdentityProvider {
+  const authenticatorCount = async (userId: string, twoFactorEnabled?: boolean | null): Promise<number> => {
+    const ctx = await auth.$context;
+    let totp = twoFactorEnabled;
+    if (totp === undefined) totp = ((await ctx.internalAdapter.findUserById(userId)) as { twoFactorEnabled?: boolean | null } | null)?.twoFactorEnabled;
+    const passkeys = await ctx.adapter.count({ model: "passkey", where: [{ field: "userId", value: userId }] });
+    return (totp ? 1 : 0) + passkeys;
+  };
+  const hasMfa = async (userId: string): Promise<boolean> => (await authenticatorCount(userId)) > 0;
+
   return {
-    async verifyBearerToken(token) {
-      if (typeof token !== "string" || !SESSION_TOKEN.test(token)) return { user: null, error: genericError("Invalid session") };
+    async verifyRequest(request) {
+      const cookie = request.headers.get("cookie");
+      if (!cookie) return { identity: null, error: genericError("Missing session") };
       try {
-        const ctx = await auth.$context;
-        const headers = new Headers({ cookie: `${ctx.authCookies.sessionToken.name}=${token}` });
-        const result = await auth.api.getSession({ headers, query: { disableCookieCache: true } });
-        if (!result) return { user: null, error: genericError("Invalid session") };
-        return { user: toIdentityUser(result.user as BetterAuthUser), error: null };
+        // Only the Cookie header is passed on; nothing else in the request is trusted here.
+        const result = await auth.api.getSession({ headers: new Headers({ cookie }), query: { disableCookieCache: true } });
+        if (!result) return { identity: null, error: genericError("Invalid session") };
+        const session = result.session as BetterAuthSession;
+        // The update hook already caps expiry at 7 days from sign-in; this check holds even if it did not run.
+        if (Date.now() - new Date(session.createdAt).getTime() > ABSOLUTE_TIMEOUT_SECONDS * 1000) {
+          await (await auth.$context).internalAdapter.deleteSession((result.session as { token: string }).token);
+          return { identity: null, error: genericError("Invalid session") };
+        }
+        const identity: RequestIdentity = {
+          user: toIdentityUser(result.user as BetterAuthUser),
+          sessionId: session.id,
+          // Every sign-in (and every step-up re-authentication) creates a new session, so its
+          // creation time is when the user last proved who they are.
+          authenticatedAt: new Date(session.createdAt),
+          transport: "cookie",
+          authenticators: await authenticatorCount(result.user.id, (result.user as { twoFactorEnabled?: boolean | null }).twoFactorEnabled ?? null),
+        };
+        return { identity, error: null };
       } catch {
-        return { user: null, error: genericError("Invalid session") };
+        return { identity: null, error: genericError("Invalid session") };
       }
     },
 
     async createUser(input) {
-      if (input.password.length < MIN_PASSWORD_LENGTH || input.password.length > MAX_PASSWORD_LENGTH) {
-        return { user: null, error: genericError(`Password must be ${MIN_PASSWORD_LENGTH} to ${MAX_PASSWORD_LENGTH} characters`) };
-      }
+      // A new account has no second factor yet, so the single-factor rule (15 characters) applies.
+      const problem = await passwordProblem({ password: input.password, hasMfa: false, email: input.email, lookup: options.pwnedLookup });
+      if (problem) return { user: null, error: problem };
       let createdUserId: string | null = null;
       try {
         const ctx = await auth.$context;
@@ -94,8 +122,17 @@ export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth): Server
     },
 
     async updateUser(id, input) {
-      if (input.password !== undefined && (input.password.length < MIN_PASSWORD_LENGTH || input.password.length > MAX_PASSWORD_LENGTH)) {
-        return { error: genericError(`Password must be ${MIN_PASSWORD_LENGTH} to ${MAX_PASSWORD_LENGTH} characters`) };
+      if (input.password !== undefined) {
+        let mfa = false;
+        let email: string | null = null;
+        try {
+          mfa = await hasMfa(id);
+          email = ((await (await auth.$context).internalAdapter.findUserById(id)) as { email?: string } | null)?.email ?? null;
+        } catch {
+          return { error: genericError("Could not update user") };
+        }
+        const problem = await passwordProblem({ password: input.password, hasMfa: mfa, email, lookup: options.pwnedLookup });
+        if (problem) return { error: problem };
       }
       try {
         const ctx = await auth.$context;
@@ -119,6 +156,16 @@ export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth): Server
         return { error: null };
       } catch {
         return { error: genericError("Could not delete user") };
+      }
+    },
+
+    async revokeUserSessions(id) {
+      try {
+        const ctx = await auth.$context;
+        await ctx.internalAdapter.deleteUserSessions(id);
+        return { error: null };
+      } catch {
+        return { error: genericError("Could not sign the user out") };
       }
     },
   };
