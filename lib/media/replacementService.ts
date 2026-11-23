@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { findAsset, listAssetReplacements as listReplacementRows, replaceAssetFile } from "@/lib/media/mediaData";
-import { getStorageProvider } from "@/lib/media/storageProvider";
+import { getStorageProvider, legacyR2Configured } from "@/lib/media/storageProvider";
 import type { AssetRow, AssetResult } from "@/lib/media/assetService";
 
 export interface AssetReplacementRow {
@@ -39,6 +39,19 @@ const ALLOWED_TYPES = new Set([
   "application/pdf",
 ]);
 const MAX_SIZE = 20 * 1024 * 1024;
+
+/**
+ * Where a replacement file is written. The new file gets a new key and the asset row records the
+ * provider it landed on, so it may move; the old file stays where it is, in the history row. It stays
+ * on the asset's own provider when that provider can still be written to. An asset recorded on the
+ * legacy R2 provider of an install without the R2_* variables (an older or imported asset) cannot be,
+ * so its replacement goes to the workspace's current storage (a connection, or the server disk)
+ * instead of failing with an R2 credentials error.
+ */
+export function replacementTargetKey(storedProvider: string | null | undefined, env: Record<string, string | undefined> = process.env) {
+  if (storedProvider === "r2" && !legacyR2Configured(env)) return null;
+  return storedProvider ?? null;
+}
 
 function safeSegment(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "file";
@@ -86,7 +99,7 @@ export async function replaceAsset(params: {
   const provider = await getStorageProvider({
     workspaceId: params.workspaceId,
     environmentId: params.environmentId,
-    storageProviderKey: params.environmentId ? null : currentAsset.storage_provider,
+    storageProviderKey: params.environmentId ? null : replacementTargetKey(currentAsset.storage_provider),
   });
   await provider.upload({ body, key: newStorageKey, contentType: params.file.type });
 
