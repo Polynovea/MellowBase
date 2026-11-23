@@ -4,7 +4,7 @@ const mode = vi.hoisted(() => ({ current: "setup" as "setup" | "running" | "unav
 vi.mock("@/lib/setup/mode", () => ({ resolveMode: async () => ({ mode: mode.current }) }));
 
 const { NextRequest } = await import("next/server");
-const { config, gateDecision, middleware } = await import("@/middleware");
+const { config, gateDecision, middleware, SETUP_HEADERS } = await import("@/middleware");
 const { announceSetupAccess, listensOnPublicAddress, setupUrl } = await import("@/lib/setup/bootTasks");
 
 const request = (path: string) => new NextRequest(new URL(path, "https://cms.example.com"));
@@ -63,6 +63,24 @@ describe("middleware responses", () => {
     const response = await middleware(request("/setup"));
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain('href="/setup"');
+  });
+});
+
+describe("setup page headers", () => {
+  it("wizard pages and setup API answers are never framed, referred, cached or indexed", async () => {
+    mode.current = "setup";
+    for (const path of ["/setup", "/setup/owner", "/api/setup/status"]) {
+      const response = await middleware(request(path));
+      expect(response.headers.get("x-middleware-next"), path).toBe("1");
+      for (const [name, value] of Object.entries(SETUP_HEADERS)) expect(response.headers.get(name), `${path} ${name}`).toBe(value);
+    }
+    expect((await middleware(request("/admin"))).headers.get("X-Frame-Options")).toBe("DENY");
+  });
+
+  it("leaves normal pages alone once running", async () => {
+    mode.current = "running";
+    const response = await middleware(request("/admin"));
+    expect(response.headers.get("Referrer-Policy")).toBeNull();
   });
 });
 

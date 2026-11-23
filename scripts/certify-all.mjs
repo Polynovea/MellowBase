@@ -8,7 +8,8 @@
  * The CMS under test needs no Supabase services. Start it with:
  *   AUTH_PROVIDER=builtin, NEXT_PUBLIC_AUTH_PROVIDER=builtin, POLYNOVEA_AUTH_SECRET (32+ characters),
  *   POLYNOVEA_PUBLIC_URL = CMS_CERT_BASE_URL, POLYNOVEA_DATABASE_URL (the app role),
- *   CMS_CONFIG_ENCRYPTION_KEY, POLYNOVEA_TRUSTED_PROXIES=127.0.0.1 (production builds),
+ *   CMS_MASTER_KEY (kid:base64 of 32 bytes; this script and the CMS must share it, e.g.
+ *   k1:$(openssl rand -base64 32)), POLYNOVEA_TRUSTED_PROXIES=127.0.0.1 (production builds),
  *   POLYNOVEA_HIBP_DISABLED=true, and the test credentials the connection scripts verify with:
  *   POLYNOVEA_CERT_CONNECTION_TOKEN and POLYNOVEA_CERT_CONNECTION_TOKEN_NEXT (any values).
  * Build the SDK first (npm run sdk:build): phase 12.5 imports it.

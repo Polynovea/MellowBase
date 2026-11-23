@@ -41,9 +41,23 @@ export function gateDecision(pathname: string, mode: AppMode, options: { dev?: b
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
+/**
+ * On every wizard page and setup API answer: never sent as a referrer (the address and any query
+ * stay on this server), never framed (no clickjacking of the code or owner forms), never cached or
+ * indexed.
+ */
+export const SETUP_HEADERS: Record<string, string> = {
+  "Referrer-Policy": "no-referrer",
+  "X-Frame-Options": "DENY",
+  "Content-Security-Policy": "frame-ancestors 'none'",
+  "X-Content-Type-Options": "nosniff",
+  "X-Robots-Tag": "noindex, nofollow",
+  "Cache-Control": "no-store",
+};
+
 function page(title: string, body: string, status: number) {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.5"><h1 style="font-size:1.25rem">${title}</h1>${body}</body></html>`;
-  return new NextResponse(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", ...NO_STORE } });
+  return new NextResponse(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", ...SETUP_HEADERS } });
 }
 
 export function gateResponse(decision: Exclude<GateDecision, "pass">, pathname: string): NextResponse {
@@ -65,5 +79,9 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const { mode } = await resolveMode();
   const decision = gateDecision(pathname, mode, { dev: process.env.NODE_ENV === "development" });
-  return decision === "pass" ? NextResponse.next() : gateResponse(decision, pathname);
+  if (decision !== "pass") return gateResponse(decision, pathname);
+  if (!isSetupPath(pathname)) return NextResponse.next();
+  const response = NextResponse.next();
+  for (const [name, value] of Object.entries(SETUP_HEADERS)) response.headers.set(name, value);
+  return response;
 }

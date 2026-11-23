@@ -1,12 +1,16 @@
-import { createCipheriv, createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
+import { encryptConfig } from '../lib/setup/configCipher.mjs';
+import { loadKeyRing } from '../lib/setup/keyRing.mjs';
 import { createPgClient, createDisposableWorkspace, createAuthenticatedActor, teardownCertification } from './cert-harness.mjs';
 
 const client=await createPgClient();let workspaceId=null;const authUserIds=[],adminUserIds=[];let server=null;
 const assert=(c,m)=>{if(!c)throw new Error(m)};
-if(!process.env.CMS_CONFIG_ENCRYPTION_KEY)process.env.CMS_CONFIG_ENCRYPTION_KEY=randomBytes(32).toString('base64');
-function encryptConfig(value){const key=Buffer.from(process.env.CMS_CONFIG_ENCRYPTION_KEY,'base64');const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',key,iv);const encrypted=Buffer.concat([cipher.update(JSON.stringify(value),'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),encrypted]).toString('base64')}
+// The delivery worker this script spawns inherits process.env, so both use the same master key ring.
+// Without CMS_MASTER_KEY or master.key, a throwaway ring for this run. The CMS under test must share it
+// (certify-all.mjs passes CMS_MASTER_KEY through) for the API checks that read these rows.
+if(!process.env.CMS_MASTER_KEY&&!loadKeyRing())process.env.CMS_MASTER_KEY=`p10:${randomBytes(32).toString('base64')}`;
 // The publication and webhook receivers listen on 127.0.0.1, which the worker's SSRF guard refuses
 // unless the worker is started for local use with --allow-private-destinations.
 function runWorker(){return new Promise((resolve,reject)=>{const child=spawn(process.execPath,['scripts/delivery-worker.mjs','--once','--no-maintenance','--queues=p10-cert','--allow-private-destinations'],{cwd:process.cwd(),env:process.env,stdio:['ignore','pipe','pipe']});let out='',err='';child.stdout.on('data',d=>out+=d);child.stderr.on('data',d=>err+=d);child.on('error',reject);child.on('close',code=>code===0?resolve({out,err}):reject(new Error(`worker exited ${code}\n${out}\n${err}`)))});}
