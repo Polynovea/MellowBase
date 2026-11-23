@@ -1,0 +1,20 @@
+[Unit]
+Description=Polynovea CMS
+Requires=docker.service var-lib-polynovea.mount
+After=docker.service var-lib-polynovea.mount network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/polynovea
+
+[Service]
+Type=simple
+# The data disk belongs to the container user (uid/gid 10001), private to it.
+ExecStartPre=/usr/bin/install -d -o 10001 -g 10001 -m 0700 /var/lib/polynovea
+ExecStart=/opt/polynovea/run-cms.sh
+ExecStop=/usr/bin/docker stop --time 90 polynovea
+Restart=always
+RestartSec=10
+TimeoutStartSec=600
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

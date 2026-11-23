@@ -54,6 +54,8 @@ Leave it open and browse to `http://localhost:3000/setup`. Your browser treats `
 
 Plain HTTP is accepted only when all of these are true: the CMS listens on `127.0.0.1` or `::1` only, the connection comes from that same machine, the request carries no forwarding headers, and the browser asked for `localhost`.
 
+**In Docker.** A published port (`-p 3000:3000`) does not work for this route: the connection then comes from Docker's gateway address and the CMS must listen on `0.0.0.0`, so the wizard refuses plain HTTP, by design. The server image listens on `127.0.0.1` and is run with host networking for the tunnel route, or behind Caddy (HTTPS, a trusted proxy on `127.0.0.1`) when the server has a domain. Both are ready-made Compose profiles: see [../container.md](../container.md#reaching-the-setup-wizard-two-supported-routes). Our AWS and Azure VM images do the same.
+
 **Passkeys and free routes.** A passkey only works on the address it was created on. If you set up through the tunnel, your passkey belongs to `localhost`. When the CMS later moves to a real address, sign in with your authenticator app; the CMS then asks you to register a new passkey.
 
 Free subdomains from duckdns.org, dedyn.io or dynv6.net are pending approval and not offered yet. sslip.io and nip.io are not offered: they are not on the Public Suffix List, so everyone using them shares Let's Encrypt's limit of 50 certificates a week.

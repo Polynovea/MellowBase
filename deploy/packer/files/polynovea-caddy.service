@@ -1,0 +1,17 @@
+[Unit]
+Description=Polynovea CMS: HTTPS (Caddy) when a domain is set
+Requires=docker.service
+After=docker.service polynovea.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecCondition=/opt/polynovea/has-domain.sh
+ExecStart=/opt/polynovea/run-caddy.sh
+ExecStop=/usr/bin/docker stop --time 20 polynovea-caddy
+Restart=always
+RestartSec=10
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

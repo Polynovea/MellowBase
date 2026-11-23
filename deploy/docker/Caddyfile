@@ -1,0 +1,13 @@
+# HTTPS in front of Polynovea CMS (docker/compose.yaml "proxy" profile, and the VM image's
+# polynovea-caddy.service). Caddy gets and renews a Let's Encrypt certificate for POLYNOVEA_DOMAIN
+# (it needs ports 80 and 443) and forwards to the CMS on 127.0.0.1:3000, adding X-Forwarded-For,
+# X-Forwarded-Proto and X-Forwarded-Host, which the CMS believes only because POLYNOVEA_TRUSTED_PROXIES
+# is 127.0.0.1.
+{
+	admin off
+}
+
+{$POLYNOVEA_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:3000
+}

@@ -18,6 +18,8 @@ import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs"
 // Stored secrets: the same code as the app (master key ring, pv2.<kid>. values; legacy
 // CMS_CONFIG_ENCRYPTION_KEY values still read). Reads CMS_MASTER_KEY or <POLYNOVEA_CONFIG_DIR>/master.key.
 import { decryptConfig } from "../lib/setup/configCipher.mjs";
+import { databaseUrlFromConfig, readInstallConfigSync } from "../lib/setup/configStore.mjs";
+import { tlsConnectionFor } from "../lib/setup/installConnection.mjs";
 
 if (existsSync(".env.local")) {
   for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
@@ -26,8 +28,20 @@ if (existsSync(".env.local")) {
   }
 }
 
+// Where the worker connects, as polynovea_app, in the same order as the app (lib/setup/mode.ts):
+// the setup wizard's config.enc (with exactly the wizard's TLS roots), then DATABASE_URL (development,
+// installs made before the wizard). Exit code 3 means "not set up yet", so the server image's
+// entrypoint waits and tries again instead of crash-looping.
 const DATABASE_URL = process.env.Database_URL || process.env.DATABASE_URL || process.env.database_url;
-if (!DATABASE_URL) throw new Error("DATABASE_URL (or Database_URL) is required");
+const NOT_CONFIGURED_EXIT = 3;
+function workerConnection() {
+  const config = readInstallConfigSync();
+  if (config) return tlsConnectionFor(databaseUrlFromConfig(config, "app"), config.database);
+  if (DATABASE_URL) return postgresConnectionConfig(DATABASE_URL);
+  console.error("[delivery-worker] No database yet: finish the setup wizard, or set DATABASE_URL.");
+  process.exit(NOT_CONFIGURED_EXIT);
+}
+const connectionSettings = workerConnection();
 
 const workerId = process.env.DELIVERY_WORKER_ID || `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 const pollMs = Math.max(250, Number(process.env.DELIVERY_WORKER_POLL_MS || 1500));
@@ -487,7 +501,7 @@ async function dispatchAnalyticsSync(client,job){
   }
 }
 
-const client = new pg.Client(postgresConnectionConfig(DATABASE_URL));
+const client = new pg.Client(connectionSettings);
 await client.connect();
 console.log(`[delivery-worker] started ${workerId}; adapters=${SUPPORTED_KINDS.join(",")}; queues=${SUPPORTED_QUEUES.join(",")}`);
 let lastMaintenanceSeed = 0;

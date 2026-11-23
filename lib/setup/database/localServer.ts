@@ -7,6 +7,7 @@ import { DatabaseSetupError, setupFailure } from "./errors";
 import { provisionDatabase, type ProvisionDeps, type ProvisionedDatabase } from "./provision";
 import type { BackupEvent, SetupEvent } from "./stream";
 import { MINIMUM_SERVER_VERSION_NUM, parseServerVersionNum } from "./checks";
+import { imageLocalServerHost, imagePaths } from "./localServerImage";
 
 /**
  * "On this server": the bundled PostgreSQL on the VM's data disk, with pgBackRest backups. Setup is
@@ -14,8 +15,8 @@ import { MINIMUM_SERVER_VERSION_NUM, parseServerVersionNum } from "./checks";
  * test needs a scratch database and time, so it is recorded as the worker's first job instead.
  *
  * Everything that touches the operating system goes through LocalServerHost, so this flow is tested
- * with fakes here; the real host needs the Phase 5 image (service name, socket path, the local admin
- * login and the archive_command in postgresql.conf).
+ * with fakes here; the real host is the server image's (localServerImage.ts and deploy/image/local-db.sh:
+ * start command, socket path, the local admin login and the archive_command in postgresql.conf).
  */
 
 export interface LocalServerHost {
@@ -233,7 +234,7 @@ export async function runLocalServerSetup(context: LocalServerContext): Promise<
 
 // ---------------------------------------------------------------------------------------------------
 // The real host's operating-system parts. Starting PostgreSQL and its local admin login depend on the
-// Phase 5 image, so they are passed in.
+// server image, so they are passed in (localServerImage.ts).
 
 export interface SystemHostOptions {
   startPostgres: () => Promise<void>;
@@ -242,6 +243,8 @@ export interface SystemHostOptions {
   pgBackRestBinary?: string;
   /** Timeout for one pgbackrest run (a first full backup can take a while). */
   timeoutMs?: number;
+  /** Extra environment for pgbackrest (PGBACKREST_CONFIG, log and lock paths). PATH is always set. */
+  env?: Record<string, string>;
 }
 
 export function createSystemLocalServerHost(options: SystemHostOptions): LocalServerHost {
@@ -261,7 +264,7 @@ export function createSystemLocalServerHost(options: SystemHostOptions): LocalSe
     },
     pgbackrest(args) {
       return new Promise((resolve) => {
-        execFile(options.pgBackRestBinary ?? "pgbackrest", [...args], { timeout: options.timeoutMs ?? 60 * 60_000, env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } as unknown as NodeJS.ProcessEnv, encoding: "utf8" }, (error, _stdout, stderr) => {
+        execFile(options.pgBackRestBinary ?? "pgbackrest", [...args], { timeout: options.timeoutMs ?? 60 * 60_000, env: { ...options.env, PATH: process.env.PATH ?? "/usr/bin:/bin" } as unknown as NodeJS.ProcessEnv, encoding: "utf8" }, (error, _stdout, stderr) => {
           if (error) console.error("[setup/database] pgbackrest %s failed: %s", args.join(" "), String(stderr).slice(-2000));
           const code = error ? (typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : 1) : 0;
           resolve({ code });
@@ -278,15 +281,15 @@ export const LOCAL_SERVER_UNAVAILABLE =
   "\"On this server\" needs the Polynovea server image, which includes the database and backup software. This server doesn't have it, so choose \"Existing managed database\" or \"Created for you\".";
 
 /**
- * The bundled-database host for this server image, or null when the image has none. The Phase 5
- * image supplies it (start command, local admin login, pgBackRest config path); until then the option
- * is shown as unavailable rather than attempted.
+ * The bundled-database host for this server image, or null when this server is not running the
+ * Polynovea server image (then the option is shown as unavailable rather than attempted).
  */
 export function localServerHostForThisImage(): LocalServerHost | null {
-  return null;
+  return imageLocalServerHost();
 }
 
-/** Where the Phase 5 image keeps the bundled database and its local backups (on the data disk). */
+/** Where the server image keeps the bundled database and its local backups: the data disk. */
 export function localServerSettings(): Pick<LocalServerContext, "dataDir" | "port" | "socketPath" | "localRepoPath"> {
-  return { dataDir: "/var/lib/polynovea-data/postgresql", port: 5432, socketPath: "/var/run/postgresql", localRepoPath: "/var/lib/polynovea-data/pgbackrest" };
+  const paths = imagePaths();
+  return { dataDir: paths.dataDir, port: paths.port, socketPath: paths.socketDir, localRepoPath: paths.localRepoPath };
 }

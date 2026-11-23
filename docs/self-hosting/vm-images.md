@@ -1,0 +1,83 @@
+# VM images for AWS and Azure
+
+The VM images are Ubuntu 24.04 LTS with Docker and one signed Polynovea CMS release already on board. The cloud templates (`deploy/aws`, `deploy/azure`) launch them; you can also launch one by hand. Definitions: [`deploy/packer/`](../../deploy/packer/).
+
+| | AWS (AMI) | Azure (managed image) |
+| --- | --- | --- |
+| Base | Canonical Ubuntu 24.04 LTS (`ubuntu-noble-24.04-<arch>-server`, owner 099720108477) | `Canonical:ubuntu-24_04-lts:server` (or `server-arm64`) |
+| Architectures | `amd64`, `arm64` (Graviton, such as t4g) | `amd64`, `arm64` |
+| Instance metadata | **IMDSv2 required** (`imds_support = "v2.0"`, so every instance launched from the AMI requires tokens), hop limit 2 | Azure IMDS already needs a `Metadata: true` header and refuses forwarded requests; there is no switch to turn on |
+| Root disk | 16 GB gp3, encrypted | Platform default |
+
+## What is on the image
+
+- **Automatic security updates** (`unattended-upgrades`): security updates every day, a reboot at 04:00 server time when one needs it (kernel, libc). Docker comes from Ubuntu's own archive, so it is updated the same way. The CMS and its database come back with the VM.
+- **Docker**, logging to the system journal, kept for 14 days.
+- **The CMS image**, pulled by digest when the VM image was built (`/etc/polynovea/image.env` records which one), and the Caddy image, also by digest.
+- Systemd units:
+  - `polynovea-data-disk.service` + `var-lib-polynovea.mount`: find the data disk and mount it at `/var/lib/polynovea` (below);
+  - `polynovea.service`: runs the CMS (`/opt/polynovea/run-cms.sh`) with host networking, on `127.0.0.1:3000`;
+  - `polynovea-caddy.service`: runs Caddy for HTTPS, only when a domain is set.
+
+## The data disk at `/var/lib/polynovea`
+
+Everything the CMS keeps is on a **separate data disk**, never on the root disk: the master key, `config.enc`, the bundled database for **On this server**, and its local backups. Attach one when you launch the VM (on AWS, in the instance's block device mappings; on Azure, as data disk LUN 0). 8–16 GB is plenty for a trial; size it for your content and local backups.
+
+At every boot, `polynovea-data-disk.service`:
+
+1. does nothing if a disk labelled `POLYNOVEA_DATA` exists;
+2. otherwise picks the data disk: `POLYNOVEA_DATA_DEVICE` from `/etc/polynovea/polynovea.env` if set, else Azure's LUN 0, else the AWS EBS volume that is not the root disk (instance-store disks are never used);
+3. formats it (ext4, label `POLYNOVEA_DATA`) **only if** it is a whole disk with no partitions, no filesystem or other signature, and not mounted, and it is the only such disk. A disk that already holds anything is never touched.
+
+It waits up to 5 minutes for the disk to appear. Without one, the CMS does not start, and the journal says why (`journalctl -u polynovea-data-disk`). The CMS will not run with its data on the root disk.
+
+## Settings: `/etc/polynovea/polynovea.env`
+
+The templates' user data writes this file. **Non-secret values only**: the CMS keeps its secrets in `config.enc` on the data disk.
+
+| Key | Meaning |
+| --- | --- |
+| `POLYNOVEA_DB_SECRET_REF` | The "Created for you" database's secret (ARN or Key Vault URI) |
+| `AWS_REGION` | AWS region (for the AWS SDK and pgBackRest's S3 backups) |
+| `POLYNOVEA_DOMAIN` | Optional. Turns on HTTPS with Caddy and sets `POLYNOVEA_PUBLIC_URL=https://<domain>` |
+| `POLYNOVEA_BACKUP_BUCKET`, `POLYNOVEA_BACKUP_ACCOUNT`, `POLYNOVEA_BACKUP_CONTAINER` | The backup location the template created (for **On this server**) |
+| `POLYNOVEA_IMAGE_REF` | Optional. A different CMS release, pinned by digest (the upgrade flow sets this) |
+| `POLYNOVEA_DATA_DEVICE` | Optional. The data disk's device, when automatic detection is not enough |
+
+`HOSTNAME`, `PORT`, `POLYNOVEA_CONFIG_DIR` and the trusted proxy are set by `run-cms.sh` and win over the file. The CMS must listen on loopback only.
+
+## Reaching the setup wizard
+
+- **Without a domain:** ports 80 and 443 answer nothing. Set up through an SSH tunnel: `ssh -L 3000:localhost:3000 ubuntu@<server>` (AWS) or `azureuser@<server>` (Azure), then open `http://localhost:3000/setup`. The setup code is in `journalctl -u polynovea` (or `sudo docker logs polynovea`).
+- **With `POLYNOVEA_DOMAIN`:** point the domain at the server, open 80 and 443, and use `https://<domain>/setup`. Caddy gets a Let's Encrypt certificate (it answers the HTTP-01 challenge on port 80). Setup through the tunnel is then refused, because the wizard only accepts its public address.
+
+Why the CMS is never published straight on a port: see [container.md](container.md#why-not-just-publish-port-3000).
+
+## Building the images (release machine only)
+
+Build only on a release machine with your own cloud credentials, after the release is signed (`scripts/release/build-and-sign.mjs` verifies the signature). The VM image then pulls exactly that digest, so what it carries is what was signed. **Never from GitHub Actions.**
+
+```
+cat > release.pkrvars.hcl <<'EOF'
+image_ref  = "ghcr.io/polynovea/cms@sha256:<digest from release.json>"
+release_id = "0.4.0+abc1234"
+arch       = "arm64"            # or amd64
+aws_region = "eu-west-1"
+azure_location       = "westeurope"
+azure_resource_group = "polynovea-images"
+EOF
+packer init deploy/packer
+packer build -only='polynovea-aws.*'   -var-file=release.pkrvars.hcl deploy/packer
+packer build -only='polynovea-azure.*' -var-file=release.pkrvars.hcl deploy/packer   # after az login
+```
+
+A build launches one small temporary VM in your account for about 10 minutes and stores one image (a few GB of snapshot storage). Packer removes the temporary VM; delete old images yourself.
+
+## Checking the definitions without a cloud account
+
+```
+docker run --rm -v "$PWD:/w" -w /w hashicorp/packer:1.14.2@sha256:250bf3081634255dcabb112ceefd8c77f0b9093e16b21a15516d03a7e996d239 init deploy/packer
+docker run --rm -v "$PWD:/w" -w /w hashicorp/packer:1.14.2@sha256:250bf3081634255dcabb112ceefd8c77f0b9093e16b21a15516d03a7e996d239 validate -syntax-only deploy/packer
+```
+
+plus `shellcheck` on `deploy/packer/provision.sh` and `deploy/packer/files/*.sh`. These need no credentials and create nothing.

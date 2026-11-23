@@ -8,8 +8,9 @@ import { setupJson } from "@/lib/setup/requestGuards";
  * server". Starts the bundled PostgreSQL on the data disk, provisions it, and sets up pgBackRest; the
  * save happens only after stanza-create, check, a full backup and verify have passed. Streamed.
  *
- * The bundled database ships with the Phase 5 server image; until then this answers 501 with a plain
- * message, and the page shows the option as not available.
+ * The bundled database ships only in the Polynovea server image (lib/setup/database/localServerImage.ts).
+ * On any other server this answers 501 with a plain message, and the page shows the option as not
+ * available.
  */
 
 export const runtime = "nodejs";
