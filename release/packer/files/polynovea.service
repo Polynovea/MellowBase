@@ -9,6 +9,8 @@ RequiresMountsFor=/var/lib/polynovea
 Type=simple
 # The data disk belongs to the container user (uid/gid 10001), private to it.
 ExecStartPre=/usr/bin/install -d -o 10001 -g 10001 -m 0700 /var/lib/polynovea
+# Pinned digest + release signature, before every start (verify-images.sh). Fails closed.
+ExecStartPre=/opt/polynovea/verify-images.sh
 ExecStart=/opt/polynovea/run-cms.sh
 ExecStop=/usr/bin/docker stop --time 90 polynovea
 Restart=always

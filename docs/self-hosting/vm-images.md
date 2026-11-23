@@ -20,6 +20,16 @@ The VM images are Ubuntu 24.04 LTS with Docker and one signed Polynovea CMS rele
   - `polynovea-caddy.service`: runs Caddy for HTTPS, only when a domain is set;
   - `polynovea-console-code.service`: copies the one-time setup code (that line only) to the serial console while the CMS is in setup mode, so the owner can read it from the cloud console without SSH. It writes nothing once setup is finished, or when the CMS does not answer. Until setup is finished, anyone in the cloud account who can read console output can see the code.
 
+## Every start checks the images first
+
+`polynovea.service` and `polynovea-caddy.service` run `/opt/polynovea/verify-images.sh` before every start (`ExecStartPre`), on a VM made from our image and on the plain-Ubuntu path alike. If a check fails, systemd does not start the service:
+
+- the CMS image must be pinned by digest **and** its signature must verify with the Polynovea release public key in `/etc/polynovea/release.pub` (installed by `provision.sh` from `release/packer/files/polynovea-release.pub`), using cosign from its own image, pinned by digest. The signature is read from the image's own registry; no other trust material is fetched;
+- the Caddy image must be pinned by digest (it is Caddy's own image, which we do not sign);
+- a digest that verified once with this exact key is remembered in `/var/lib/polynovea-verified`, so a restart while the registry is unreachable still starts the image it already checked, and never a different one.
+
+`provision.sh` runs the same check right after pulling, so a VM image build or a plain-Ubuntu bootstrap with a bad image stops before anything starts. It refuses to run at all without the release public key.
+
 ## The data disk at `/var/lib/polynovea`
 
 Everything the CMS keeps is on a **separate data disk**, never on the root disk: the master key, `config.enc`, the bundled database for **On this server**, and its local backups. Attach one when you launch the VM (on AWS, in the instance's block device mappings; on Azure, as data disk LUN 0). 8–16 GB is plenty for a trial; size it for your content and local backups.

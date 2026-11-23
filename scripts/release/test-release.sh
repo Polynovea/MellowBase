@@ -75,6 +75,20 @@ cp "$OUT/release.json.sig" "$WORK/tampered.json.sig"; cp "$OUT/cosign.pub" "$WOR
 fails docker run --rm -v "$(winpath "$WORK"):/w:ro" "$COSIGN" verify-blob --key /w/cosign.pub --insecure-ignore-tlog=true --signature /w/tampered.json.sig /w/tampered.json
 echo "ok    a changed release.json does not verify"
 
+echo "== The VM's start check (release/packer/files/verify-images.sh) with real cosign"
+mixed() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+vm_check() { # key-file image-ref
+  rm -rf "${WORK:?}/etc" "${WORK:?}/verified"; mkdir -p "$WORK/etc"
+  cp "$1" "$WORK/etc/release.pub"
+  printf 'POLYNOVEA_IMAGE_REF=%s\n' "$2" > "$WORK/etc/image.env"
+  POLYNOVEA_ETC="$(mixed "$WORK/etc")" POLYNOVEA_VERIFIED_DIR="$(mixed "$WORK/verified")" sh release/packer/files/verify-images.sh
+}
+vm_check "$OUT/cosign.pub" "$IMAGE@$DIGEST" >/dev/null && echo "ok    the signed release passes the VM's start check"
+fails vm_check "$OTHER/cosign.pub" "$IMAGE@$DIGEST"
+echo "ok    with another key, the VM's start check refuses it"
+fails vm_check "$OUT/cosign.pub" "$IMAGE@$UNSIGNED"
+echo "ok    an unsigned image fails the VM's start check"
+
 echo "== Key handling"
 grep -q "ENCRYPTED SIGSTORE PRIVATE KEY" "$KEYS/cosign.key" && echo "ok    the throwaway private key is password-encrypted"
 if grep -rl "PRIVATE KEY" "$OUT" >/dev/null 2>&1; then echo "FAIL: a private key landed in the release folder" >&2; exit 1; fi

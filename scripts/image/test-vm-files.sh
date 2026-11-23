@@ -3,7 +3,7 @@
 #
 #   scripts/image/test-vm-files.sh
 #
-# 1. provision.sh in an Ubuntu 24.04 container, with apt-get, systemctl, docker and cloud-init
+# 1. provision.sh and verify-images.sh in an Ubuntu 24.04 container, with apt-get, systemctl, docker and cloud-init
 #    replaced by recorders:
 #    - the image-build path (Packer) and the plain-Ubuntu path (POLYNOVEA_START_NOW=1) install exactly
 #      the same files and enable the same units; only the second starts them;
@@ -24,23 +24,50 @@ export MSYS_NO_PATHCONV=1
 echo "== 1. provision.sh: both boot paths, run twice"
 docker run --rm -i -v "$SRC:/src:ro" "$UBUNTU" bash -euo pipefail <<'EOF'
 mkdir -p /stubs
-for tool in apt-get systemctl docker cloud-init; do
+for tool in apt-get systemctl cloud-init; do
   printf '#!/bin/sh\necho "%s $*" >> /tmp/calls.log\nexit 0\n' "$tool" > "/stubs/$tool"
   chmod +x "/stubs/$tool"
 done
+# docker stand-in: a registry (/tmp/registry-down makes it unreachable), a local image store
+# (/tmp/local), and cosign: `docker run ... verify ... <ref>` succeeds only for refs in /tmp/signed.
+cat > /stubs/docker <<'STUB'
+#!/bin/sh
+echo "docker $*" >> /tmp/calls.log
+for a; do last="$a"; done
+case "$1" in
+  pull) [ -e /tmp/registry-down ] && exit 1; echo "$last" >> /tmp/local; exit 0 ;;
+  image) grep -qxF "$last" /tmp/local 2>/dev/null; exit $? ;;
+  run) case " $* " in *" verify "*) [ -e /tmp/registry-down ] && exit 1; grep -qxF "$last" /tmp/signed 2>/dev/null; exit $? ;; esac; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x /stubs/docker
 export PATH="/stubs:$PATH"
 export POLYNOVEA_IMAGE_REF="ghcr.io/polynovea/cms@sha256:$(printf 'a%.0s' $(seq 64))"
 export POLYNOVEA_CADDY_IMAGE_REF="caddy:2.10-alpine@sha256:$(printf 'b%.0s' $(seq 64))"
 export POLYNOVEA_RELEASE_ID="0.4.0+abc1234" POLYNOVEA_CLOUD=aws
 
-stage() { rm -rf /tmp/polynovea-files; cp -r /src/release/packer/files /tmp/polynovea-files; cp /src/docker/Caddyfile /tmp/polynovea-files/; }
+echo "$POLYNOVEA_IMAGE_REF" > /tmp/signed
+FAKE_KEY='-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtestonlytestonlytestonlytestonly
+-----END PUBLIC KEY-----'
+stage() {
+  rm -rf /tmp/polynovea-files; cp -r /src/release/packer/files /tmp/polynovea-files; cp /src/docker/Caddyfile /tmp/polynovea-files/
+  printf '%s\n' "$FAKE_KEY" > /tmp/polynovea-files/polynovea-release.pub
+}
+# What systemd does to start a unit: every ExecStartPre in order, then (stubbed) ExecStart. 0 = started.
+start_unit() {
+  grep '^ExecStartPre=' "/etc/systemd/system/$1" | sed 's/^ExecStartPre=//' | while IFS= read -r cmd; do
+    sh -c "$cmd" >/dev/null 2>&1 || exit 1
+  done
+}
 snapshot() {
   find /etc/polynovea /opt/polynovea /etc/systemd/system /etc/docker /etc/systemd/journald.conf.d /etc/apt/apt.conf.d \
     -type f \( -path '*polynovea*' -o -name daemon.json -o -name 20auto-upgrades -o -name '52polynovea*' \) \
     -exec sha256sum {} + | sort -k2
   stat -c '%n %a %u:%g' /var/lib/polynovea /var/lib/polynovea-caddy /opt/polynovea/*.sh
 }
-clean() { rm -rf /etc/polynovea /opt/polynovea /etc/systemd/system/polynovea* /etc/systemd/system/var-lib-polynovea.mount /var/lib/polynovea /var/lib/polynovea-caddy /tmp/calls.log; }
+clean() { rm -rf /etc/polynovea /opt/polynovea /etc/systemd/system/polynovea* /etc/systemd/system/var-lib-polynovea.mount /var/lib/polynovea /var/lib/polynovea-caddy /var/lib/polynovea-verified /tmp/calls.log /tmp/local; }
 
 stage; sh /src/release/packer/provision.sh >/dev/null
 snapshot > /tmp/image-path.txt
@@ -66,6 +93,52 @@ stage; POLYNOVEA_START_NOW=1 sh /src/release/packer/provision.sh >/dev/null
 grep -q "^POLYNOVEA_IMAGE_REF=$POLYNOVEA_IMAGE_REF$" /etc/polynovea/image.env && echo "ok    image.env records the digest-pinned image"
 if [ -e /etc/polynovea/polynovea.env ]; then echo "FAIL: provision.sh wrote polynovea.env"; exit 1; fi
 echo "ok    polynovea.env is left to the templates"
+
+echo "-- image check before every start (verify-images.sh), on both paths"
+UNSIGNED="ghcr.io/polynovea/cms@sha256:$(printf 'c%.0s' $(seq 64))"
+for path in image plain; do
+  clean; rm -f /tmp/registry-down; stage
+  if [ "$path" = plain ]; then export POLYNOVEA_START_NOW=1; else unset POLYNOVEA_START_NOW; fi
+  sh /src/release/packer/provision.sh >/dev/null
+  start_unit polynovea.service && echo "ok    [$path] signed, pinned image: polynovea.service starts"
+  start_unit polynovea-caddy.service && echo "ok    [$path] pinned Caddy image: polynovea-caddy.service starts"
+
+  echo "POLYNOVEA_IMAGE_REF=$UNSIGNED" > /etc/polynovea/polynovea.env
+  if start_unit polynovea.service; then echo "FAIL: [$path] an unsigned image started"; exit 1; fi
+  echo "ok    [$path] bad signature: polynovea.service does not start"
+
+  echo "POLYNOVEA_IMAGE_REF=ghcr.io/polynovea/cms:latest" > /etc/polynovea/polynovea.env
+  if start_unit polynovea.service; then echo "FAIL: [$path] an image by tag started"; exit 1; fi
+  echo "ok    [$path] image not pinned by digest: does not start"
+
+  echo "POLYNOVEA_CADDY_IMAGE_REF=caddy:latest" > /etc/polynovea/polynovea.env
+  if start_unit polynovea-caddy.service; then echo "FAIL: [$path] Caddy by tag started"; exit 1; fi
+  echo "ok    [$path] Caddy not pinned by digest: does not start"
+  rm -f /etc/polynovea/polynovea.env
+
+  touch /tmp/registry-down
+  start_unit polynovea.service && echo "ok    [$path] registry unreachable: the image already verified with this key still starts"
+  echo "POLYNOVEA_IMAGE_REF=$UNSIGNED" > /etc/polynovea/polynovea.env
+  if start_unit polynovea.service; then echo "FAIL: [$path] unverified image started with the registry down"; exit 1; fi
+  echo "ok    [$path] registry unreachable: a not-yet-verified image does not start"
+  rm -f /etc/polynovea/polynovea.env /tmp/registry-down
+
+  mv /etc/polynovea/release.pub /tmp/release.pub.bak; rm -rf /var/lib/polynovea-verified/*
+  if start_unit polynovea.service; then echo "FAIL: [$path] started without a release key"; exit 1; fi
+  echo "ok    [$path] no release public key: does not start"
+  mv /tmp/release.pub.bak /etc/polynovea/release.pub
+done
+unset POLYNOVEA_START_NOW
+
+clean; stage; cp /tmp/signed /tmp/signed.bak; : > /tmp/signed
+if POLYNOVEA_START_NOW=1 sh /src/release/packer/provision.sh >/dev/null 2>&1; then echo "FAIL: provision accepted an unsigned image"; exit 1; fi
+if grep -q '^systemctl start' /tmp/calls.log; then echo "FAIL: services started after a failed check"; exit 1; fi
+echo "ok    provision.sh stops before starting anything when the image's signature is bad"
+mv /tmp/signed.bak /tmp/signed
+
+clean; stage; rm /tmp/polynovea-files/polynovea-release.pub
+if sh /src/release/packer/provision.sh >/dev/null 2>&1; then echo "FAIL: provision ran without the release key"; exit 1; fi
+echo "ok    provision.sh refuses to run without the release public key"
 EOF
 
 echo "== 2. console-code.sh: setup mode only"

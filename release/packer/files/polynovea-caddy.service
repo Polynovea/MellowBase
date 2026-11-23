@@ -7,6 +7,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecCondition=/opt/polynovea/has-domain.sh
+# Pinned digest before every start (Caddy's own image; not signed by Polynovea).
+ExecStartPre=/opt/polynovea/verify-images.sh caddy
 ExecStart=/opt/polynovea/run-caddy.sh
 ExecStop=/usr/bin/docker stop --time 20 polynovea-caddy
 Restart=always

@@ -34,7 +34,7 @@ The private key is the one thing that makes a release ours. If it leaks, anyone 
 - **Where it lives:** the release machine's encrypted disk, readable only by the release user. Keep one offline, encrypted backup (for example an encrypted USB key in a safe). Keep the password in the company password manager, never in a file next to the key.
 - **Never** commit it, paste it into a chat or ticket, copy it to a server, put it in CI, or bake it into an image. `.dockerignore` excludes `*.key` and `cosign.*`, and the test checks that no private key reaches the release output.
 - **Using it:** give the password to the script only through `COSIGN_PASSWORD` in that one command's environment. The script passes it to cosign by name, never on a command line.
-- **Publishing the public key:** `cosign.pub` goes in each release's output, on the website and in the README. Installers pin its hash (`publicKeySha256` in `release.json`).
+- **Publishing the public key:** `cosign.pub` goes in each release's output, on the website and in the README. Installers pin its hash (`publicKeySha256` in `release.json`). Before the first VM image or template release, commit it as `release/packer/files/polynovea-release.pub`: every VM checks each CMS image against that key before starting it, and `provision.sh` refuses to run without it.
 - **Rotation or loss:** make a new pair, and publish the new public key in a release signed with the old key (if you still have it). If the old key leaked, announce it, mark the releases signed after the leak as untrusted, and re-sign the current release with the new key.
 
 ## Checking a release by hand

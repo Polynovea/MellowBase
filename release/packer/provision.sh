@@ -12,13 +12,19 @@
 #
 # Needs: POLYNOVEA_IMAGE_REF (pinned by digest), POLYNOVEA_CADDY_IMAGE_REF, POLYNOVEA_RELEASE_ID,
 # POLYNOVEA_CLOUD (aws|azure), and the files from release/packer/files plus docker/Caddyfile in
-# /tmp/polynovea-files (or POLYNOVEA_FILES).
+# /tmp/polynovea-files (or POLYNOVEA_FILES). They must include polynovea-release.pub, the release
+# signing key's public half: without it this script stops, because no image could be verified.
 set -eu
 
 : "${POLYNOVEA_IMAGE_REF:?}" "${POLYNOVEA_CADDY_IMAGE_REF:?}" "${POLYNOVEA_RELEASE_ID:?}" "${POLYNOVEA_CLOUD:?}"
 case "$POLYNOVEA_IMAGE_REF" in *@sha256:*) ;; *) echo "POLYNOVEA_IMAGE_REF must be pinned by digest" >&2; exit 1 ;; esac
 case "$POLYNOVEA_CADDY_IMAGE_REF" in *@sha256:*) ;; *) echo "POLYNOVEA_CADDY_IMAGE_REF must be pinned by digest" >&2; exit 1 ;; esac
 FILES="${POLYNOVEA_FILES:-/tmp/polynovea-files}"
+COSIGN_IMAGE="ghcr.io/sigstore/cosign/cosign:v2.6.1@sha256:68839b7f13dac5a6744a5d8818e984dd39183374e37855c19e14d623d9bc9037"
+grep -q "BEGIN PUBLIC KEY" "$FILES/polynovea-release.pub" 2>/dev/null || {
+  echo "provision: $FILES/polynovea-release.pub (the release public key) is missing" >&2
+  exit 1
+}
 export DEBIAN_FRONTEND=noninteractive
 
 # Let cloud-init finish its own apt work first.
@@ -39,9 +45,10 @@ install -m 0644 "$FILES/journald-polynovea.conf" /etc/systemd/journald.conf.d/po
 
 # 3. Polynovea: scripts, units, the HTTPS proxy's config, and which image this VM image carries.
 install -d -m 0755 /opt/polynovea /etc/polynovea
-install -m 0755 "$FILES/run-cms.sh" "$FILES/run-caddy.sh" "$FILES/has-domain.sh" "$FILES/data-disk.sh" "$FILES/console-code.sh" /opt/polynovea/
+install -m 0755 "$FILES/run-cms.sh" "$FILES/run-caddy.sh" "$FILES/has-domain.sh" "$FILES/data-disk.sh" "$FILES/console-code.sh" "$FILES/verify-images.sh" /opt/polynovea/
 install -m 0644 "$FILES/Caddyfile" /etc/polynovea/Caddyfile
-sed -i 's/\r$//' /opt/polynovea/*.sh /etc/polynovea/Caddyfile /etc/apt/apt.conf.d/52polynovea-unattended-upgrades /etc/apt/apt.conf.d/20auto-upgrades
+install -m 0644 "$FILES/polynovea-release.pub" /etc/polynovea/release.pub
+sed -i 's/\r$//' /opt/polynovea/*.sh /etc/polynovea/Caddyfile /etc/polynovea/release.pub /etc/apt/apt.conf.d/52polynovea-unattended-upgrades /etc/apt/apt.conf.d/20auto-upgrades
 cat >/etc/polynovea/image.env <<EOF
 # Written by provision.sh. /etc/polynovea/polynovea.env may override POLYNOVEA_IMAGE_REF.
 POLYNOVEA_IMAGE_REF=$POLYNOVEA_IMAGE_REF
@@ -58,11 +65,16 @@ done
 # Mount point and Caddy's state. Left alone when they exist (the data disk may already be mounted).
 [ -d /var/lib/polynovea ] || install -d -m 0755 /var/lib/polynovea
 [ -d /var/lib/polynovea-caddy ] || install -d -m 0700 /var/lib/polynovea-caddy
+[ -d /var/lib/polynovea-verified ] || install -d -m 0700 /var/lib/polynovea-verified
 
-# 4. The images, pulled by digest (content-addressed: what runs is exactly what was signed).
+# 4. The images, pulled by digest (content-addressed), and the CMS image's release signature checked
+#    now, so a build or bootstrap with a bad image stops here. The units check again before every start.
 systemctl enable --now docker.service
 docker pull "$POLYNOVEA_IMAGE_REF"
 docker pull "$POLYNOVEA_CADDY_IMAGE_REF"
+docker pull "$COSIGN_IMAGE"
+/opt/polynovea/verify-images.sh
+/opt/polynovea/verify-images.sh caddy
 
 systemctl daemon-reload
 # shellcheck disable=SC2086 # UNITS is a list
