@@ -3,8 +3,8 @@
 // The database primitives come from PostgreSQL in modelService.postgres.ts. Everything that decides
 // what is allowed (canonical schema validation, apiKey immutability, diff classification, the
 // acknowledge-unsafe gate) stays here.
-import { createHash } from "node:crypto";
 import { logPlatformEvent } from "@/lib/platform/audit";
+import { hashModelSchema } from "@/lib/schema/engine/hash";
 import * as postgres from "@/lib/schema/modelService.postgres";
 import { validateCanonicalSchema } from "@/lib/schema/canonicalSchema";
 import { computeSchemaDiff, type SchemaDiff } from "@/lib/schema/diff";
@@ -43,9 +43,14 @@ export interface ContentModelVersionRow {
   created_at: string;
 }
 
+/**
+ * SHA-256 of the schema's canonical JSON (keys sorted at every depth), so any change to any field
+ * changes it. Before migration 0075 this passed the top-level keys as JSON.stringify's replacer,
+ * which filters keys at every depth: field contents were ignored and different schemas collided.
+ * 0075 re-hashed stored versions (and the copies of their hashes) with this function's SQL twin.
+ */
 export function computeSchemaHash(schema: CanonicalSchema): string {
-  const stable = JSON.stringify(schema, Object.keys(schema).sort());
-  return createHash("sha256").update(stable).digest("hex");
+  return hashModelSchema(schema);
 }
 
 export type ServiceResult<T> = { ok: true; data: T } | { ok: false; error: string; status: number };

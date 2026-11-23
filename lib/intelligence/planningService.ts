@@ -427,7 +427,7 @@ export async function simulateOperationalPlan(params: { workspaceId: string; env
     if (!assessment) blockers.push({ code: "SCHEMA_ASSESSMENT_NOT_FOUND", nodeKey: node.node_key, assessmentId });
     else if (Date.now() - new Date(assessment.created_at).getTime() > 15 * 60 * 1000) blockers.push({ code: "SCHEMA_ASSESSMENT_STALE", nodeKey: node.node_key, assessmentId, message: "Target-data evidence is older than the 15-minute execution freshness window." });
     else if (assessment.status === "blocked" || (Array.isArray(assessment.hard_blockers_json) && assessment.hard_blockers_json.length)) blockers.push({ code: "SCHEMA_DATA_BLOCKERS", nodeKey: node.node_key, assessmentId, blockers: assessment.hard_blockers_json });
-    else if (assessment.proposed_schema_hash !== node.input_json?.schemaHash) blockers.push({ code: "SCHEMA_ASSESSMENT_HASH_MISMATCH", nodeKey: node.node_key, assessmentId });
+    else if (assessment.proposed_schema_hash !== node.input_json?.schemaHash) blockers.push({ code: "SCHEMA_ASSESSMENT_HASH_MISMATCH", nodeKey: node.node_key, assessmentId, message: "This plan was built before the model's schema changed or before a CMS update recalculated schema fingerprints. Plan it again." });
     if (assessment && Array.isArray(assessment.warnings_json) && assessment.warnings_json.length) warnings.push({ code: "SCHEMA_ASSESSMENT_WARNINGS", nodeKey: node.node_key, assessmentId, warnings: assessment.warnings_json });
   }
   for (const node of nodes.filter((item) => item.operation === "schema.migrate_assessed")) {
@@ -446,7 +446,7 @@ export async function simulateOperationalPlan(params: { workspaceId: string; env
     if (!assessment) { blockers.push({ code: "MIGRATION_ASSESSMENT_NOT_FOUND", nodeKey: node.node_key, assessmentId }); continue; }
     if (!canonicalVersion) { blockers.push({ code: "MIGRATION_TARGET_SCHEMA_NOT_FOUND", nodeKey: node.node_key, modelId, schemaVersion }); continue; }
     if (Date.now() - new Date(assessment.created_at).getTime() > 15 * 60 * 1000) { blockers.push({ code: "MIGRATION_ASSESSMENT_STALE", nodeKey: node.node_key, assessmentId }); continue; }
-    if (String(assessment.target_schema_hash ?? assessment.proposed_schema_hash) !== String(node.input_json?.schemaHash ?? "")) { blockers.push({ code: "MIGRATION_TARGET_HASH_MISMATCH", nodeKey: node.node_key, assessmentId }); continue; }
+    if (String(assessment.target_schema_hash ?? assessment.proposed_schema_hash) !== String(node.input_json?.schemaHash ?? "")) { blockers.push({ code: "MIGRATION_TARGET_HASH_MISMATCH", nodeKey: node.node_key, assessmentId, message: "This plan was built before the model's schema changed or before a CMS update recalculated schema fingerprints. Plan it again." }); continue; }
     const automatic = chooseAutomaticMigrationStrategy(assessment, canonicalVersion.schema_json);
     if (!automatic || automatic.strategyKey !== strategyKey) {
       blockers.push({ code: "MIGRATION_STRATEGY_NO_LONGER_VALID", nodeKey: node.node_key, assessmentId, strategyKey, message: "Fresh target evidence no longer supports the immutable automatic migration strategy." });
