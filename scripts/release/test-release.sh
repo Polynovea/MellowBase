@@ -12,6 +12,9 @@
 set -euo pipefail
 
 export PATH="/c/Program Files/Docker/Docker/resources/bin:$PATH"
+# Git Bash would rewrite container paths such as /keys into Windows paths; host paths go through
+# winpath/mixed below.
+export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/../.."
 REGISTRY_IMAGE="registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 PORT=35000

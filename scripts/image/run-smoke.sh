@@ -15,8 +15,13 @@
 set -euo pipefail
 
 export PATH="/c/Program Files/Docker/Docker/resources/bin:$PATH"
+# Git Bash would rewrite container paths such as /app into Windows paths; host paths are converted
+# explicitly below.
+export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/../.."
 ROOT="$(pwd)"
+HOST_ROOT="$ROOT"
+if command -v cygpath >/dev/null 2>&1; then HOST_ROOT="$(cygpath -w "$ROOT")"; fi
 IMAGE=polynovea-cms:smoke
 RELEASE_ID="smoke+$(git rev-parse --short HEAD)"
 PREFIX=p5w1-smoke
@@ -115,7 +120,7 @@ docker volume create "$PREFIX-data3" >/dev/null
 docker run -d --name "$PREFIX-proxy" -e POLYNOVEA_TRUSTED_PROXIES=127.0.0.1 -e POLYNOVEA_PUBLIC_URL=https://localhost -v "$PREFIX-data3:/var/lib/polynovea" "$IMAGE" >/dev/null
 CADDY_IMAGE="$(sed -n 's/^ *image: \(caddy:.*\)$/\1/p' docker/compose.yaml)"
 docker run -d --name "$PREFIX-caddy" --network "container:$PREFIX-proxy" -e POLYNOVEA_DOMAIN=localhost \
-  -v "$ROOT/docker/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" >/dev/null
+  -v "$HOST_ROOT/docker/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" >/dev/null
 wait_healthy "$PREFIX-proxy"
 CODE3="$(setup_code "$PREFIX-proxy")"
 sleep 3

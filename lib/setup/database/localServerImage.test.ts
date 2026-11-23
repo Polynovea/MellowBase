@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { localServerSettings } from "./localServer";
-import { createImageLocalServerHost, IMAGE_LOCAL_DB_SCRIPT, imageLocalServerHost, imagePaths, runningInServerImage } from "./localServerImage";
+import { createImageLocalServerHost, IMAGE_LOCAL_DB_SCRIPT, imageLocalServerHost, imagePaths, imagePgBackRestEnv, runningInServerImage } from "./localServerImage";
 
 describe("server image detection", () => {
   it("needs both the image marker and the bundled database script", () => {
@@ -48,6 +48,15 @@ describe("the image's LocalServerHost", () => {
     const config = (connect.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
     expect(config).toMatchObject({ host: "/var/run/postgresql", port: 5432, user: "postgres", database: "polynovea" });
     expect(config).not.toHaveProperty("password");
+  });
+
+  it("runs pgBackRest with its config and logs on the data disk, signed in as the local administrator", () => {
+    expect(imagePgBackRestEnv(paths)).toEqual({
+      PGBACKREST_CONFIG: "/var/lib/polynovea/etc/pgbackrest.conf",
+      PGBACKREST_LOG_PATH: "/var/lib/polynovea/log/pgbackrest",
+      PGBACKREST_LOCK_PATH: "/tmp/pgbackrest",
+      PGBACKREST_PG1_USER: "postgres",
+    });
   });
 
   it("creates the database folder before checking which disk it is on", async () => {

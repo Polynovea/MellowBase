@@ -87,18 +87,26 @@ export function parseArgs(argv) {
   return options;
 }
 
-function run(command, args, { capture = false, env, input } = {}) {
-  const result = spawnSync(command, args, {
-    cwd: ROOT,
-    stdio: capture ? ["pipe", "pipe", "inherit"] : ["pipe", "inherit", "inherit"],
-    env: { ...process.env, ...env },
-    input,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
+// The only two programs this script runs: docker and git, named literally, always with an argument
+// list and never through a shell.
+const spawnOptions = (capture) => ({
+  cwd: ROOT,
+  stdio: capture ? ["ignore", "pipe", "inherit"] : ["ignore", "inherit", "inherit"],
+  encoding: "utf8",
+  maxBuffer: 64 * 1024 * 1024,
+  shell: false,
+});
+
+function settle(program, args, result, capture) {
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${command} ${args[0] ?? ""} ${args[1] ?? ""} failed (exit ${result.status})`);
+  if (result.status !== 0) throw new Error(`${program} ${args[0] ?? ""} ${args[1] ?? ""} failed (exit ${result.status})`);
   return capture ? result.stdout.trim() : "";
+}
+
+function run(program, args, { capture = false } = {}) {
+  if (program === "docker") return settle("docker", args, spawnSync("docker", args, spawnOptions(capture)), capture);
+  if (program === "git") return settle("git", args, spawnSync("git", args, spawnOptions(capture)), capture);
+  throw new Error(`Unexpected program ${program}`);
 }
 
 const sha256File = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");

@@ -89,6 +89,18 @@ const connectClient = async (config: pg.ClientConfig) => {
   return client;
 };
 
+/** pgBackRest's environment in the image: its config and logs on the data disk, its lock in /tmp. */
+export function imagePgBackRestEnv(paths: ImagePaths): Record<string, string> {
+  return {
+    PGBACKREST_CONFIG: paths.pgBackRestConfigPath,
+    PGBACKREST_LOG_PATH: paths.pgBackRestLogPath,
+    PGBACKREST_LOCK_PATH: "/tmp/pgbackrest",
+    // pgBackRest signs in to the cluster over the socket as the local administrator (peer map).
+    // Without this it uses the OS user's name, which pg_hba.conf rejects.
+    PGBACKREST_PG1_USER: IMAGE_ADMIN_USER,
+  };
+}
+
 /** The image's LocalServerHost. Exported with its dependencies for tests. */
 export function createImageLocalServerHost(paths: ImagePaths = imagePaths(), deps: ImageHostDeps = {}): LocalServerHost {
   const run = deps.run ?? runScript;
@@ -106,11 +118,7 @@ export function createImageLocalServerHost(paths: ImagePaths = imagePaths(), dep
       connectionTimeoutMillis: 10_000,
     }),
     pgBackRestConfigPath: paths.pgBackRestConfigPath,
-    env: {
-      PGBACKREST_CONFIG: paths.pgBackRestConfigPath,
-      PGBACKREST_LOG_PATH: paths.pgBackRestLogPath,
-      PGBACKREST_LOCK_PATH: "/tmp/pgbackrest",
-    },
+    env: imagePgBackRestEnv(paths),
   });
 
   return {
