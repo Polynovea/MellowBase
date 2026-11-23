@@ -17,11 +17,11 @@ import { SchemaEngineError } from "@/lib/schema/engine/errors";
 import { describeContextFor } from "@/lib/schema/engine/describe";
 import { countDestructiveImpact } from "@/lib/schema/engine/impact";
 import { hashShape } from "@/lib/schema/engine/hash";
-import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "@/lib/schema/engine/limits";
+import { DEFAULT_SCHEMA_LIMITS, POSTGRES_MAX_COLUMNS, type SchemaLimits } from "@/lib/schema/engine/limits";
 import { tableNameCandidates } from "@/lib/schema/engine/names";
 import type { MigrationPlan, PlanResult, PlanStage, PlanStep, TableShape } from "@/lib/schema/engine/plan";
 import { applyStepToShape, buildMigrationPlan, type FieldRename } from "@/lib/schema/engine/planner";
-import { renderStep } from "@/lib/schema/engine/render";
+import { CONTENT_SCHEMA, renderStep } from "@/lib/schema/engine/render";
 import { validatePlan } from "@/lib/schema/engine/validate";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 
@@ -156,6 +156,18 @@ export async function assertStageCurrent(
   const steps = stageSteps(plan, stage);
   if (!row && steps.some((step) => step.kind === "create_table") && (await countModelTables(trx, plan.modelId)) >= limits.maxModels) {
     throw new SchemaEngineError("cap_exceeded", `This install already has ${limits.maxModels} models, the most allowed.`);
+  }
+  // PostgreSQL's 1,600-column limit counts deleted columns too.
+  const adding = steps.filter((step) => step.kind === "add_column" || step.kind === "replace_column").length;
+  if (row && adding > 0) {
+    const used = await sql<{ n: string }>`
+      select count(*) as n from pg_catalog.pg_attribute a
+      join pg_catalog.pg_class c on c.oid = a.attrelid
+      join pg_catalog.pg_namespace s on s.oid = c.relnamespace
+      where s.nspname = ${CONTENT_SCHEMA} and c.relname = ${plan.table} and a.attnum > 0`.execute(trx);
+    if (Number(used.rows[0]?.n ?? 0) + adding > POSTGRES_MAX_COLUMNS) {
+      throw new SchemaEngineError("cap_exceeded", "This model's table has reached PostgreSQL's limit of 1,600 columns, which also counts deleted fields. The table needs a rebuild before more fields can be added.");
+    }
   }
   const reserved = await loadReservedNames(trx, plan.workspaceId, plan.modelId);
   if (!row && steps.some((step) => step.kind === "create_table") && reserved.models.has(plan.modelApiKey)) {

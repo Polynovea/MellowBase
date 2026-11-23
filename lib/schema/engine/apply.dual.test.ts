@@ -215,6 +215,18 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     expect((await backend.query(`select distinct status from content.${table}`))).toEqual([{ status: "draft" }]);
   });
 
+  it("refuses to add fields once PostgreSQL's 1,600-column limit is used up, deleted columns included", async () => {
+    const m = await newModel();
+    await m.apply(m.schema(f("title")));
+    const table = (await m.table())!;
+    // Behind the engine: 1,596 columns added and dropped. With _entry_id, _variant, _locale and title that is 1,600 slots.
+    await backend.query(`do $$ begin for i in 1..1596 loop execute format('alter table content.%I add column filler_%s int', '${table}', i); execute format('alter table content.%I drop column filler_%s', '${table}', i); end loop; end $$`);
+    const plan = await m.prepare(m.schema(f("title"), f("one_more")));
+    const error = await errorOf(applyExpandStage(owner, { plan, requestedBy: null, limits: TEST_LIMITS }));
+    expect(error).toMatchObject({ code: "cap_exceeded" });
+    expect((error as Error).message).toMatch(/1,600 columns, which also counts deleted fields. The table needs a rebuild/);
+  }, 120_000);
+
   it("deletes a whole model only after confirmation, with its permissions, and reserves its api key", async () => {
     const m = await newModel();
     await m.apply(m.schema(f("title")));
