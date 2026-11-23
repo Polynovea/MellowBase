@@ -1,5 +1,5 @@
 import pg from "pg";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as discoveryData from "@/lib/intelligence/discoveryData";
 import { redactCredentials, resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
 import type { OperationalWorldEdgeSeed, OperationalWorldNodeSeed } from "@/lib/intelligence/operationalTypes";
 import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
@@ -37,16 +37,8 @@ export interface DeepPostgresDiscovery {
 }
 
 async function resolveDatabase(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
-  const { data, error } = await db.from("workspace_connections")
-    .select("id,connector_type,status,active,created_at")
-    .eq("workspace_id", workspaceId)
-    .eq("environment_id", environmentId)
-    .eq("connector_family", "database")
-    .eq("active", true)
-    .order("created_at", { ascending: false });
-  if (error) throw new Error(error.message);
-  const connection = (data ?? []).find((row) => ["database.postgres", "database.supabase"].includes(row.connector_type) && row.status === "active") ?? null;
+  const data = await discoveryData.databaseConnections(workspaceId, environmentId);
+  const connection = data.find((row) => ["database.postgres", "database.supabase"].includes(row.connector_type) && row.status === "active") ?? null;
   if (!connection) return { connection: null, connectionString: null, credentials: {} as Record<string, string> };
   const credentials = await resolveConnectionCredentials(workspaceId, connection.id);
   return { connection, connectionString: credentials.connection_url ?? null, credentials };

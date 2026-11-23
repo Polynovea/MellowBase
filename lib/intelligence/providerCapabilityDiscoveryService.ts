@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as discoveryData from "@/lib/intelligence/discoveryData";
 import { redactCredentials, resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
 import { allowsPrivateNetwork, assertSafeOutboundUrl, safeFetch } from "@/lib/infrastructure/networkSafety";
 import type { EnvironmentKind } from "@/lib/infrastructure/types";
@@ -273,13 +273,7 @@ function runtimeCapabilitySeeds(environment: any, components: any[], connections
 }
 
 export async function discoverProviderCapabilities(params: { workspaceId: string; environmentId: string }): Promise<ProviderCapabilityDiscovery> {
-  const db = createServiceRoleClient();
-  const [{ data: environment }, { data: connections }, { data: components }, { data: bindings }] = await Promise.all([
-    db.from("workspace_environments").select("id,kind,status,cms_base_url,runtime_provider,database_provider,storage_provider").eq("workspace_id", params.workspaceId).eq("id", params.environmentId).maybeSingle(),
-    db.from("workspace_connections").select("id,name,connector_type,connector_family,status,active,config_json,metadata_json").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId),
-    db.from("environment_components").select("id,component_key,state,provider,capability_key,last_checked_at").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId),
-    db.from("website_connection_bindings").select("id,connection_id,integration_method,status").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId),
-  ]);
+  const { environment, connections, components, bindings } = await discoveryData.capabilityRows(params.workspaceId, params.environmentId);
   if (!environment) throw Object.assign(new Error("Environment not found"), { status: 404 });
   const environmentKind = environment.kind as EnvironmentKind;
   const rows = (connections ?? []) as ConnectionRow[];

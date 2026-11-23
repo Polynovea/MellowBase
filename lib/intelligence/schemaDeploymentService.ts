@@ -1,15 +1,10 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as discoveryData from "@/lib/intelligence/discoveryData";
 import { getModel, getVersion } from "@/lib/schema/modelService";
-import { logPlatformEvent } from "@/lib/platform/audit";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function getDataAwareChangeAssessment(workspaceId: string, assessmentId: string) {
-  const { data, error } = await createServiceRoleClient()
-    .from("operational_change_assessments")
-    .select("*")
-    .eq("workspace_id", workspaceId)
-    .eq("id", assessmentId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
+  const data = UUID.test(assessmentId) ? await discoveryData.changeAssessment(workspaceId, assessmentId) : null;
   if (!data) throw Object.assign(new Error("Data-aware change assessment not found"), { status: 404 });
   return data;
 }
@@ -22,7 +17,6 @@ export async function deployAssessedCanonicalSchema(params: {
   assessmentId: string;
   strategyKey?: "direct_metadata_change" | "deprecate_retain";
 }) {
-  const db = createServiceRoleClient();
   const [model, assessment] = await Promise.all([
     getModel(params.workspaceId, params.modelId),
     getDataAwareChangeAssessment(params.workspaceId, params.assessmentId),
@@ -61,18 +55,14 @@ export async function deployAssessedCanonicalSchema(params: {
     throw Object.assign(new Error(`Direct canonical deployment is not allowed for deterministic classification ${sourceClassification}`), { status: 409 });
   }
 
-  const { data: environment } = await db.from("workspace_environments")
-    .select("id,kind")
-    .eq("workspace_id", params.workspaceId)
-    .eq("id", params.environmentId)
-    .maybeSingle();
+  const environment = UUID.test(params.environmentId) ? await discoveryData.environmentKind(params.workspaceId, params.environmentId) : null;
   if (!environment) throw Object.assign(new Error("Environment not found"), { status: 404 });
   if (environment.kind === "production" && classification !== "safe") {
     throw Object.assign(new Error("Production schema deployment must be deterministically SAFE; lock-sensitive changes require an explicit governed migration plan."), { status: 409 });
   }
 
   const now = new Date().toISOString();
-  const { data: deployment, error } = await db.from("environment_schema_deployments").upsert({
+  const deployment = await discoveryData.recordSchemaDeployment({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     content_model_id: params.modelId,
@@ -94,21 +84,16 @@ export async function deployAssessedCanonicalSchema(params: {
         warningCount: Array.isArray(assessment.warnings_json) ? assessment.warnings_json.length : 0,
       },
     },
-  }, { onConflict: "environment_id,content_model_id,schema_version" }).select().single();
-  if (error || !deployment) throw new Error(error?.message || "Could not record canonical schema deployment");
-
-  await db.from("workspace_environments").update({
+  }, {
     deployed_schema_hash: currentVersion.schema_hash,
     deployed_schema_revision: `${model.api_key}:v${model.current_schema_version}`,
     updated_at: now,
-  }).eq("workspace_id", params.workspaceId).eq("id", params.environmentId);
-
-  await logPlatformEvent({
+  }, (recorded) => ({
     workspaceId: params.workspaceId,
     actorAdminUserId: params.actorId,
     action: "operational.schema_change.deployed",
     entityType: "environment_schema_deployment",
-    entityId: deployment.id,
+    entityId: recorded.id,
     metadata: {
       environmentId: params.environmentId,
       modelId: params.modelId,
@@ -119,7 +104,7 @@ export async function deployAssessedCanonicalSchema(params: {
       sourceAssessmentClassification: sourceClassification,
       migrationStrategy: strategyKey,
     },
-  });
+  }));
 
   return {
     deployment,
