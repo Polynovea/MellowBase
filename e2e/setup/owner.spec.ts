@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
 import pg from "pg";
 import { base32 } from "@better-auth/utils/base32";
@@ -14,6 +15,9 @@ import { createOTP } from "@better-auth/utils/otp";
 //   E2E_OWNER_SCENARIO     "single" (default: acceptance test 1) or "race" (acceptance test 3). Each
 //                          finishes setup, so each needs a fresh server.
 // Optional:
+//   E2E_SERVER_LOG         file capturing that server's output. The setup code works once; acceptance
+//                          test 3 reads the replacement code the server prints there for the second
+//                          browser (without it, test 3 is skipped)
 //   E2E_DATABASE_URL       an owner-role connection to that server's database: counts owners and
 //                          installation rows directly (acceptance test 3)
 //   E2E_RESTART_COMMAND    a shell command that restarts the server (acceptance test 4 checks /setup
@@ -40,9 +44,21 @@ async function withPasskeyDevice(page: Page): Promise<void> {
   });
 }
 
-async function enterSetupCode(page: Page): Promise<void> {
+/** The newest replacement code the server printed after a successful use (the code works once). */
+async function replacementCode(): Promise<string> {
+  const log = process.env.E2E_SERVER_LOG!;
+  let found: string | undefined;
+  await expect.poll(() => {
+    const text = existsSync(log) ? readFileSync(log, "utf8") : "";
+    found = [...text.matchAll(/use this new code: ([0-9A-Z-]+)/g)].pop()?.[1];
+    return found;
+  }, { timeout: 10_000 }).toBeTruthy();
+  return found!;
+}
+
+async function enterSetupCode(page: Page, setupCode: string = code!): Promise<void> {
   await page.goto("/setup");
-  await page.getByLabel("Setup code").fill(code!);
+  await page.getByLabel("Setup code").fill(setupCode);
   await page.getByRole("button", { name: /continue/i }).click();
   await expect(page.getByRole("status")).toContainText("Code accepted");
   await page.goto("/setup/owner");
@@ -128,13 +144,14 @@ test("acceptance 1: a fresh install reaches a signed-in owner using only the bro
 
 test("acceptance 3: two browsers finishing setup at once leave exactly one owner", async ({ browser }) => {
   test.skip(scenario !== "race", "Set E2E_OWNER_SCENARIO=race (on a fresh server) to run acceptance test 3");
+  test.skip(!process.env.E2E_SERVER_LOG, "Set E2E_SERVER_LOG: the second browser needs the replacement setup code from the server log");
   const first = await newBrowser(browser);
   await enterSetupCode(first.page);
   const { totpKey } = await completeOwnerSteps(first.page);
 
-  // A second browser enters the code: it takes over the session and carries the progress on.
+  // A second browser enters the replacement code: it takes over the session and carries the progress on.
   const second = await newBrowser(browser);
-  await enterSetupCode(second.page);
+  await enterSetupCode(second.page, await replacementCode());
   await expect(second.page.getByRole("heading", { name: "Finish setup" })).toBeVisible();
 
   // Both press Finish at the same moment.

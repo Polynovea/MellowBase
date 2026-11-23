@@ -14,8 +14,9 @@ export default function SetupOwnerPage() {
         <p className="ui-eyebrow">Step 3</p>
         <h2 className="ui-section-title">Create the owner account</h2>
         <p className="ui-section-description">
-          A few minutes, one screen at a time. Nothing is saved until you press Finish at the end; if you close this tab, enter the setup code again
-          and you&apos;ll pick up where you left off (within the hour).
+          A few minutes, one screen at a time. Nothing is saved until you press Finish at the end. If you close this tab, or want to carry on in another
+          browser, enter the replacement setup code the server log printed when your code was used, and you&apos;ll pick up where you left off
+          (within the hour).
         </p>
       </header>
       <OwnerWizard />

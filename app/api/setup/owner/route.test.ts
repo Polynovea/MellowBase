@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SETUP_SESSION_COOKIE, resetSetupSessionsForTests, startSetupSession } from "@/lib/setup/setupSession";
 import { readEnrolment } from "@/lib/setup/owner/enrolment";
+import { peerStampEntryForTests, type PeerInfo } from "@/lib/setup/peerStamp";
 
 // The owner step's routes run guardSetupRequest, assertMode("setup") and requireSetupSession, in
 // that order, before any action. The mode is driven by the test; everything else is real.
@@ -23,18 +24,21 @@ const ORIGIN = "http://localhost:3000";
 const savedEnv = { ...process.env };
 let token: string;
 
+/** A browser through an SSH tunnel to a server bound to 127.0.0.1, as the peer stamp records it. */
+const TUNNEL: PeerInfo = { peer: "127.0.0.1", bound: "127.0.0.1", tls: false, forwarded: false };
+
 function request(action: string, body: unknown = {}, headers: Record<string, string> = {}, method = "POST") {
+  const all = new Headers({
+    host: "localhost:3000",
+    origin: ORIGIN,
+    "content-type": "application/json",
+    cookie: `${SETUP_SESSION_COOKIE}=${token}`,
+    ...headers,
+  });
+  all.set(...peerStampEntryForTests(TUNNEL));
   return new Request(`${ORIGIN}/api/setup/owner${action ? `/${action}` : ""}`, {
     method,
-    headers: {
-      host: "localhost:3000",
-      origin: ORIGIN,
-      "x-forwarded-for": "127.0.0.1",
-      "x-forwarded-proto": "http",
-      "content-type": "application/json",
-      cookie: `${SETUP_SESSION_COOKIE}=${token}`,
-      ...headers,
-    },
+    headers: all,
     body: method === "GET" ? undefined : JSON.stringify(body),
   });
 }
@@ -69,6 +73,9 @@ describe("owner step routes", () => {
     const response = await POST(request("account", { email: "x@example.test" }, { origin: "https://evil.example.test" }), params("account"));
     expect(response.status).toBe(403);
     expect((await response.json()).code).toBe("SETUP_REQUEST_REFUSED");
+    // Without the server's record of the real connection, every guard fails closed.
+    const unstamped = new Request(`${ORIGIN}/api/setup/owner/account`, { method: "POST", headers: { host: "localhost:3000", origin: ORIGIN, "content-type": "application/json", cookie: `${SETUP_SESSION_COOKIE}=${token}` }, body: "{}" });
+    expect((await POST(unstamped, params("account"))).status).toBe(403);
   });
 
   it("answer 404 on a finished install and 503 while the database is down", async () => {

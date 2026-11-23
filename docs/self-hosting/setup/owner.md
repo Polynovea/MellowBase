@@ -3,9 +3,10 @@
 The last part of setup creates the **owner**: the one account that can do everything in the CMS,
 including adding other people. It takes a few minutes, one screen at a time, at `/setup/owner`.
 
-Nothing is saved until you press **Finish**. If you close the tab, enter the setup code again
-(within the hour) and you pick up where you left off. Entering the code in another browser moves
-setup there, progress included.
+Nothing is saved until you press **Finish**. The setup code works once; when you use it, the server
+log prints a replacement code. If you close the tab, or want to carry on in another browser, enter
+that replacement code (within the hour) and you pick up where you left off, progress included. A
+restart prints a fresh code but starts the owner step again from the beginning.
 
 ## What you'll be asked for
 
