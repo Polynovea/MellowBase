@@ -398,10 +398,8 @@ try {
   formData.append("file", new Blob([pngHeader], { type: "image/png" }), "replaced-hero.png");
   formData.append("reason", "Updating hero banner to high-res with 120x80 dimensions");
 
-  const mediaHeaders = {
-    Authorization: authorizedActor.headers["Authorization"],
-    "x-workspace-id": workspaceId,
-  };
+  // The actor's credential headers without the JSON content type: fetch sets the multipart boundary.
+  const { "Content-Type": _jsonContentType, ...mediaHeaders } = authorizedActor.headers;
 
   const replaceRes = await fetch(`${BASE_URL}/api/assets/${assetId}/replace`, {
     method: "POST",
