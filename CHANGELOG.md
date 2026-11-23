@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 5: environments, credential lookups and the database and Supabase connection lookups on the direct path. A duplicate environment key is reported as a conflict without the database's constraint text, and a malformed environment id answers 404.
 Phase 1 wave 4: operational plan simulation and execution on the direct path, which finishes lib/intelligence. A simulation and its plan's review status, an execution's start with its pending node runs, and an execution's completion with its proof package and operational event each commit together.
 Phase 1 wave 4: autonomy policies and operational plan creation on the direct path. A plan can no longer reference another workspace's reconciliation run, policy updates are validated before they reach the database, and a plan, its nodes and edges, its drift marking and its audit event commit together.
 Phase 1 wave 4: the operational world model on the direct path. A discovery's nodes, edges, observations, stale marking and the run's completion commit together, so a failed discovery leaves the previous world model intact.

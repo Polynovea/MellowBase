@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as environmentData from "@/lib/infrastructure/environmentData";
 import { resolveConnectionCredentials, redactCredentials } from "@/lib/infrastructure/credentialProvider";
 
 const MANAGEMENT_ORIGIN = "https://api.supabase.com";
@@ -89,11 +89,7 @@ function validateFunctionManifest(manifest: SupabaseEdgeFunctionManifest) {
 }
 
 async function resolveManagementConnection(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
-  const { data, error } = await db.from("workspace_connections").select("*")
-    .eq("workspace_id", workspaceId).eq("environment_id", environmentId).eq("connector_type", "database.supabase")
-    .eq("active", true).eq("status", "active").order("last_success_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle();
-  if (error) throw new Error(error.message);
+  const data = await environmentData.activeSupabaseConnection(workspaceId, environmentId);
   if (!data) throw Object.assign(new Error("No verified Supabase project connection is configured for this environment"), { status: 409 });
   const connection = data as SupabaseConnectionRow;
   const credentials = await resolveConnectionCredentials(workspaceId, connection.id);
