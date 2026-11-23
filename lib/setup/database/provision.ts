@@ -140,7 +140,7 @@ export async function provisionDatabase(input: ProvisionInput, deps: ProvisionDe
     await step("verify", async () => {
       const problems = [...(await appRoleProblems(ownerClient))];
       const missing = await tablesMissingAppPolicy(ownerClient);
-      if (missing.length) problems.push(`${missing.length} table(s) without the ${APP_ROLE} policy`);
+      if (missing.length) problems.push(`table(s) without the ${APP_ROLE} policy: ${missing.slice(0, 20).join(", ")}${missing.length > 20 ? ", …" : ""}`);
       if (problems.length) {
         throw setupFailure("provision verify", "The app user ended up with more rights than it should have, so setup stopped. Use a new, empty database, or ask your database administrator to remove extra rights from polynovea_app.", new Error(problems.join("; ")), secrets);
       }
