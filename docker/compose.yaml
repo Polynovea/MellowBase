@@ -9,7 +9,8 @@
 #           as its proxy. Ports 80 and 443 must reach this machine, and the domain must point here.
 #
 #   POLYNOVEA_IMAGE=polynovea-cms@sha256:... docker compose --profile tunnel up -d
-#   POLYNOVEA_IMAGE=polynovea-cms@sha256:... POLYNOVEA_DOMAIN=cms.example.com docker compose --profile proxy up -d
+#   POLYNOVEA_IMAGE=polynovea-cms@sha256:... POLYNOVEA_DOMAIN=cms.example.com [POLYNOVEA_ACME_EMAIL=you@example.com] \
+#     docker compose --profile proxy up -d
 #
 # Why not just publish port 3000? With Docker's published ports, every connection reaches the CMS
 # from Docker's gateway address, not from 127.0.0.1, and the CMS has to listen on 0.0.0.0. The setup
@@ -69,6 +70,8 @@ services:
       - NET_BIND_SERVICE
     environment:
       POLYNOVEA_DOMAIN: "${POLYNOVEA_DOMAIN:?Set POLYNOVEA_DOMAIN for the proxy profile}"
+      # Optional POLYNOVEA_ACME_EMAIL: Let's Encrypt's expiry warnings go there. Unset: no email option.
+      POLYNOVEA_CADDY_EMAIL_OPTION: "${POLYNOVEA_ACME_EMAIL:+email ${POLYNOVEA_ACME_EMAIL}}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

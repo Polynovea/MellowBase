@@ -16,6 +16,16 @@ printf '%s' "$domain" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z
   echo "run-caddy: POLYNOVEA_DOMAIN is missing or not a valid domain name" >&2
   exit 1
 }
+# Optional: where Let's Encrypt sends certificate-expiry warnings. Without it, certificates are still issued.
+email="$(value POLYNOVEA_ACME_EMAIL "$ENV_FILE")"
+email_option=""
+if [ -n "$email" ]; then
+  printf '%s' "$email" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' || {
+    echo "run-caddy: POLYNOVEA_ACME_EMAIL is not a valid email address" >&2
+    exit 1
+  }
+  email_option="email $email"
+fi
 image="$(value POLYNOVEA_CADDY_IMAGE_REF "$ENV_FILE")"
 [ -n "$image" ] || image="$(value POLYNOVEA_CADDY_IMAGE_REF "$IMAGE_FILE")"
 case "$image" in
@@ -32,6 +42,8 @@ exec docker run --rm --name polynovea-caddy \
   --cap-drop ALL --cap-add NET_BIND_SERVICE \
   --log-driver journald --log-opt tag=polynovea-caddy \
   -e "POLYNOVEA_DOMAIN=$domain" \
+  -e "POLYNOVEA_ACME_EMAIL=$email" \
+  -e "POLYNOVEA_CADDY_EMAIL_OPTION=$email_option" \
   -v /etc/polynovea/Caddyfile:/etc/caddy/Caddyfile:ro \
   -v /var/lib/polynovea-caddy:/data \
   "$image"

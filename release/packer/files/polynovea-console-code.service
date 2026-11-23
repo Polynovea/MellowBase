@@ -1,0 +1,14 @@
+[Unit]
+Description=Polynovea CMS: show the one-time setup code on the serial console while in setup mode
+After=systemd-journald.service
+Before=polynovea.service
+
+[Service]
+Type=simple
+# Only the setup-code line, only while /api/health says "setup" (console-code.sh).
+ExecStart=/bin/sh -c 'journalctl --follow --lines=0 --output=cat SYSLOG_IDENTIFIER=polynovea | /opt/polynovea/console-code.sh'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

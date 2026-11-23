@@ -17,7 +17,8 @@ The VM images are Ubuntu 24.04 LTS with Docker and one signed Polynovea CMS rele
 - Systemd units:
   - `polynovea-data-disk.service` + `var-lib-polynovea.mount`: find the data disk and mount it at `/var/lib/polynovea` (below);
   - `polynovea.service`: runs the CMS (`/opt/polynovea/run-cms.sh`) with host networking, on `127.0.0.1:3000`;
-  - `polynovea-caddy.service`: runs Caddy for HTTPS, only when a domain is set.
+  - `polynovea-caddy.service`: runs Caddy for HTTPS, only when a domain is set;
+  - `polynovea-console-code.service`: copies the one-time setup code (that line only) to the serial console while the CMS is in setup mode, so the owner can read it from the cloud console without SSH. It writes nothing once setup is finished, or when the CMS does not answer. Until setup is finished, anyone in the cloud account who can read console output can see the code.
 
 ## The data disk at `/var/lib/polynovea`
 
@@ -40,15 +41,20 @@ The templates' user data writes this file. **Non-secret values only**: the CMS k
 | `POLYNOVEA_DB_SECRET_REF` | The "Created for you" database's secret (ARN or Key Vault URI) |
 | `AWS_REGION` | AWS region (for the AWS SDK and pgBackRest's S3 backups) |
 | `POLYNOVEA_DOMAIN` | Optional. Turns on HTTPS with Caddy and sets `POLYNOVEA_PUBLIC_URL=https://<domain>` |
+| `POLYNOVEA_ACME_EMAIL` | Optional. Where Let's Encrypt sends certificate-expiry warnings. Without it, certificates are still issued |
 | `POLYNOVEA_BACKUP_BUCKET`, `POLYNOVEA_BACKUP_ACCOUNT`, `POLYNOVEA_BACKUP_CONTAINER` | The backup location the template created (for **On this server**) |
 | `POLYNOVEA_IMAGE_REF` | Optional. A different CMS release, pinned by digest (the upgrade flow sets this) |
 | `POLYNOVEA_DATA_DEVICE` | Optional. The data disk's device, when automatic detection is not enough |
 
 `HOSTNAME`, `PORT`, `POLYNOVEA_CONFIG_DIR` and the trusted proxy are set by `run-cms.sh` and win over the file. The CMS must listen on loopback only.
 
+## Plain Ubuntu instead of our image
+
+The templates can also start from Canonical's plain Ubuntu 24.04 image (AMIs are per region and Azure images per subscription, so a one-click link works before ours are published). Their bootstrap copies `release/packer/files/*` and `docker/Caddyfile` to the VM and runs the same `release/packer/provision.sh` with `POLYNOVEA_START_NOW=1`, through `systemd-run` (not inline in user data: the script first waits for cloud-init to finish). The result is the same files and services as a VM made from our image, and the services start at once. `scripts/image/test-vm-files.sh` checks that both paths end in the same state, and that running the script twice changes nothing.
+
 ## Reaching the setup wizard
 
-- **Without a domain:** ports 80 and 443 answer nothing. Set up through an SSH tunnel: `ssh -L 3000:localhost:3000 ubuntu@<server>` (AWS) or `azureuser@<server>` (Azure), then open `http://localhost:3000/setup`. The setup code is in `journalctl -u polynovea` (or `sudo docker logs polynovea`).
+- **Without a domain:** ports 80 and 443 answer nothing. Set up through an SSH tunnel: `ssh -L 3000:localhost:3000 ubuntu@<server>` (AWS) or `azureuser@<server>` (Azure), then open `http://localhost:3000/setup`. The setup code is in `journalctl -t polynovea` (or `sudo docker logs polynovea`), and on the serial console.
 - **With `POLYNOVEA_DOMAIN`:** point the domain at the server, open 80 and 443, and use `https://<domain>/setup`. Caddy gets a Let's Encrypt certificate (it answers the HTTP-01 challenge on port 80). Setup through the tunnel is then refused, because the wizard only accepts its public address.
 
 Why the CMS is never published straight on a port: see [container.md](container.md#why-not-just-publish-port-3000).
@@ -80,4 +86,4 @@ docker run --rm -v "$PWD:/w" -w /w hashicorp/packer:1.14.2@sha256:250bf308163425
 docker run --rm -v "$PWD:/w" -w /w hashicorp/packer:1.14.2@sha256:250bf3081634255dcabb112ceefd8c77f0b9093e16b21a15516d03a7e996d239 validate -syntax-only release/packer
 ```
 
-plus `shellcheck` on `release/packer/provision.sh` and `release/packer/files/*.sh`. These need no credentials and create nothing.
+plus `shellcheck` on `release/packer/provision.sh` and `release/packer/files/*.sh`, and `scripts/image/test-vm-files.sh` (provision in an Ubuntu container, the console line, the Caddyfile). These need no credentials and create nothing.
