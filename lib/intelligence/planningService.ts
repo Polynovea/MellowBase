@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import * as planData from "@/lib/intelligence/planData";
+import * as planExecData from "@/lib/intelligence/planExecData";
 import * as reconciliationData from "@/lib/intelligence/reconciliationData";
 import { verifyConnection } from "@/lib/infrastructure/connectionService";
 import { runComponentAction, runSystemDoctor } from "@/lib/infrastructure/operabilityService";
@@ -19,7 +19,6 @@ import type {
 } from "@/lib/intelligence/operationalTypes";
 import { getActiveDesiredState, reconcileOperationalState } from "@/lib/intelligence/reconciliationService";
 import { getOperationalWorldModel, refreshOperationalWorldModel } from "@/lib/intelligence/worldModelService";
-import { logPlatformEvent } from "@/lib/platform/audit";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const AUTONOMY_MODES = new Set(["diagnose_only", "recommend", "approval_execute", "policy_auto_repair"]);
@@ -399,20 +398,16 @@ export async function getOperationalPlan(workspaceId: string, planId: string) {
 }
 
 async function findApprovedPlanRequest(workspaceId: string, environmentId: string, planId: string, requestId?: string | null) {
-  const db = createServiceRoleClient();
-  let query = db.from("infrastructure_approval_requests").select("id,status,expires_at,reviewed_at").eq("workspace_id", workspaceId).eq("environment_id", environmentId).eq("operation", "change_execute").eq("entity_id", planId).eq("status", "approved");
-  if (requestId) query = query.eq("id", requestId);
-  const { data, error } = await query.order("reviewed_at", { ascending: false }).limit(5);
-  if (error) throw new Error(error.message);
-  return (data ?? []).find((row) => !row.expires_at || new Date(row.expires_at) > new Date()) ?? null;
+  if (requestId && !UUID.test(requestId)) return null;
+  const data = await planExecData.approvedRequests(workspaceId, environmentId, planId, requestId);
+  return data.find((row) => !row.expires_at || new Date(row.expires_at) > new Date()) ?? null;
 }
 
 export async function simulateOperationalPlan(params: { workspaceId: string; environmentId: string; actorId: string; planId: string; approvalRequestId?: string | null }) {
-  const db = createServiceRoleClient();
   const { plan, nodes } = await getOperationalPlan(params.workspaceId, params.planId);
   if (plan.environment_id !== params.environmentId) throw Object.assign(new Error("Plan belongs to a different environment"), { status: 409 });
-  const [{ data: latestDiscovery }, activeDesired, policy] = await Promise.all([
-    db.from("operational_discovery_runs").select("id,started_at,status").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("status", "succeeded").order("started_at", { ascending: false }).limit(1).maybeSingle(),
+  const [latestDiscovery, activeDesired, policy] = await Promise.all([
+    planExecData.latestSucceededDiscovery(params.workspaceId, params.environmentId),
     getActiveDesiredState(params.workspaceId, params.environmentId),
     getAutonomyPolicy(params.workspaceId, params.environmentId),
   ]);
@@ -428,7 +423,7 @@ export async function simulateOperationalPlan(params: { workspaceId: string; env
       blockers.push({ code: "SCHEMA_ASSESSMENT_MISSING", nodeKey: node.node_key, message: "Schema deployment node is missing its target-data assessment." });
       continue;
     }
-    const { data: assessment } = await db.from("operational_change_assessments").select("id,status,deterministic_classification,hard_blockers_json,warnings_json,created_at,proposed_schema_hash").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("id", assessmentId).maybeSingle();
+    const assessment = await planExecData.assessmentInEnvironment(params.workspaceId, params.environmentId, assessmentId);
     if (!assessment) blockers.push({ code: "SCHEMA_ASSESSMENT_NOT_FOUND", nodeKey: node.node_key, assessmentId });
     else if (Date.now() - new Date(assessment.created_at).getTime() > 15 * 60 * 1000) blockers.push({ code: "SCHEMA_ASSESSMENT_STALE", nodeKey: node.node_key, assessmentId, message: "Target-data evidence is older than the 15-minute execution freshness window." });
     else if (assessment.status === "blocked" || (Array.isArray(assessment.hard_blockers_json) && assessment.hard_blockers_json.length)) blockers.push({ code: "SCHEMA_DATA_BLOCKERS", nodeKey: node.node_key, assessmentId, blockers: assessment.hard_blockers_json });
@@ -444,8 +439,8 @@ export async function simulateOperationalPlan(params: { workspaceId: string; env
       blockers.push({ code: "MIGRATION_PLAN_INPUT_MISSING", nodeKey: node.node_key, message: "Assessed migration node is missing assessment/model/version/strategy input." });
       continue;
     }
-    const [{ data: assessment }, canonicalVersion] = await Promise.all([
-      db.from("operational_change_assessments").select("*").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("id", assessmentId).maybeSingle(),
+    const [assessment, canonicalVersion] = await Promise.all([
+      planExecData.assessmentInEnvironment(params.workspaceId, params.environmentId, assessmentId),
       getVersion(modelId, schemaVersion),
     ]);
     if (!assessment) { blockers.push({ code: "MIGRATION_ASSESSMENT_NOT_FOUND", nodeKey: node.node_key, assessmentId }); continue; }
@@ -484,7 +479,7 @@ export async function simulateOperationalPlan(params: { workspaceId: string; env
     rollbackCoverage: { coveredNodes: rollbackCovered, totalNodes: nodes.length, explicitlyUncoveredHighRiskNodes: irreversible },
     policy: { mode: policy.mode, maxDeterministicClassification: policy.max_deterministic_classification },
   };
-  const { data: simulation, error } = await db.from("operational_simulation_runs").insert({
+  return planExecData.recordSimulation({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     plan_id: plan.id,
@@ -498,10 +493,7 @@ export async function simulateOperationalPlan(params: { workspaceId: string; env
     correlation_id: correlationId,
     created_by: params.actorId,
     completed_at: new Date().toISOString(),
-  }).select().single();
-  if (error || !simulation) throw new Error(error?.message || "Could not persist operational simulation");
-  await db.from("operational_change_plans").update({ status: blockers.length ? "reviewed" : approval ? "approved" : "reviewed", reviewed_at: new Date().toISOString() }).eq("id", plan.id);
-  return simulation;
+  }, blockers.length ? "reviewed" : approval ? "approved" : "reviewed");
 }
 
 export function topologicalExecutionOrder<T extends { id: string; node_key: string; ordinal: number }>(nodes: T[], edges: Array<{ from_node_id: string; to_node_id: string }>): T[] {
@@ -550,7 +542,6 @@ async function executePlanNode(params: { workspaceId: string; environmentId: str
 }
 
 export async function executeOperationalPlan(params: { workspaceId: string; environmentId: string; actorId: string; planId: string; approvalRequestId?: string | null }) {
-  const db = createServiceRoleClient();
   const graph = await getOperationalPlan(params.workspaceId, params.planId);
   const plan = graph.plan;
   if (plan.environment_id !== params.environmentId) throw Object.assign(new Error("Plan belongs to a different environment"), { status: 409 });
@@ -558,8 +549,7 @@ export async function executeOperationalPlan(params: { workspaceId: string; envi
   const approvalRequestId = plan.requires_approval ? (simulation.approval_json?.approvalRequestId ?? params.approvalRequestId ?? null) : null;
 
   if (simulation.status === "blocked") {
-    const { data: blocked, error } = await db.from("operational_execution_runs").insert({ workspace_id: params.workspaceId, environment_id: params.environmentId, plan_id: plan.id, simulation_run_id: simulation.id, approval_request_id: approvalRequestId, status: "blocked", started_by: params.actorId, completed_at: new Date().toISOString(), result_json: { blockers: simulation.hard_blockers_json } }).select().single();
-    if (error || !blocked) throw new Error(error?.message || "Could not record blocked execution");
+    const blocked = await planExecData.recordBlockedExecution({ workspace_id: params.workspaceId, environment_id: params.environmentId, plan_id: plan.id, simulation_run_id: simulation.id, approval_request_id: approvalRequestId, status: "blocked", started_by: params.actorId, completed_at: new Date().toISOString(), result_json: { blockers: simulation.hard_blockers_json } });
     return { execution: blocked, simulation, evidencePackage: null };
   }
 
@@ -568,7 +558,7 @@ export async function executeOperationalPlan(params: { workspaceId: string; envi
   const dag = buildExecutionDagShape(graph.nodes, graph.edges);
   const ordered = dag.ordered;
   const correlationId = randomUUID();
-  const { data: execution, error: executionError } = await db.from("operational_execution_runs").insert({
+  const execution = await planExecData.startExecution({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     plan_id: plan.id,
@@ -577,13 +567,7 @@ export async function executeOperationalPlan(params: { workspaceId: string; envi
     status: "running",
     correlation_id: correlationId,
     started_by: params.actorId,
-  }).select().single();
-  if (executionError || !execution) throw new Error(executionError?.message || "Could not start operational execution");
-  await db.from("operational_change_plans").update({ status: "executing" }).eq("id", plan.id);
-
-  const pendingRows = ordered.map((node) => ({ execution_run_id: execution.id, plan_node_id: node.id, status: "pending", safe_input_json: node.input_json ?? {} }));
-  const { error: pendingError } = await db.from("operational_execution_node_runs").insert(pendingRows);
-  if (pendingError) throw new Error(pendingError.message);
+  }, (executionId) => ordered.map((node) => ({ execution_run_id: executionId, plan_node_id: node.id, status: "pending", safe_input_json: node.input_json ?? {} })));
 
   const nodeResults: Array<Record<string, unknown>> = [];
   const nodeStatuses = new Map<string, string>();
@@ -594,23 +578,23 @@ export async function executeOperationalPlan(params: { workspaceId: string; envi
     if (failedPrerequisites.length) {
       nodeStatuses.set(node.id, "blocked");
       nodeResults.push({ nodeKey: node.node_key, operation: node.operation, status: "blocked", failedPrerequisiteIds: failedPrerequisites });
-      await db.from("operational_execution_node_runs").update({ status: "blocked", error_code: "DEPENDENCY_FAILED", error_message: "A prerequisite execution node failed or was blocked", completed_at: new Date().toISOString() }).eq("execution_run_id", execution.id).eq("plan_node_id", node.id).eq("status", "pending");
+      await planExecData.updateNodeRun(params.workspaceId, execution.id, node.id, { status: "blocked", error_code: "DEPENDENCY_FAILED", error_message: "A prerequisite execution node failed or was blocked", completed_at: new Date().toISOString() }, true);
       return;
     }
 
-    await db.from("operational_execution_node_runs").update({ status: "running", attempt: 1, started_at: new Date().toISOString() }).eq("execution_run_id", execution.id).eq("plan_node_id", node.id);
+    await planExecData.updateNodeRun(params.workspaceId, execution.id, node.id, { status: "running", attempt: 1, started_at: new Date().toISOString() });
     try {
       const raw = await executePlanNode({ workspaceId: params.workspaceId, environmentId: params.environmentId, actorId: params.actorId, desiredStateRevisionId: plan.desired_state_revision_id, node });
       const result = safeResult(node.operation, raw);
       nodeStatuses.set(node.id, "succeeded");
       nodeResults.push({ nodeKey: node.node_key, operation: node.operation, result });
-      await db.from("operational_execution_node_runs").update({ status: "succeeded", safe_result_json: result, verification_json: node.verification_json ?? {}, completed_at: new Date().toISOString() }).eq("execution_run_id", execution.id).eq("plan_node_id", node.id);
+      await planExecData.updateNodeRun(params.workspaceId, execution.id, node.id, { status: "succeeded", safe_result_json: result, verification_json: node.verification_json ?? {}, completed_at: new Date().toISOString() });
     } catch (cause) {
       const failure = cause instanceof Error ? cause : new Error("Operational execution node failed");
       failures.push(failure);
       nodeStatuses.set(node.id, "failed");
       nodeResults.push({ nodeKey: node.node_key, operation: node.operation, error: failure.message });
-      await db.from("operational_execution_node_runs").update({ status: "failed", error_code: "NODE_EXECUTION_FAILED", error_message: failure.message.slice(0, 2000), completed_at: new Date().toISOString() }).eq("execution_run_id", execution.id).eq("plan_node_id", node.id);
+      await planExecData.updateNodeRun(params.workspaceId, execution.id, node.id, { status: "failed", error_code: "NODE_EXECUTION_FAILED", error_message: failure.message.slice(0, 2000), completed_at: new Date().toISOString() });
     }
   };
 
@@ -636,66 +620,81 @@ export async function executeOperationalPlan(params: { workspaceId: string; envi
   const finalStatus = failure ? "failed" : remainingDrifts.length ? "partial" : "succeeded";
   const completedAt = new Date().toISOString();
   const resultJson = { planChecksum: plan.plan_checksum_sha256, nodeResults, remainingDriftCount: remainingDrifts.length, verifiedConvergence: finalStatus === "succeeded", failure: failure?.message ?? null };
-  const { data: completedExecution, error: completeError } = await db.from("operational_execution_runs").update({ status: finalStatus, completed_at: completedAt, result_json: resultJson }).eq("id", execution.id).select().single();
-  if (completeError || !completedExecution) throw new Error(completeError?.message || "Could not finalize operational execution");
-  await db.from("operational_change_plans").update({ status: finalStatus }).eq("id", plan.id);
-  if (approvalRequestId && finalStatus !== "failed") await db.from("infrastructure_approval_requests").update({ status: "executed", executed_at: completedAt, updated_at: completedAt }).eq("workspace_id", params.workspaceId).eq("id", approvalRequestId).eq("status", "approved");
-
-  const packageDocument = {
-    format: "polynovea-operational-proof",
-    formatVersion: 1,
-    execution: { id: completedExecution.id, correlationId, status: finalStatus, startedAt: completedExecution.started_at, completedAt },
-    actorId: params.actorId,
-    environmentId: params.environmentId,
-    desiredStateRevisionId: plan.desired_state_revision_id,
-    immutablePlan: { id: plan.id, checksum: plan.plan_checksum_sha256, classification: plan.deterministic_classification, requiresApproval: plan.requires_approval },
-    simulation: { id: simulation.id, status: simulation.status, blockers: simulation.hard_blockers_json, warnings: simulation.warnings_json, rollbackCoverage: simulation.rollback_coverage_json },
-    approvalRequestId,
-    preDiscoveryRunId: plan.source_discovery_run_id,
-    postDiscoveryRunId: postDiscovery?.run?.id ?? null,
-    postReconciliationRunId: postReconciliation?.run?.id ?? null,
-    actualEffects: nodeResults,
-    verification: { remainingDriftCount: remainingDrifts.length, converged: finalStatus === "succeeded", reconciliationSummary: postReconciliation?.run?.summary_json ?? null },
-    generatedAt: completedAt,
-    security: "No credential values or secret payloads are included in this proof package.",
+  const downstreamImpactCount = new Set(remainingDrifts.map((item: any) => item.node_id).filter(Boolean)).size || remainingDrifts.length;
+  const durationFor = (completed: any) => {
+    const startedAtMs = new Date(completed.started_at).getTime();
+    const completedAtMs = new Date(completedAt).getTime();
+    return Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs) ? Math.max(0, completedAtMs - startedAtMs) : null;
   };
-  const evidenceChecksum = sha256Canonical(packageDocument);
-  const { data: evidencePackage, error: evidenceError } = await db.from("operational_evidence_packages").insert({
-    workspace_id: params.workspaceId,
-    environment_id: params.environmentId,
-    execution_run_id: completedExecution.id,
-    plan_id: plan.id,
-    desired_state_revision_id: plan.desired_state_revision_id,
-    pre_discovery_run_id: plan.source_discovery_run_id,
-    post_discovery_run_id: postDiscovery?.run?.id ?? null,
-    post_reconciliation_run_id: postReconciliation?.run?.id ?? null,
-    package_json: packageDocument,
-    checksum_sha256: evidenceChecksum,
-  }).select().single();
-  if (evidenceError || !evidencePackage) throw new Error(evidenceError?.message || "Could not persist proof package");
-
-  const startedAtMs = new Date(completedExecution.started_at).getTime();
-  const completedAtMs = new Date(completedAt).getTime();
-  const durationMs = Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs) ? Math.max(0, completedAtMs - startedAtMs) : null;
-  await db.from("operational_events").insert({
-    workspace_id: params.workspaceId,
-    environment_id: params.environmentId,
-    event_type: "plan.execution",
-    source_type: "operational_execution_run",
-    source_id: completedExecution.id,
-    correlation_id: correlationId,
-    occurred_at: completedAt,
-    features_json: { deterministicClassification: plan.deterministic_classification, nodeCount: graph.nodes.length, requiresApproval: plan.requires_approval, simulationStatus: simulation.status, warningCount: Array.isArray(simulation.warnings_json) ? simulation.warnings_json.length : 0 },
-    outcome_json: { status: finalStatus, durationMs, remainingDriftCount: remainingDrifts.length, downstreamImpactCount: new Set(remainingDrifts.map((item: any) => item.node_id).filter(Boolean)).size || remainingDrifts.length, impactedCategories: [...new Set(remainingDrifts.map((item: any) => String(item.category ?? "other")))], failedNodeCount: nodeResults.filter((item: any) => item.error).length, converged: finalStatus === "succeeded", failed: finalStatus === "failed" },
-    privacy_class: "operational_minimized",
-    eligible_for_local_learning: true,
-    eligible_for_cross_install_learning: false,
+  const packageFor = (completedExecution: any) => {
+    const packageDocument = {
+      format: "polynovea-operational-proof",
+      formatVersion: 1,
+      execution: { id: completedExecution.id, correlationId, status: finalStatus, startedAt: completedExecution.started_at, completedAt },
+      actorId: params.actorId,
+      environmentId: params.environmentId,
+      desiredStateRevisionId: plan.desired_state_revision_id,
+      immutablePlan: { id: plan.id, checksum: plan.plan_checksum_sha256, classification: plan.deterministic_classification, requiresApproval: plan.requires_approval },
+      simulation: { id: simulation.id, status: simulation.status, blockers: simulation.hard_blockers_json, warnings: simulation.warnings_json, rollbackCoverage: simulation.rollback_coverage_json },
+      approvalRequestId,
+      preDiscoveryRunId: plan.source_discovery_run_id,
+      postDiscoveryRunId: postDiscovery?.run?.id ?? null,
+      postReconciliationRunId: postReconciliation?.run?.id ?? null,
+      actualEffects: nodeResults,
+      verification: { remainingDriftCount: remainingDrifts.length, converged: finalStatus === "succeeded", reconciliationSummary: postReconciliation?.run?.summary_json ?? null },
+      generatedAt: completedAt,
+      security: "No credential values or secret payloads are included in this proof package.",
+    };
+    return packageDocument;
+  };
+  const { completed: completedExecution, evidencePackage } = await planExecData.completeExecution({
+    workspaceId: params.workspaceId,
+    executionId: execution.id,
+    planId: plan.id,
+    completedAt,
+    executionPatch: { status: finalStatus, completed_at: completedAt, result_json: resultJson },
+    planStatus: finalStatus,
+    approvalRequestId,
+    markApprovalExecuted: finalStatus !== "failed",
+    evidenceRowFor: (completed) => {
+      const packageDocument = packageFor(completed);
+      return {
+        workspace_id: params.workspaceId,
+        environment_id: params.environmentId,
+        execution_run_id: completed.id,
+        plan_id: plan.id,
+        desired_state_revision_id: plan.desired_state_revision_id,
+        pre_discovery_run_id: plan.source_discovery_run_id,
+        post_discovery_run_id: postDiscovery?.run?.id ?? null,
+        post_reconciliation_run_id: postReconciliation?.run?.id ?? null,
+        package_json: packageDocument,
+        checksum_sha256: sha256Canonical(packageDocument),
+      };
+    },
+    eventRowFor: (completed) => {
+      const durationMs = durationFor(completed);
+      return {
+        workspace_id: params.workspaceId,
+        environment_id: params.environmentId,
+        event_type: "plan.execution",
+        source_type: "operational_execution_run",
+        source_id: completed.id,
+        correlation_id: correlationId,
+        occurred_at: completedAt,
+        features_json: { deterministicClassification: plan.deterministic_classification, nodeCount: graph.nodes.length, requiresApproval: plan.requires_approval, simulationStatus: simulation.status, warningCount: Array.isArray(simulation.warnings_json) ? simulation.warnings_json.length : 0 },
+        outcome_json: { status: finalStatus, durationMs, remainingDriftCount: remainingDrifts.length, downstreamImpactCount, impactedCategories: [...new Set(remainingDrifts.map((item: any) => String(item.category ?? "other")))], failedNodeCount: nodeResults.filter((item: any) => item.error).length, converged: finalStatus === "succeeded", failed: finalStatus === "failed" },
+        privacy_class: "operational_minimized",
+        eligible_for_local_learning: true,
+        eligible_for_cross_install_learning: false,
+      };
+    },
   });
+  const durationMs = durationFor(completedExecution);
 
-  await recordPlanPredictionOutcomes({ workspaceId: params.workspaceId, environmentId: params.environmentId, planId: plan.id, executionRunId: completedExecution.id, status: finalStatus, durationMs, downstreamImpactCount: new Set(remainingDrifts.map((item: any) => item.node_id).filter(Boolean)).size || remainingDrifts.length, observedAt: completedAt });
+  await recordPlanPredictionOutcomes({ workspaceId: params.workspaceId, environmentId: params.environmentId, planId: plan.id, executionRunId: completedExecution.id, status: finalStatus, durationMs, downstreamImpactCount, observedAt: completedAt });
   await refreshOnlineModelEvaluations(params.workspaceId, params.environmentId).catch(() => ({ evaluations: [] }));
 
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.plan.executed", entityType: "operational_change_plan", entityId: plan.id, metadata: { executionRunId: completedExecution.id, evidencePackageId: evidencePackage.id, correlationId, status: finalStatus, remainingDriftCount: remainingDrifts.length } });
+  await planExecData.auditExecution({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.plan.executed", entityType: "operational_change_plan", entityId: plan.id, metadata: { executionRunId: completedExecution.id, evidencePackageId: evidencePackage.id, correlationId, status: finalStatus, remainingDriftCount: remainingDrifts.length } });
   return { execution: completedExecution, simulation, evidencePackage, postReconciliation };
 }
 
