@@ -9,7 +9,7 @@
 --
 -- Nothing here touches Supabase's auth schema: on a Supabase install the tables simply wait, empty,
 -- until `polynovea-cms auth migrate` copies the users across and AUTH_PROVIDER=builtin is set.
--- PostgREST never exposes this schema, and anon/authenticated get no access to it.
+-- PostgREST never exposes this schema, and anon, authenticated and service_role get no access to it.
 
 create schema if not exists polynovea_auth;
 revoke all on schema polynovea_auth from public;
@@ -124,6 +124,11 @@ begin
   end if;
   if exists (select 1 from pg_roles where rolname = 'authenticated') then
     execute 'revoke all on all tables in schema polynovea_auth from authenticated';
+  end if;
+  -- Supabase's service key is not a way into the built-in auth either.
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    execute 'revoke all on all tables in schema polynovea_auth from service_role';
+    execute 'revoke all on schema polynovea_auth from service_role';
   end if;
 end;
 $$;

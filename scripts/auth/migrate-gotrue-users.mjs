@@ -5,17 +5,29 @@
  * Each user keeps the **same UUID**, so `admin_users.auth_user_id` still points at the right person
  * with no data change, plus their email (lower-cased), confirmed state, profile metadata, ban and
  * **bcrypt password hash**. The built-in auth verifies that hash and replaces it with Argon2id at the
- * user's next sign-in. TOTP secrets are not copied: users re-enrol, which also proves they still
- * hold the device.
+ * user's next sign-in.
  *
- * Safe to run again: users and password accounts that already exist are left alone (a user who has
- * signed in since keeps their new hash). Before writing anything it refuses when:
+ * Two-step sign-in comes across too. A user with a verified GoTrue TOTP factor keeps it, so their
+ * authenticator app keeps working and a leaked password alone still cannot sign them in (dropping
+ * the factor would let whoever holds the password enrol their own). The secret is stored the way the
+ * built-in auth stores imported secrets (`base32:<secret>`, encrypted under POLYNOVEA_AUTH_SECRET).
+ * GoTrue has no recovery codes, so the user starts with none and is asked to make them on
+ * /admin/security. If GoTrue encrypted its MFA secrets, they cannot be read, and the command refuses
+ * rather than drop anyone's second factor.
+ *
+ * Run it once, with the install in maintenance mode, just before switching AUTH_PROVIDER. Repeating
+ * it is harmless for users who already exist (a user who has signed in since keeps their new hash),
+ * but a later run would copy again any GoTrue user deleted from the built-in auth in the meantime.
+ *
+ * Before writing anything it refuses when:
  * - an `admin_users.auth_user_id` on the target would be left without a user;
  * - two GoTrue users share an address once lower-cased;
- * - an address already belongs to a different built-in user.
+ * - an address already belongs to a different built-in user;
+ * - a TOTP secret cannot be carried across, or POLYNOVEA_AUTH_SECRET is missing for one.
  * Everything is written in one transaction on the target.
  */
 import pg from "pg";
+import { symmetricEncrypt } from "better-auth/crypto";
 import { postgresConnectionConfig } from "../../lib/infrastructure/postgresTls.mjs";
 
 const SOURCE_SQL = `
@@ -27,7 +39,11 @@ const SOURCE_SQL = `
          u.created_at as "createdAt",
          coalesce(u.updated_at, u.created_at) as "updatedAt",
          u.banned_until as "bannedUntil",
-         exists (select 1 from auth.mfa_factors f where f.user_id = u.id and f.status = 'verified') as "hadMfa"
+         (select f.secret from auth.mfa_factors f
+           where f.user_id = u.id and f.status = 'verified' and f.factor_type = 'totp'
+           order by f.created_at, f.id limit 1) as "totpSecret",
+         (select count(*)::int from auth.mfa_factors f
+           where f.user_id = u.id and f.status = 'verified' and f.factor_type = 'totp') as "totpFactors"
     from auth.users u
    where u.deleted_at is null
      and coalesce(u.is_anonymous, false) = false
@@ -36,6 +52,8 @@ const SOURCE_SQL = `
 
 // bcrypt as GoTrue writes it; anything else (empty, or an SSO-only account) gets no password.
 const BCRYPT = /^\$2[aby]\$\d\d\$[./A-Za-z0-9]{53}$/;
+// GoTrue keeps TOTP secrets as plain base32 unless its database encryption is switched on.
+const BASE32 = /^[A-Z2-7]{16,}=*$/i;
 
 function displayName(user) {
   const meta = user.metadata && typeof user.metadata === "object" ? user.metadata : {};
@@ -53,10 +71,11 @@ async function counts(target) {
 }
 
 /**
- * @param {{ source: pg.ClientBase, target: pg.ClientBase, dryRun?: boolean, onlyUserIds?: string[] }} options
+ * @param {{ source: pg.ClientBase, target: pg.ClientBase, secret?: string | null, dryRun?: boolean, onlyUserIds?: string[] | null }} options
+ *   `secret` is POLYNOVEA_AUTH_SECRET (the app must use the same value); it encrypts TOTP secrets.
  *   `onlyUserIds` limits the run (and its checks) to those users, for a staged rehearsal.
  */
-export async function migrateGoTrueUsers({ source, target, dryRun = false, onlyUserIds = null }) {
+export async function migrateGoTrueUsers({ source, target, secret = null, dryRun = false, onlyUserIds = null }) {
   const scope = onlyUserIds ? new Set(onlyUserIds) : null;
   const sourceUsers = (await source.query(SOURCE_SQL)).rows.filter((user) => !scope || scope.has(user.id));
 
@@ -65,6 +84,16 @@ export async function migrateGoTrueUsers({ source, target, dryRun = false, onlyU
   for (const user of sourceUsers) {
     if (byEmail.has(user.email)) problems.push(`two GoTrue users share the address ${user.email} (${byEmail.get(user.email)} and ${user.id})`);
     byEmail.set(user.email, user.id);
+  }
+
+  const withTotp = sourceUsers.filter((user) => user.totpSecret);
+  for (const user of withTotp) {
+    if (!BASE32.test(user.totpSecret)) {
+      problems.push(`the authenticator-app secret of ${user.email} is encrypted by GoTrue and cannot be carried across; have the user remove that factor in GoTrue first, or turn off GoTrue's MFA secret encryption`);
+    }
+  }
+  if (withTotp.length && (typeof secret !== "string" || secret.length < 32)) {
+    problems.push(`${withTotp.length} user(s) have an authenticator app: set POLYNOVEA_AUTH_SECRET (the value the app will use, 32+ characters) to carry it across`);
   }
 
   const { rows: existing } = await target.query(`select id::text as id, email from polynovea_auth."user"`);
@@ -89,7 +118,9 @@ export async function migrateGoTrueUsers({ source, target, dryRun = false, onlyU
     created: 0,
     passwordsCopied: 0,
     withoutPassword: sourceUsers.filter((user) => !BCRYPT.test(user.password ?? "")).map((user) => user.email),
-    mustReEnrolMfa: sourceUsers.filter((user) => user.hadMfa).map((user) => user.email),
+    totpCarried: 0,
+    mustMakeRecoveryCodes: withTotp.filter((user) => !existingIds.has(user.id)).map((user) => user.email),
+    extraTotpFactorsDropped: sourceUsers.filter((user) => user.totpFactors > 1).map((user) => user.email),
     problems,
   };
   if (problems.length) return { ...summary, ok: false };
@@ -115,6 +146,19 @@ export async function migrateGoTrueUsers({ source, target, dryRun = false, onlyU
           [user.id, user.id, user.password, user.createdAt],
         );
         summary.passwordsCopied += account.rowCount;
+      }
+      // Only for a user created in this run: one who already exists keeps whatever they set up since.
+      if (user.totpSecret && inserted.rowCount > 0) {
+        await target.query(
+          `insert into polynovea_auth."twoFactor" (secret, "backupCodes", "userId", verified) values ($1, $2, $3::uuid, true)`,
+          [
+            await symmetricEncrypt({ key: secret, data: `base32:${user.totpSecret.replace(/=+$/, "").toUpperCase()}` }),
+            await symmetricEncrypt({ key: secret, data: JSON.stringify([]) }),
+            user.id,
+          ],
+        );
+        await target.query(`update polynovea_auth."user" set "twoFactorEnabled" = true where id = $1::uuid`, [user.id]);
+        summary.totpCarried += 1;
       }
     }
     // Re-check inside the transaction, so a profile added meanwhile cannot be left behind.
@@ -150,9 +194,11 @@ function parseArgs(argv) {
 const USAGE = `polynovea-cms auth migrate [--dry-run] [--from=URL] [--to=URL] [--user=UUID ...] [--json]
 
 Copies Supabase Auth (GoTrue) users into the built-in auth with the same IDs, emails, confirmed
-state and password hashes. Run it with the install in maintenance mode, then set
-AUTH_PROVIDER=builtin and NEXT_PUBLIC_AUTH_PROVIDER=builtin; everyone signs in once more and
-re-enrols two-step sign-in.
+state, password hashes and authenticator apps. Run it once, with the install in maintenance mode
+and POLYNOVEA_AUTH_SECRET set to the value the app will use, then set AUTH_PROVIDER=builtin and
+NEXT_PUBLIC_AUTH_PROVIDER=builtin. Everyone signs in once more; users with an authenticator app
+then make recovery codes. Do not run it again after the switch: it would re-create users deleted
+from the built-in auth since.
 
   --from   database holding auth.users (default: DATABASE_URL)
   --to     database holding polynovea_auth and admin_users (default: POLYNOVEA_AUTH_MIGRATION_TARGET_URL, then --from)
@@ -173,7 +219,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, log 
   await source.connect();
   await target.connect();
   try {
-    const result = await migrateGoTrueUsers({ source, target, dryRun: Boolean(flags.dryRun), onlyUserIds: flags.users.length ? flags.users : null });
+    const result = await migrateGoTrueUsers({ source, target, secret: env.POLYNOVEA_AUTH_SECRET ?? null, dryRun: Boolean(flags.dryRun), onlyUserIds: flags.users.length ? flags.users : null });
     if (flags.json) {
       log(JSON.stringify(result, null, 2));
     } else {
@@ -189,7 +235,9 @@ export async function main(argv = process.argv.slice(2), env = process.env, log 
         log(`Built-in users after: ${result.after.users} (${result.after.passwords} with a password)`);
       }
       if (result.withoutPassword.length) log(`No password to copy (they need an owner to set one): ${result.withoutPassword.join(", ")}`);
-      if (result.mustReEnrolMfa.length) log(`Had two-step sign-in in GoTrue and must set it up again: ${result.mustReEnrolMfa.join(", ")}`);
+      if (result.totpCarried) log(`Kept the authenticator app of ${result.totpCarried} user(s).`);
+      if (result.mustMakeRecoveryCodes.length) log(`Ask these users to make recovery codes on Sign-in & security: ${result.mustMakeRecoveryCodes.join(", ")}`);
+      if (result.extraTotpFactorsDropped.length) log(`Had more than one authenticator app in GoTrue; only the oldest was kept: ${result.extraTotpFactorsDropped.join(", ")}`);
     }
     return result.ok ? 0 : 2;
   } finally {

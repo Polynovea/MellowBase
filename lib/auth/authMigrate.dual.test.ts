@@ -5,6 +5,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { createClient } from "@supabase/supabase-js";
+import { base32 } from "@better-auth/utils/base32";
+import { createOTP } from "@better-auth/utils/otp";
 import { closeDb, getDb } from "@/lib/db/index";
 import { createPolynoveaAuth } from "@/lib/auth/betterAuth/server";
 import { main, migrateGoTrueUsers } from "@/scripts/auth/migrate-gotrue-users.mjs";
@@ -13,7 +15,8 @@ const BASE_URL = "https://cms.example.test";
 let source: pg.Client;
 let target: pg.Client;
 const gotrue = () => createClient(process.env.POLYNOVEA_TEST_SUPABASE_URL!, process.env.POLYNOVEA_TEST_SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
-const auth = () => createPolynoveaAuth({ db: getDb(), secret: "m".repeat(64), baseURL: BASE_URL, rateLimit: false, pwnedLookup: async () => null });
+const SECRET = "m".repeat(64);
+const auth = () => createPolynoveaAuth({ db: getDb(), secret: SECRET, baseURL: BASE_URL, rateLimit: false, pwnedLookup: async () => null });
 
 interface Fixture { id: string; email: string; password: string }
 
@@ -112,17 +115,57 @@ describe("auth migrate: GoTrue to the built-in auth [supabase -> postgres]", () 
     expect(result.problems.join("\n")).toMatch(/already belongs/);
   });
 
-  it("lists users who must re-enrol two-step sign-in; TOTP secrets are never copied", async () => {
-    const user = await goTrueUser();
+  async function withTotpFactor(user: Fixture, secret: string) {
     await source.query(
-      "insert into auth.mfa_factors (id, user_id, friendly_name, factor_type, status, created_at, updated_at, secret) values ($1, $2, 'phone', 'totp', 'verified', now(), now(), 'JBSWY3DPEHPK3PXP')",
-      [randomUUID(), user.id],
+      "insert into auth.mfa_factors (id, user_id, friendly_name, factor_type, status, created_at, updated_at, secret) values ($1, $2, 'phone', 'totp', 'verified', now(), now(), $3)",
+      [randomUUID(), user.id, secret],
     );
-    const result = await migrateGoTrueUsers({ source, target, onlyUserIds: [user.id] });
-    expect(result.ok).toBe(true);
-    expect(result.mustReEnrolMfa).toEqual([user.email]);
-    const { rows } = await target.query(`select count(*)::int as n from polynovea_auth."twoFactor" where "userId" = $1`, [user.id]);
-    expect(rows[0].n).toBe(0);
+  }
+
+  it("regression: a user with GoTrue TOTP keeps it, so the password alone still does not sign them in", async () => {
+    const user = await goTrueUser();
+    const totpSecret = base32.encode(randomBytes(20), { padding: false });
+    await withTotpFactor(user, totpSecret);
+    const result = await migrateGoTrueUsers({ source, target, secret: SECRET, onlyUserIds: [user.id] });
+    expect(result).toMatchObject({ ok: true, totpCarried: 1, mustMakeRecoveryCodes: [user.email] });
+    const { rows: [row] } = await target.query(
+      `select u."twoFactorEnabled", t.secret, t.verified from polynovea_auth."user" u join polynovea_auth."twoFactor" t on t."userId" = u.id where u.id = $1`,
+      [user.id],
+    );
+    expect(row.twoFactorEnabled).toBe(true);
+    expect(row.verified).toBe(true);
+    expect(row.secret).not.toContain(totpSecret);
+
+    // Password only: a second factor is demanded, and no session is issued.
+    const first = await signIn(user.email, user.password);
+    expect(first.status).toBe(200);
+    expect(await first.clone().json()).toMatchObject({ twoFactorRedirect: true });
+    expect(first.headers.getSetCookie().some((c) => c.includes("session_token=") && !/max-age=0/i.test(c))).toBe(false);
+
+    // The code from the user's existing authenticator app completes the sign-in.
+    const cookies = first.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+    const code = await createOTP(base32.decode(totpSecret)).totp();
+    const verified = await auth().handler(new Request(`${BASE_URL}/api/auth/two-factor/verify-totp`, {
+      method: "POST",
+      headers: { origin: BASE_URL, "content-type": "application/json", cookie: cookies },
+      body: JSON.stringify({ code }),
+    }));
+    expect(verified.status).toBe(200);
+  });
+
+  it("refuses rather than drop a second factor it cannot carry across", async () => {
+    const encrypted = await goTrueUser();
+    await withTotpFactor(encrypted, JSON.stringify({ key_id: "k1", alg: "aes-gcm-hkdf", nonce: "x", data: "y" }));
+    const unreadable = await migrateGoTrueUsers({ source, target, secret: SECRET, onlyUserIds: [encrypted.id] });
+    expect(unreadable.ok).toBe(false);
+    expect(unreadable.problems.join(" | ")).toMatch(/encrypted by GoTrue/);
+
+    const plain = await goTrueUser();
+    await withTotpFactor(plain, "JBSWY3DPEHPK3PXP");
+    const noSecret = await migrateGoTrueUsers({ source, target, onlyUserIds: [plain.id] });
+    expect(noSecret.ok).toBe(false);
+    expect(noSecret.problems.join(" | ")).toMatch(/POLYNOVEA_AUTH_SECRET/);
+    expect((await target.query(`select count(*)::int as n from polynovea_auth."user" where id = any($1)`, [[encrypted.id, plain.id]])).rows[0].n).toBe(0);
   });
 
   it("runs from the command line, with a dry run that exits 0 and an exit code of 2 when refused", async () => {

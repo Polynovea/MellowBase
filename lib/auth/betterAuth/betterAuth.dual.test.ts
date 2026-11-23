@@ -338,6 +338,18 @@ describe("built-in auth: second factors [postgres]", () => {
     expect((await fresh.browser.call("POST", "/two-factor/verify-backup-code", { code: backupCodes[1] })).status).toBe(200);
   });
 
+  it("change-password knows the signed-in user: 8 characters with MFA, and never the account's own email", async () => {
+    const auth = makeAuth();
+    const { email } = await newUser(auth);
+    const { code } = await enrolTotp(auth, email);
+    const { browser } = await signIn(auth, email);
+    expect((await browser.call("POST", "/two-factor/verify-totp", { code: await code() })).status).toBe(200);
+    const asEmail = await browser.call("POST", "/change-password", { currentPassword: password, newPassword: email });
+    expect(asEmail.status).toBe(400);
+    expect((await asEmail.json()).message).toMatch(/too common/);
+    expect((await browser.call("POST", "/change-password", { currentPassword: password, newPassword: "eight ch" })).status).toBe(200);
+  });
+
   it("8 characters are enough once the account has MFA", async () => {
     const auth = makeAuth();
     const { identity, email, user } = await newUser(auth);
@@ -482,6 +494,17 @@ describe("built-in auth: rate limits [postgres]", () => {
     // Another /64 is a different client.
     const other = await signInAttempts(auth, email, 1, () => `2001:db8:ffff:${randomBytes(2).toString("hex")}::1, 10.1.2.3`);
     expect(other).toEqual([401]);
+  });
+
+  it("regression: parallel attempts cannot get past the per-account limit", async () => {
+    const auth = makeAuth({ rateLimit: true, trustedProxies: ["10.0.0.0/8"] });
+    const { email } = await newUser(auth);
+    const net = `100.${randomBytes(1)[0] % 64 + 64}.${randomBytes(1)[0]}`;
+    // 60 at once, each from its own address so the per-IP limit never applies.
+    const responses = await Promise.all(Array.from({ length: 60 }, (_, i) =>
+      signIn(auth, email, "wrong password, long enough", { "x-forwarded-for": `${net}.${i + 1}, 10.1.2.3` }).then((r) => r.response.status)));
+    expect(responses.filter((status) => status === 401).length).toBeLessThanOrEqual(30);
+    expect(responses.filter((status) => status === 429).length).toBeGreaterThanOrEqual(30);
   });
 
   it("throttles sign-in per account across addresses, without a hard lockout", async () => {
