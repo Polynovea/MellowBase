@@ -18,7 +18,7 @@
 -- On a database the customer brings, a schema called "content" may already exist. Never adopt one that
 -- belongs to someone else or holds anything that is not ours: refuse, with a plain message.
 -- schema-guard:start
-do $
+do $$
 declare
   owner_name text;
   foreign_objects bigint;
@@ -42,7 +42,7 @@ begin
     raise exception 'This database already has a schema named "content" that holds objects Polynovea CMS did not create. Rename or remove that schema, then run setup again.';
   end if;
 end;
-$;
+$$;
 -- schema-guard:end
 
 revoke all on schema content from public;
