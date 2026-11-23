@@ -1,17 +1,11 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { callTransitionWorkflow, latestWorkflow } from "@/lib/content/workflowData";
 
 export type WorkflowAction = "submit" | "approve" | "request_changes";
 export type WorkflowResult<T> = { ok: true; data: T } | { ok: false; error: string; status: number };
 
-export async function getWorkflow(entryId: string) {
-  const { data } = await createServiceRoleClient()
-    .from("workflow_instances")
-    .select("*, workflow_actions(*), workflow_stage_approvals(*), workflow_definitions(id,name,definition_json)")
-    .eq("entry_id", entryId)
-    .order("started_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return data;
+/** The entry's latest workflow instance. The workspace is required: the instance is read through its entry. */
+export async function getWorkflow(workspaceId: string, entryId: string) {
+  return latestWorkflow(workspaceId, entryId);
 }
 
 export async function transitionWorkflow(params: {
@@ -22,7 +16,7 @@ export async function transitionWorkflow(params: {
   comment?: string;
   canPublish: boolean;
 }): Promise<WorkflowResult<unknown>> {
-  const { data, error } = await createServiceRoleClient().rpc("cms_transition_workflow", {
+  const result = await callTransitionWorkflow({
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_entry_id: params.entryId,
@@ -31,9 +25,9 @@ export async function transitionWorkflow(params: {
     p_can_publish: params.canPublish,
   });
 
-  if (error) {
-    const msg = error.message || "Workflow transition failed";
-    const code = error.code || "";
+  if (!result.ok) {
+    const msg = result.message || "Workflow transition failed";
+    const code = result.code || "";
     if (code === "40300" || code === "40301" || code === "40302" || msg.includes("cannot approve") || msg.includes("Publishing permission") || msg.includes("workspace role")) {
       return { ok: false, error: msg, status: 403 };
     }
@@ -45,5 +39,5 @@ export async function transitionWorkflow(params: {
     }
     return { ok: false, error: msg, status: 400 };
   }
-  return { ok: true, data };
+  return { ok: true, data: result.data };
 }
