@@ -5,9 +5,15 @@ import {
   applyStageBookkeeping, assertStageCurrent, computePlanHash, renderStep, schemaLimitsFromEnv, validatePlan, type SchemaLimits,
 } from "@/lib/schema/engine/index";
 import type { SchemaEngine } from "@/lib/schema/runner/engine";
+import { RunnerError } from "@/lib/schema/runner/errors";
 
 export function productionEngine(limits: SchemaLimits = schemaLimitsFromEnv()): SchemaEngine {
   return {
+    // Wave 1's buildPlanFromTrustedState is not merged yet. Until it is, the worker refuses every stage
+    // rather than run a plan read from the app-writable ledger.
+    buildPlanFromTrustedState: async () => {
+      throw new RunnerError("trusted_plan_builder_unavailable");
+    },
     // Indexes CONCURRENTLY (the engine's default for the runner).
     renderStep: (step) => renderStep(step),
     computePlanHash,

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { derivedName } from "@/lib/schema/engine/names";
 import { assertOwnerSession } from "@/lib/schema/runner/ownerPool";
 import { claimNextStage, RUNNER_LOCK_CLASS, lockKey, tryLockModel, unlockModel } from "@/lib/schema/runner/ledger";
+import { productionEngine } from "@/lib/schema/runner/engineAdapter";
 import { column, shape } from "@/lib/schema/runner/testing/plans";
 import { connect, RunnerHarness } from "@/lib/schema/runner/testing/dualFixtures";
 
@@ -81,23 +82,20 @@ describe("the ledger", () => {
 });
 
 describe("never trusting the ledger row", () => {
-  it("(a) refuses a row whose plan was changed after it was hashed; nothing runs", async () => {
+  it("refuses a row whose plan does not match its hash; nothing runs", async () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text")]);
     const plan = h.plan(model, shape(model.table, [column("title", "text"), column("views", "bigint")]),
       [{ kind: "add_column", stage: "expand", column: column("views", "bigint") }]);
-    const ledgerId = await h.request(model, plan);
-    await h.app.query(
-      `update schema_migration_ledger set plan_json = jsonb_set(plan_json, '{steps,0,column,name}', '"hijack"') where id = $1`,
-      [ledgerId],
-    );
+    const tampered = { ...plan, steps: [{ ...plan.steps[0], column: column("hijack", "bigint") }] } as typeof plan;
+    const ledgerId = await h.request(model, tampered);
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "refused", code: "plan_hash_mismatch" });
     expect(Object.keys(await h.columns(model)).sort()).toEqual(["entry_id", "locale", "title", "variant"]);
     expect(await h.ledger(ledgerId)).toMatchObject({ status: "failed", error_ref: "plan_hash_mismatch" });
     expect((await h.runRow(ledgerId)).status).toBe("refused");
   });
 
-  it("(b) refuses a step aimed at a public table, even with a correct hash; nothing runs", async () => {
+  it("refuses a step aimed at a public table, even with a correct hash; nothing runs", async () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text")]);
     const plan = h.plan(model, shape(model.table, [column("title", "text"), column("pwned", "text")]),
@@ -114,27 +112,7 @@ describe("never trusting the ledger row", () => {
     expect(await h.run(other)).toEqual({ ledgerId: hostileId, outcome: "refused", code: "plan_target_mismatch" });
   });
 
-  it("(c) refuses a destructive stage switched to pending without confirmation; nothing runs", async () => {
-    const model = await h.newModel();
-    await h.createTable(model, [column("title", "text"), column("body", "text")]);
-    const after = shape(model.table, [column("title", "text")]);
-    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body" }], after);
-    const ledgerId = await h.request(model, plan, "destructive");
-    expect((await h.ledger(ledgerId)).status).toBe("awaiting_confirmation");
-    expect(await h.run(model)).toBeNull();
-    await h.app.query("update schema_migration_ledger set status = 'pending' where id = $1", [ledgerId]);
-    expect(await h.run(model)).toEqual({ ledgerId, outcome: "refused", code: "destructive_not_confirmed" });
-    expect(await h.columns(model)).toHaveProperty("body");
-
-    // Confirmed properly, it runs.
-    await h.app.query("update schema_migration_ledger set status = 'pending', confirmed_by = $2, confirmed_at = now() where id = $1", [ledgerId, model.adminId]);
-    expect(await h.run(model)).toEqual({ ledgerId, outcome: "succeeded" });
-    expect(await h.columns(model)).not.toHaveProperty("body");
-  });
-});
-
-describe("never trusting the ledger row: data-deleting steps", () => {
-  it("(d) refuses a forged expand row that deletes a column, even with a correct hash; nothing runs", async () => {
+  it("refuses a forged expand row that deletes a column, even with a correct hash; nothing runs", async () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text"), column("body", "text")]);
     const after = shape(model.table, [column("title", "text")]);
@@ -143,6 +121,113 @@ describe("never trusting the ledger row: data-deleting steps", () => {
     expect((await h.ledger(ledgerId)).status).toBe("pending");
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "refused", code: "plan_destructive_in_expand" });
     expect(await h.columns(model)).toHaveProperty("body");
+  });
+});
+
+// The security review's attack: a stolen app login repoints content_model_tables at another
+// workspace's table, inserts a correctly hashed drop_table request, and lets the owner worker drop it.
+describe("security review: what a stolen app login can no longer do", () => {
+  it("(a) cannot UPDATE or DELETE content_model_tables (no repointing a model at another table)", async () => {
+    const [victim, attacker] = [await h.newModel(), await h.newModel()];
+    await h.createTable(victim, [column("secret", "text")]);
+    await h.createTable(attacker, [column("title", "text")]);
+    await expect(h.app.query("update content_model_tables set table_name = $1 where content_model_id = $2", [victim.table, attacker.modelId])).rejects.toMatchObject({ code: "42501" });
+    await expect(h.app.query("update content_model_tables set applied_shape_hash = $1 where content_model_id = $2", ["0".repeat(64), attacker.modelId])).rejects.toMatchObject({ code: "42501" });
+    await expect(h.app.query("delete from content_model_tables where content_model_id = $1", [attacker.modelId])).rejects.toMatchObject({ code: "42501" });
+    await expect(h.app.query("insert into content_model_tables select * from content_model_tables where false")).rejects.toMatchObject({ code: "42501" });
+    const { rows } = await h.owner.query("select table_name from content_model_tables where content_model_id = $1", [attacker.modelId]);
+    expect(rows).toEqual([{ table_name: attacker.table }]);
+  });
+
+  it("(b) cannot DELETE (or write) name reservations to reuse a deleted name early", async () => {
+    const model = await h.newModel();
+    await h.owner.query(
+      "insert into schema_name_reservations (workspace_id, content_model_id, kind, name, reason, reserved_until) values ($1, $2, 'field', 'gone', 'deleted', now() + interval '30 days')",
+      [model.workspaceId, model.modelId],
+    );
+    await expect(h.app.query("delete from schema_name_reservations where content_model_id = $1", [model.modelId])).rejects.toMatchObject({ code: "42501" });
+    await expect(h.app.query("update schema_name_reservations set reserved_until = now() where content_model_id = $1", [model.modelId])).rejects.toMatchObject({ code: "42501" });
+    const { rows } = await h.owner.query("select count(*)::int as n from schema_name_reservations where content_model_id = $1", [model.modelId]);
+    expect(rows[0].n).toBe(1);
+  });
+
+  it("(c) can only insert a request: no UPDATE or DELETE of the ledger, no status of its own", async () => {
+    const model = await h.newModel();
+    await h.createTable(model, [column("title", "text"), column("body", "text")]);
+    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body" }], shape(model.table, [column("title", "text")]));
+    const ledgerId = await h.request(model, plan, "destructive");
+    // The trigger set the status from the stage.
+    expect(await h.ledger(ledgerId)).toMatchObject({ status: "awaiting_confirmation", attempts: 0, confirmed_by: null });
+    await expect(h.app.query("update schema_migration_ledger set status = 'pending' where id = $1", [ledgerId])).rejects.toMatchObject({ code: "42501" });
+    await expect(h.app.query("update schema_migration_ledger set plan_json = '{}'::jsonb where id = $1", [ledgerId])).rejects.toMatchObject({ code: "42501" });
+    await expect(h.app.query("delete from schema_migration_ledger where id = $1", [ledgerId])).rejects.toMatchObject({ code: "42501" });
+    await expect(h.app.query(
+      `insert into schema_migration_ledger (workspace_id, content_model_id, model_api_key, table_name, stage, status, plan_hash, plan_json)
+       values ($1, $2, $3, $4, 'destructive', 'pending', $5, '{}'::jsonb)`,
+      [model.workspaceId, model.modelId, model.apiKey, model.table, plan.planHash],
+    )).rejects.toMatchObject({ code: "42501" });
+    await expect(h.app.query(
+      `insert into schema_migration_ledger (workspace_id, content_model_id, model_api_key, table_name, stage, confirmed_by, plan_hash, plan_json)
+       values ($1, $2, $3, $4, 'destructive', $5, $6, '{}'::jsonb)`,
+      [model.workspaceId, model.modelId, model.apiKey, model.table, model.adminId, plan.planHash],
+    )).rejects.toMatchObject({ code: "42501" });
+    expect(await h.run(model)).toBeNull();
+  });
+
+  it("(d) a correctly hashed request whose plan targets another model's table is refused; nothing runs", async () => {
+    const [victim, attacker] = [await h.newModel(), await h.newModel()];
+    await h.createTable(victim, [column("secret", "text")]);
+    await h.createTable(attacker, [column("title", "text")]);
+    // The attacker's model, pointed at the victim's table, with a valid hash.
+    const forged = h.plan({ ...attacker, table: victim.table }, shape(victim.table, [column("secret", "text"), column("x", "text")]),
+      [{ kind: "add_column", stage: "expand", column: column("x", "text") }]);
+    const ledgerId = await h.request({ ...attacker, table: victim.table }, forged);
+    expect(await h.run(attacker)).toEqual({ ledgerId, outcome: "refused", code: "plan_target_mismatch" });
+    // The victim's model, with a plan for the attacker's table: refused too.
+    const reverse = h.plan({ ...victim, table: attacker.table }, shape(attacker.table, [column("title", "text"), column("y", "text")]),
+      [{ kind: "add_column", stage: "expand", column: column("y", "text") }]);
+    const reverseId = await h.request({ ...victim, table: attacker.table }, reverse);
+    expect(await h.run(victim)).toEqual({ ledgerId: reverseId, outcome: "refused", code: "plan_target_mismatch" });
+    expect(Object.keys(await h.columns(victim)).sort()).toEqual(["entry_id", "locale", "secret", "variant"]);
+    expect(Object.keys(await h.columns(attacker)).sort()).toEqual(["entry_id", "locale", "title", "variant"]);
+  });
+
+  // The worker rebuilds every plan from content_model_tables + the target content_model_versions row
+  // (wave 1's buildPlanFromTrustedState); a drop_table that version does not imply has a different
+  // hash and is refused. Until that builder is merged, the production worker refuses every stage
+  // (trusted_plan_builder_unavailable, tested below) and these tests stand in for the builder.
+  it.todo("(e) a drop_table the target version does not imply is refused (needs wave 1's buildPlanFromTrustedState)");
+
+  it("(e, until then) the production worker refuses every stage while the trusted plan builder is missing", async () => {
+    const model = await h.newModel();
+    const columns = [column("title", "text")];
+    const ledgerId = await h.request(model, h.plan(model, shape(model.table, columns), [{ kind: "create_table", stage: "expand", columns }]));
+    expect(await h.run(model, { engine: productionEngine() })).toEqual({ ledgerId, outcome: "refused", code: "trusted_plan_builder_unavailable" });
+    const { rows } = await h.owner.query("select to_regclass($1) as found", [`content.${model.table}`]);
+    expect(rows[0].found).toBeNull();
+  });
+
+  it("(f) a destructive stage with no confirmation row never runs; the owner-side confirmation does", async () => {
+    const model = await h.newModel();
+    await h.createTable(model, [column("title", "text"), column("body", "text")]);
+    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body" }], shape(model.table, [column("title", "text")]));
+    const ledgerId = await h.request(model, plan, "destructive");
+    expect(await h.run(model)).toBeNull();
+    // Even if the status were moved some other way, and confirmed_by filled in, there is no confirmation row.
+    await h.owner.query("update schema_migration_ledger set status = 'pending', confirmed_by = $2, confirmed_at = now() where id = $1", [ledgerId, model.adminId]);
+    expect(await h.run(model)).toEqual({ ledgerId, outcome: "refused", code: "destructive_not_confirmed" });
+    expect(await h.columns(model)).toHaveProperty("body");
+
+    // A fresh request, confirmed through the owner-side function: wrong text refused, the api key accepted.
+    const again = await h.request(model, plan, "destructive");
+    await expect(h.confirm(again, model.adminId, "not_the_key")).rejects.toMatchObject({ code: "22023" });
+    await expect(h.app.query("insert into schema_migration_confirmations (ledger_id, workspace_id, typed_api_key) values ($1, $2, $3)", [again, model.workspaceId, model.apiKey]))
+      .rejects.toMatchObject({ code: "42501" });
+    await h.confirm(again, model.adminId, model.apiKey);
+    await expect(h.confirm(again, model.adminId, model.apiKey)).rejects.toMatchObject({ code: "55000" });
+    expect(await h.ledger(again)).toMatchObject({ status: "pending", confirmed_by: model.adminId });
+    expect(await h.run(model)).toEqual({ ledgerId: again, outcome: "succeeded" });
+    expect(await h.columns(model)).not.toHaveProperty("body");
   });
 });
 

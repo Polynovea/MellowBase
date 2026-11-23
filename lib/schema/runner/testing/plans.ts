@@ -2,9 +2,22 @@
 // (phase 3 wave 1), and the engine itself as the runner's adapter. Never imported outside tests.
 import { computePlanHash, DEFAULT_SCHEMA_LIMITS, hashCanonical, hashShape } from "@/lib/schema/engine";
 import type { ColumnShape, MigrationPlan, PlanStep, TableShape } from "@/lib/schema/engine/plan";
+import { sql } from "kysely";
+import type { SchemaEngine } from "@/lib/schema/runner/engine";
 import { productionEngine } from "@/lib/schema/runner/engineAdapter";
 
-export const testEngine = productionEngine(DEFAULT_SCHEMA_LIMITS);
+/**
+ * The real engine, except the trusted-state plan builder: wave 1's buildPlanFromTrustedState is not
+ * merged yet, so the tests stand in for it by reading the plan the test itself wrote (plan_json).
+ * The production engine refuses every stage until the real builder lands.
+ */
+export const testEngine: SchemaEngine = {
+  ...productionEngine(DEFAULT_SCHEMA_LIMITS),
+  buildPlanFromTrustedState: async (db, request) => {
+    const { rows: [row] } = await sql<{ plan_json: MigrationPlan }>`select plan_json from public.schema_migration_ledger where id = ${request.id}`.execute(db);
+    return row.plan_json;
+  },
+};
 
 export function column(name: string, pgType: ColumnShape["pgType"], extra: Partial<ColumnShape> = {}): ColumnShape {
   const fieldType = ({ text: "text", jsonb: "json", numeric: "number", bigint: "integer", boolean: "boolean", date: "date", timestamptz: "datetime", uuid: "relation" } as const)[pgType];

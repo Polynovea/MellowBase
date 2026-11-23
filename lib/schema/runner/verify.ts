@@ -1,10 +1,12 @@
 // Never trust the ledger row.
 //
-// The app role can write schema_migration_ledger rows (that is how a change is requested), and the
-// worker that reads them runs with owner rights. So before anything runs, the worker re-checks the
-// row from scratch, and refuses it unless every check passes:
+// The app role can insert schema_migration_ledger rows (that is how a change is requested), and the
+// worker that reads them runs with owner rights. So the worker never runs the plan stored in the row:
+// the engine rebuilds it from trusted state (the model's recorded table, the target model version and
+// the stage), and the worker refuses the row unless every check passes:
 //
-// - plan_json parses as a plan of a format this runner knows, with no unknown keys anywhere;
+// - the rebuilt plan's hash equals the row's plan_hash (the request was for exactly this change);
+// - the plan parses as a plan of a format this runner knows, with no unknown keys anywhere;
 // - the engine's validatePlan passes (hash recomputed, names, types, caps, stage rules, and replaying
 //   the steps reaches the shapes the plan claims);
 // - the plan hash recomputed by the engine equals the row's and the plan's; the shape hashes match
@@ -13,7 +15,9 @@
 // - every step targets the model's own table, content.<content_model_tables.table_name> (or, for a
 //   new model, a free table name derived from its api key);
 // - every name passes the engine's name rules, and the caps hold;
-// - data-deleting steps only appear in the destructive stage, and that stage was confirmed.
+// - data-deleting steps only appear in the destructive stage, and that stage has a row in
+//   schema_migration_confirmations written after the request (only the owner-side
+//   polynovea_confirm_schema_stage() writes them).
 //
 // The worker then executes only SQL it renders itself through the engine's renderStep from the
 // checked plan. No SQL text from the row ever runs. The hash is not a signature (the app role could
@@ -27,7 +31,7 @@ import { schemaLimitsFromEnv, type SchemaLimits } from "@/lib/schema/engine/limi
 import { nameProblem, TABLE_NAME_PATTERN, tableNameCandidates } from "@/lib/schema/engine/names";
 import { PG_COLUMN_TYPES, type MigrationPlan, type PlanStage, type PlanStep, type TableShape } from "@/lib/schema/engine/plan";
 import { RefusedError } from "@/lib/schema/runner/errors";
-import type { SchemaEngine } from "@/lib/schema/runner/engine";
+import { kyselyOn, type SchemaEngine } from "@/lib/schema/runner/engine";
 
 export interface LedgerRow {
   id: string;
@@ -41,10 +45,12 @@ export interface LedgerRow {
   base_shape_hash: string | null;
   target_schema_hash: string | null;
   plan_json: unknown;
+  target_version_id: string | null;
   requested_by: string | null;
   confirmed_by: string | null;
   confirmed_at: string | Date | null;
   attempts: number;
+  created_at?: string | Date;
 }
 
 export interface StageStep {
@@ -184,11 +190,19 @@ function indexCount(shape: TableShape | null): number {
   return Object.values(shape.columns).filter((column) => column.unique || column.indexed || column.foreignKey).length;
 }
 
-/** Checks that need only the row and the plan (no database). Exported for unit tests. */
-export function verifyRowAgainstPlan(row: LedgerRow, engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan">, limits: SchemaLimits = schemaLimitsFromEnv()): Omit<VerifiedStage, "createsTable"> {
+/**
+ * Checks that need only the row and the plan (no database). `planSource` is the plan to check: the
+ * worker passes the plan the engine rebuilt from trusted state; the unit tests pass plan_json.
+ */
+export function verifyRowAgainstPlan(
+  row: LedgerRow,
+  engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan">,
+  limits: SchemaLimits = schemaLimitsFromEnv(),
+  planSource: unknown = row.plan_json,
+): Omit<VerifiedStage, "createsTable"> {
   if (row.stage !== "expand" && row.stage !== "destructive") throw new RefusedError("ledger_stage_invalid");
   const stage: PlanStage = row.stage;
-  const plan = parsePlan(row.plan_json);
+  const plan = parsePlan(planSource);
 
   let recomputed: string;
   try {
@@ -226,9 +240,7 @@ export function verifyRowAgainstPlan(row: LedgerRow, engine: Pick<SchemaEngine, 
     throw new RefusedError(code === "cap_exceeded" ? "cap_exceeded" : "invalid_plan");
   }
 
-  if (stage === "destructive" && (!row.confirmed_by || !row.confirmed_at || !plan.requiresConfirmation)) {
-    throw new RefusedError("destructive_not_confirmed");
-  }
+  if (stage === "destructive" && !plan.requiresConfirmation) throw new RefusedError("destructive_not_confirmed");
 
   const steps = plan.steps.map((step, planIndex) => ({ planIndex, step })).filter(({ step }) => step.stage === stage);
   if (steps.length === 0) throw new RefusedError("stage_has_no_steps");
@@ -236,9 +248,32 @@ export function verifyRowAgainstPlan(row: LedgerRow, engine: Pick<SchemaEngine, 
 }
 
 /** Every check, including the ones against the database (model, its table, the model cap). */
-export async function verifyLedgerRow(client: pg.ClientBase, row: LedgerRow, engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan">, limits: SchemaLimits = schemaLimitsFromEnv()): Promise<VerifiedStage> {
-  const verified = verifyRowAgainstPlan(row, engine, limits);
+export async function verifyLedgerRow(
+  client: pg.ClientBase,
+  row: LedgerRow,
+  engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan" | "buildPlanFromTrustedState">,
+  limits: SchemaLimits = schemaLimitsFromEnv(),
+): Promise<VerifiedStage> {
+  // The plan to run comes from trusted state, never from plan_json.
+  let trusted: MigrationPlan;
+  try {
+    trusted = await engine.buildPlanFromTrustedState(kyselyOn(client), row);
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    throw new RefusedError(typeof code === "string" && /^[a-z0-9_]{1,80}$/.test(code) ? code : "trusted_plan_unavailable");
+  }
+  const verified = verifyRowAgainstPlan(row, engine, limits, trusted);
   const { plan, stage, steps } = verified;
+
+  if (stage === "destructive") {
+    const { rows: confirmations } = await client.query(
+      `select 1 from public.schema_migration_confirmations c
+         join public.schema_migration_ledger l on l.id = c.ledger_id
+        where c.ledger_id = $1 and c.created_at > l.created_at`,
+      [row.id],
+    );
+    if (confirmations.length === 0) throw new RefusedError("destructive_not_confirmed");
+  }
 
   const { rows: [model] } = await client.query<{ workspace_id: string; api_key: string }>(
     "select workspace_id, api_key from public.content_models where id = $1",

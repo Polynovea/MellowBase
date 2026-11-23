@@ -12,7 +12,26 @@ import type { DB } from "@/lib/db/generated/database";
 import type { SchemaLimits } from "@/lib/schema/engine/limits";
 import type { MigrationPlan, PlanStage, PlanStep, RenderedStatement, SchemaHash } from "@/lib/schema/engine/plan";
 
+/** The request columns of a ledger row the engine rebuilds a plan from (never its plan_json). */
+export interface PlanRequest {
+  id: string;
+  workspace_id: string;
+  content_model_id: string | null;
+  model_api_key: string;
+  table_name: string;
+  stage: string;
+  plan_hash: string;
+  target_version_id: string | null;
+  created_at?: string | Date;
+}
+
 export interface SchemaEngine {
+  /**
+   * Rebuilds the request's plan from trusted state only: the model's recorded table
+   * (content_model_tables), the target content_model_versions row and the stage. The worker runs this
+   * plan, and only if its hash equals the ledger row's plan_hash; plan_json is never executed.
+   */
+  buildPlanFromTrustedState(db: DbExecutor, request: PlanRequest): Promise<MigrationPlan>;
   /** The SQL for one step, in order, each with how it must run. */
   renderStep(step: PlanStep): RenderedStatement[];
   /** The plan's identity hash, recomputed from its contents. */

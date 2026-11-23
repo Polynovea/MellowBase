@@ -11,9 +11,15 @@
 --                                  trigger, backfill position, and when the old column is dropped
 --   polynovea_schema_dual_write()  the one trigger function every expand/contract uses
 --
--- The app role can write ledger rows (that is how a change is requested), so the runner never trusts
--- them: it re-checks every row and re-renders the SQL itself. These two tables are different: the
--- runner acts on the positions and column names stored here, so the app role may only read them.
+-- The app role requests a change by INSERTING a ledger row, nothing more: it may set only the request's
+-- own columns, never a status, and may never update or delete a row. A trigger sets the status from
+-- the stage. Confirming a deletion and retrying a failed stage go through two owner-side functions
+-- (below), and a confirmation is its own row in schema_migration_confirmations. The runner still never
+-- trusts a ledger row: it rebuilds the plan from trusted state and runs only what it rendered itself.
+-- Its own tables (runs, expand/contract tasks, confirmations) are read-only for the app.
+--
+--   schema_migration_confirmations one row per confirmed destructive stage: who typed the model's api
+--                                  key, and when
 
 -- ── Runs ──────────────────────────────────────────────────────────────────────────────────────────
 create table if not exists public.schema_migration_runs (
@@ -161,6 +167,110 @@ $$;
 comment on function public.polynovea_schema_dual_write() is
   'Expand/contract dual-write trigger for content tables (lib/schema/runner/expandContract.ts). Sets NEW only.';
 
+-- ── Requests: insert-only for the app ───────────────────────────────────────────────────────────
+-- The content model version the change is for: what the worker rebuilds the plan from (with the
+-- table's applied shape), instead of trusting the plan stored in the row.
+alter table public.schema_migration_ledger
+  add column if not exists target_version_id uuid references public.content_model_versions (id) on delete set null;
+
+-- Whatever an inserting session supplies, a request starts clean: its status follows from its stage
+-- (expand: pending; destructive: awaiting_confirmation) and nothing about a run is set. Sessions that
+-- may UPDATE the ledger (the owner: migrations, the worker, the engine's reference executor) are left
+-- alone, so this never depends on role names.
+create or replace function public.polynovea_schema_ledger_request()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if pg_catalog.has_table_privilege(current_user, 'public.schema_migration_ledger', 'UPDATE') then
+    return new;
+  end if;
+  new.status := case new.stage when 'destructive' then 'awaiting_confirmation' else 'pending' end;
+  new.attempts := 0;
+  new.error_ref := null;
+  new.started_at := null;
+  new.finished_at := null;
+  new.confirmed_by := null;
+  new.confirmed_at := null;
+  new.created_at := pg_catalog.now();
+  return new;
+end;
+$$;
+
+drop trigger if exists schema_migration_ledger_request on public.schema_migration_ledger;
+create trigger schema_migration_ledger_request before insert on public.schema_migration_ledger
+  for each row execute function public.polynovea_schema_ledger_request();
+
+-- ── Confirmations ────────────────────────────────────────────────────────────────────────────────
+create table if not exists public.schema_migration_confirmations (
+  id uuid primary key default gen_random_uuid(),
+  ledger_id uuid not null unique references public.schema_migration_ledger (id) on delete cascade,
+  workspace_id uuid not null references public.workspaces (id) on delete cascade,
+  confirmed_by uuid references public.admin_users (id) on delete set null,
+  -- What was typed (it matched the model's api key when the row was written).
+  typed_api_key text not null check (typed_api_key ~ '^[a-z][a-z0-9_]{0,62}$'),
+  created_at timestamptz not null default clock_timestamp()
+);
+
+alter table public.schema_migration_confirmations enable row level security;
+
+comment on table public.schema_migration_confirmations is
+  'Typed confirmations of destructive schema stages. Written only by polynovea_confirm_schema_stage(); the worker runs a destructive stage only with one.';
+
+-- The app confirms a deletion only through this function: it checks the stage is a destructive one
+-- waiting for confirmation and that the typed text is the model's api key, records the confirmation
+-- and queues the stage. A stolen app login can still call it (confirming is an app action by design);
+-- what keeps that harmless is that the worker rebuilds every plan from trusted state.
+create or replace function public.polynovea_confirm_schema_stage(p_ledger_id uuid, p_confirmed_by uuid, p_typed_api_key text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  request record;
+begin
+  select l.id, l.stage, l.status, l.workspace_id, m.api_key
+    into request
+    from public.schema_migration_ledger l
+    join public.content_models m on m.id = l.content_model_id
+   where l.id = p_ledger_id
+     for update of l;
+  if not found or request.stage <> 'destructive' then
+    raise exception using errcode = 'P0002', message = 'schema_stage_not_found';
+  end if;
+  if request.status <> 'awaiting_confirmation' then
+    raise exception using errcode = '55000', message = 'schema_stage_not_awaiting_confirmation';
+  end if;
+  if p_typed_api_key is distinct from request.api_key then
+    raise exception using errcode = '22023', message = 'schema_confirmation_mismatch';
+  end if;
+  insert into public.schema_migration_confirmations (ledger_id, workspace_id, confirmed_by, typed_api_key)
+  values (p_ledger_id, request.workspace_id, p_confirmed_by, p_typed_api_key);
+  update public.schema_migration_ledger
+     set status = 'pending', confirmed_by = p_confirmed_by, confirmed_at = pg_catalog.clock_timestamp()
+   where id = p_ledger_id;
+end;
+$$;
+
+-- "Retry" in the UI: a failed stage goes back in the queue (the worker resumes it from its run row).
+create or replace function public.polynovea_retry_schema_stage(p_ledger_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.schema_migration_ledger set status = 'pending', error_ref = null
+   where id = p_ledger_id and status = 'failed';
+  if not found then
+    raise exception using errcode = '55000', message = 'schema_stage_not_failed';
+  end if;
+end;
+$$;
+
 -- ── App access ───────────────────────────────────────────────────────────────────────────────────
 -- The helper from 0072 (the latest), unchanged except for one explicit list of tables the app role may
 -- only read. Default privileges give the app full rights on every new table, so for each listed table
@@ -173,10 +283,11 @@ comment on function public.polynovea_schema_dual_write() is
 --   content_model_tables          each model's table and applied shape: the schema gate compares
 --                                 against it, so only the engine's apply bookkeeping writes it
 --   schema_name_reservations      deleted and renamed names, written only by the apply bookkeeping
+--   schema_migration_confirmations written only by polynovea_confirm_schema_stage()
 --
--- schema_migration_ledger stays app-writable (the app inserts requests and confirms deletions), and so
--- does content_field_permissions (the admin UI edits field permissions). installation keeps its 0072
--- rule (SELECT and INSERT only).
+-- schema_migration_ledger: SELECT, and INSERT of the request columns only (ledger_request_columns);
+-- no UPDATE or DELETE. content_field_permissions stays app-writable (the admin UI edits field
+-- permissions). installation keeps its 0072 rule (SELECT and INSERT only).
 create or replace function public.polynovea_apply_app_access()
 returns void
 language plpgsql
@@ -190,7 +301,9 @@ declare
   api_roles text[] := array(select rolname::text from pg_roles where rolname in ('anon', 'authenticated'));
   read_only text[] := array[
     'polynovea_migration_ledger', 'schema_migration_runs', 'schema_expand_contract_tasks',
-    'content_model_tables', 'schema_name_reservations'];
+    'content_model_tables', 'schema_name_reservations', 'schema_migration_confirmations'];
+  ledger_request_columns text := 'workspace_id, content_model_id, model_api_key, table_name, stage, plan_hash, '
+    || 'base_shape_hash, target_schema_hash, plan_json, requested_by, target_version_id';
 begin
   execute 'grant usage on schema public to polynovea_app';
 
@@ -207,6 +320,14 @@ begin
       execute format('revoke insert, update, delete, truncate on public.%I from polynovea_app', item.relname);
       foreach grantee in array api_roles loop
         execute format('revoke all on public.%I from %I', item.relname, grantee);
+      end loop;
+    elsif item.relname = 'schema_migration_ledger' then
+      -- Requests only: insert these columns, read the rows. Status changes are the owner's.
+      execute 'grant select on public.schema_migration_ledger to polynovea_app';
+      execute 'revoke insert, update, delete, truncate on public.schema_migration_ledger from polynovea_app';
+      execute format('grant insert (%s) on public.schema_migration_ledger to polynovea_app', ledger_request_columns);
+      foreach grantee in array api_roles loop
+        execute format('revoke all on public.schema_migration_ledger from %I', grantee);
       end loop;
     elsif item.relname = 'installation' then
       -- Read, and insert once at the end of setup. Never change or delete (0072).

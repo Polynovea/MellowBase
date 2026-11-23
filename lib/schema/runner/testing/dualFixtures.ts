@@ -6,7 +6,7 @@ import pg from "pg";
 import { tableNameCandidates } from "@/lib/schema/engine/names";
 import type { ColumnShape, MigrationPlan, PlanStage, TableShape } from "@/lib/schema/engine/plan";
 import { kyselyOn } from "@/lib/schema/runner/engine";
-import { requestPlanStage } from "@/lib/schema/runner/request";
+import { confirmPlanStage, requestPlanStage, retryPlanStage } from "@/lib/schema/runner/request";
 import { runNextStage, type RunnerOptions, type StageOutcome } from "@/lib/schema/runner/runner";
 import { bare, buildPlan, constraintSteps, shape, testEngine } from "@/lib/schema/runner/testing/plans";
 
@@ -119,8 +119,13 @@ export class RunnerHarness {
     return rows;
   }
 
-  /** Puts a failed stage back in the queue, as a "Retry" in the UI would (app role). */
+  /** Puts a failed stage back in the queue, as a "Retry" in the UI would (app role, owner-side function). */
   async retry(ledgerId: string) {
-    await this.app.query("update schema_migration_ledger set status = 'pending' where id = $1", [ledgerId]);
+    await retryPlanStage(kyselyOn(this.app), ledgerId);
+  }
+
+  /** Confirms a destructive stage, as typing the model name in the UI would (app role, owner-side function). */
+  async confirm(ledgerId: string, confirmedBy: string, typedApiKey: string) {
+    await confirmPlanStage(kyselyOn(this.app), { ledgerId, confirmedBy, typedApiKey });
   }
 }

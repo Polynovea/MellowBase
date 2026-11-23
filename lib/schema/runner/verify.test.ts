@@ -25,7 +25,7 @@ function row(p: MigrationPlan, overrides: Partial<LedgerRow> = {}): LedgerRow {
     id: "33333333-3333-4333-8333-333333333333", workspace_id: p.workspaceId, content_model_id: p.modelId,
     model_api_key: p.modelApiKey, table_name: p.table, stage: "expand", status: "pending", plan_hash: p.planHash,
     base_shape_hash: p.baseShapeHash, target_schema_hash: p.targetSchemaHash, plan_json: p, requested_by: null,
-    confirmed_by: null, confirmed_at: null, attempts: 0, ...overrides,
+    target_version_id: null, confirmed_by: null, confirmed_at: null, attempts: 0, ...overrides,
   };
 }
 
@@ -66,14 +66,15 @@ describe("verifyRowAgainstPlan", () => {
     expect(refusal(() => verifyRowAgainstPlan(row(otherRow, { table_name: "m_other" }), engine))).toBe("plan_target_mismatch");
   });
 
-  it("(c) refuses a destructive stage that was never confirmed", () => {
+  it("(c) checks the destructive stage on its own; the confirmation itself is a row (runner.dual.test.ts)", () => {
     const p = plan({
       base: expanded, expanded, target: base,
       steps: [{ kind: "drop_column", stage: "destructive", column: "views" }],
     });
     const destructive = { stage: "destructive", base_shape_hash: p.expandedShapeHash };
-    expect(refusal(() => verifyRowAgainstPlan(row(p, destructive), engine))).toBe("destructive_not_confirmed");
+    // The row's own confirmed_by/confirmed_at are not evidence of anything: they are ignored.
     expect(verifyRowAgainstPlan(row(p, { ...destructive, confirmed_by: MODEL, confirmed_at: new Date() }), engine).stage).toBe("destructive");
+    expect(verifyRowAgainstPlan(row(p, destructive), engine).steps.map(({ step }) => step.kind)).toEqual(["drop_column"]);
   });
 
   it("refuses data-deleting steps placed in the expand stage", () => {
