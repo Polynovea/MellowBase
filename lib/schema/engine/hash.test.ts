@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJson, hashCanonical, hashModelSchema, hashShape } from "@/lib/schema/engine/hash";
+import { computeSchemaHash } from "@/lib/schema/modelService";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 
 const schema = (fields: CanonicalSchema["fields"]): CanonicalSchema => ({ name: "Post", apiKey: "post", fields });
@@ -16,6 +17,15 @@ describe("schema hashes", () => {
     expect(hashModelSchema(schema([field("title")]))).not.toBe(hashModelSchema(schema([field("title", "long_text")])));
     expect(hashModelSchema(schema([{ ...field("title"), validation: { maxLength: 10 } }])))
       .not.toBe(hashModelSchema(schema([{ ...field("title"), validation: { maxLength: 11 } }])));
+  });
+
+  it("computeSchemaHash (stored on every schema version) sees field contents; it used to ignore them", () => {
+    const a = schema([field("title")]);
+    const b = schema([field("other", "json")]);
+    expect(computeSchemaHash(a)).not.toBe(computeSchemaHash(b));
+    expect(computeSchemaHash(a)).toBe(hashModelSchema(a));
+    expect(computeSchemaHash(a)).toBe(computeSchemaHash(JSON.parse(JSON.stringify(a))));
+    expect(computeSchemaHash({ ...a, fields: [{ ...field("title"), defaultValue: undefined }] })).toBe(computeSchemaHash(a));
   });
 
   it("keep array order (field order is meaningful) and drop undefined values", () => {
