@@ -7,6 +7,8 @@
 #   postgrest     PostgREST over supabase-db, the same API supabase-js talks to.
 #   gotrue        Supabase Auth (GoTrue) over supabase-db, for browser tests of today's sign-in.
 #   rest-gateway  Serves PostgREST under /rest/v1 and GoTrue under /auth/v1 like Supabase's gateway.
+#   azurite       Azure Blob emulator for the Azure Blob storage adapter tests (in-memory, account key
+#                 generated per checkout).
 #
 # Everything binds to 127.0.0.1 only. Passwords and the JWT secret come from .env.test.local,
 # which `node scripts/dev-db/setup.mjs` generates (it is gitignored). Never reuse them anywhere.
@@ -22,7 +24,7 @@
 #
 # Ports (recorded in .env.test.local): POLYNOVEA_DEV_PLAIN_PORT (plain PostgreSQL),
 # POLYNOVEA_DEV_SUPABASE_PORT (Supabase PostgreSQL), POLYNOVEA_DEV_GATEWAY_PORT (REST and Auth
-# gateway). Set POLYNOVEA_DEV_PORT_BASE before the first setup to choose them yourself.
+# gateway), POLYNOVEA_DEV_AZURITE_PORT (Azurite blob). Set POLYNOVEA_DEV_PORT_BASE before the first setup to choose them yourself.
 # Set POLYNOVEA_DEV_PG_IMAGE=postgres:15-alpine or postgres:17-alpine to test another major version.
 
 
@@ -100,3 +102,16 @@ services:
     volumes:
       - ./rest-gateway.conf:/etc/nginx/conf.d/default.conf:ro
     restart: on-failure
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.34.0
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000", "--inMemoryPersistence", "--skipApiVersionCheck", "--loose"]
+    environment:
+      AZURITE_ACCOUNTS: polynoveadev:${POLYNOVEA_DEV_AZURITE_KEY:?run scripts/dev-db/setup.mjs}
+    ports:
+      - "127.0.0.1:${POLYNOVEA_DEV_AZURITE_PORT:?run scripts/dev-db/setup.mjs}:10000"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 10000"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

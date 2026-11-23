@@ -40,8 +40,13 @@ the historical record; this section describes the current code.
   `storage_key`, `mime_type`, `size_bytes`, `checksum` and `metadata_json`,
   not a public URL. Connection-backed assets record `connection:<id>` as the
   provider key so reads and deletes resolve the same connection.
-- Not implemented: Azure Blob and local-filesystem adapters. Any other storage
-  connector type fails with "has no media data-plane adapter".
+- Azure Blob (`storage.azure-blob`, managed identity, user delegation SAS for
+  reads) and local disk (`storage.local`, signed CMS links) were added in the
+  self-hosted upgrade's phase 1. Neither can sign an upload's size into a
+  storage URL, so they implement `writeStream` and browsers upload through
+  the CMS's signed upload route, which enforces the signed type and exact
+  size while streaming. See `docs/self-hosting/STORAGE.md`. Any other
+  storage connector type fails with "has no media data-plane adapter".
 
 The "Current deployment" consequence below (a single implicit
 `cloudflare_r2` provider) no longer holds.
