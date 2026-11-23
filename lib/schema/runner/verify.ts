@@ -28,6 +28,7 @@ import type pg from "pg";
 import { FIELD_TYPES } from "@/lib/schema/fields/types";
 import { hashShape } from "@/lib/schema/engine/hash";
 import { schemaLimitsFromEnv, type SchemaLimits } from "@/lib/schema/engine/limits";
+import { KEY_PATTERN } from "@/lib/schema/engine/keys";
 import { COLUMN_NAME_PATTERN, nameProblem, TABLE_NAME_PATTERN, tableNameCandidates } from "@/lib/schema/engine/names";
 import { PG_COLUMN_TYPES, type MigrationPlan, type PlanStage, type PlanStep, type TableShape } from "@/lib/schema/engine/plan";
 import { RefusedError } from "@/lib/schema/runner/errors";
@@ -75,8 +76,8 @@ export interface VerifiedStage {
 const hash = z.string().regex(/^[0-9a-f]{64}$/);
 /** Physical names (columns, tables): 63 bytes at most. */
 const name = z.string().max(63);
-/** Field keys and model api keys: the key rule has no length cap of its own. */
-const key = z.string().max(1_000);
+/** Field keys and model api keys: the engine's one key rule (keys.ts), with no length cap of its own. */
+const key = z.string().regex(KEY_PATTERN);
 const pgType = z.enum(PG_COLUMN_TYPES);
 const fieldType = z.enum(FIELD_TYPES);
 

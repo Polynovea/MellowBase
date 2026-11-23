@@ -102,12 +102,18 @@ describe("verifyRowAgainstPlan", () => {
 
   it("re-runs the name rules and caps", () => {
     // Reserved words are fine as (quoted) column names now; a name outside the rules is not.
-    const badName = shape("m_posts", [column("title", "text"), column("Views", "bigint")]);
-    const p = plan({ expanded: badName, steps: [{ kind: "add_column", stage: "expand", column: column("Views", "bigint") }] });
+    const badName = shape("m_posts", [column("title", "text"), column("Views", "bigint", { field: "views" })]);
+    const p = plan({ expanded: badName, steps: [{ kind: "add_column", stage: "expand", column: column("Views", "bigint", { field: "views" }) }] });
     expect(refusal(() => verifyRowAgainstPlan(row(p), engine))).toBe("plan_name_rejected");
     const badKey = shape("m_posts", [column("title", "text"), column("views", "bigint", { field: "Views Count" })]);
     const k = plan({ expanded: badKey, steps: [{ kind: "add_column", stage: "expand", column: column("views", "bigint", { field: "Views Count" }) }] });
-    expect(refusal(() => verifyRowAgainstPlan(row(k), engine))).toBe("plan_name_rejected");
+    // A key outside the engine's key rule never parses as a plan.
+    expect(refusal(() => verifyRowAgainstPlan(row(k), engine))).toBe("plan_malformed");
+    // Any length the key rule allows is accepted (the canonical schema has no cap).
+    const longKey = `k${"x".repeat(1_500)}`;
+    const wide = shape("m_posts", [column("title", "text"), column("views", "bigint", { field: longKey })]);
+    const w = plan({ expanded: wide, steps: [{ kind: "add_column", stage: "expand", column: column("views", "bigint", { field: longKey }) }] });
+    expect(verifyRowAgainstPlan(row(w), engine).steps).toHaveLength(1);
     const injected = shape("m_posts", [column("title", "text"), column('x" text); drop table y; --', "bigint")]);
     const q = plan({ expanded: injected, steps: [{ kind: "add_column", stage: "expand", column: column('x" text); drop table y; --', "bigint") }] });
     expect(["plan_malformed", "plan_name_rejected"]).toContain(refusal(() => verifyRowAgainstPlan(row(q), engine)));
