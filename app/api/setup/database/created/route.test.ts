@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NOT_CREATED_FOR_YOU } from "@/lib/setup/database/createdForYou";
 import { resetDatabaseStepLimitsForTests } from "@/lib/setup/database/stream";
+import { stampedHeaders } from "@/lib/setup/database/testRequests";
 import { SETUP_SESSION_COOKIE, resetSetupSessionsForTests, startSetupSession } from "@/lib/setup/setupSession";
 
 const mocks = vi.hoisted(() => ({ assertMode: vi.fn(async () => ({ mode: "setup" })), runCreated: vi.fn() }));
@@ -13,7 +14,7 @@ vi.mock("@/lib/setup/database/createdForYou", async (importOriginal) => ({
 const { POST } = await import("./route");
 
 const headers = { host: "localhost:3000", origin: "http://localhost:3000", "x-forwarded-for": "127.0.0.1", "x-forwarded-proto": "http" };
-const post = (token: string) => new Request("http://localhost:3000/api/setup/database/created", { method: "POST", headers: { ...headers, cookie: `${SETUP_SESSION_COOKIE}=${token}` } });
+const post = (token: string) => new Request("http://localhost:3000/api/setup/database/created", { method: "POST", headers: stampedHeaders({ ...headers, cookie: `${SETUP_SESSION_COOKIE}=${token}` }) });
 
 const saved = process.env.POLYNOVEA_DB_SECRET_REF;
 beforeEach(() => {

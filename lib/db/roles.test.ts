@@ -160,12 +160,8 @@ describe("INSTALL_PROBES: the shared 'database holds an install' rule", () => {
   it("matches migration 0072's backfill rule (gate-config's copy), so the two cannot drift", () => {
     const migration = readFileSync(path.join(process.cwd(), "supabase", "migrations", "0072_installation.sql"), "utf8").replace(/\r\n/g, "\n");
     const marked = /-- backfill:start\n([\s\S]*?)-- backfill:end/.exec(migration);
-    // Until gate-config's marked rule (fd9025e) is on this branch, 0072 has no markers.
-    if (!marked) {
-      expect(migration).not.toContain("backfill:start");
-      return;
-    }
-    const probes = [...marked[1].matchAll(/exists \(select 1 from public\.[a-z_]+(?: [a-z]+ where [^)]*)?\)/g)].map((match) => match[0]);
+    expect(marked, "0072 must mark its install rule with -- backfill:start / -- backfill:end").not.toBeNull();
+    const probes = [...marked![1].matchAll(/exists \(select 1 from public\.[a-z_]+(?: [a-z]+ where [^)]*)?\)/g)].map((match) => match[0]);
     expect(probes).toEqual(INSTALL_PROBES.map((probe) => probe.sql));
   });
 

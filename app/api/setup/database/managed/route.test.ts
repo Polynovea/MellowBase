@@ -3,6 +3,7 @@ import type { ManagedDatabaseInput } from "@/lib/setup/database/checks";
 import type { ManagedFlowContext } from "@/lib/setup/database/flow";
 import type { ProvisionedDatabase } from "@/lib/setup/database/provision";
 import { resetDatabaseStepLimitsForTests, SETUP_ALREADY_RUNNING } from "@/lib/setup/database/stream";
+import { stampedHeaders } from "@/lib/setup/database/testRequests";
 import { SETUP_SESSION_COOKIE, resetSetupSessionsForTests, startSetupSession } from "@/lib/setup/setupSession";
 
 const mocks = vi.hoisted(() => ({
@@ -41,7 +42,7 @@ const tunnel = { host: "localhost:3000", origin: "http://localhost:3000", "x-for
 function request(body: unknown, options: { token?: string | null; headers?: Record<string, string> } = {}) {
   const headers: Record<string, string> = { ...tunnel, ...options.headers };
   if (options.token) headers.cookie = `${SETUP_SESSION_COOKIE}=${options.token}`;
-  return new Request("http://localhost:3000/api/setup/database/managed", { method: "POST", headers, body: JSON.stringify(body) });
+  return new Request("http://localhost:3000/api/setup/database/managed", { method: "POST", headers: stampedHeaders(headers), body: JSON.stringify(body) });
 }
 
 let token: string;
