@@ -84,12 +84,13 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
     case "rename_column": {
       if (step.from === step.to) return [];
       const statements = [tx(sql`alter table ${table} rename column ${ident(step.from)} to ${ident(step.to)}`)];
-      const renameIndex = (kind: "uq" | "ix") =>
+      const renameIndex = (kind: "uq" | "ix" | "tg") =>
         tx(sql`alter index ${indexRef(derivedName(kind, step.table, step.from))} rename to ${ident(derivedName(kind, step.table, step.to))}`);
       const renameConstraint = (kind: "ck" | "fk") =>
         tx(sql`alter table ${table} rename constraint ${ident(derivedName(kind, step.table, step.from))} to ${ident(derivedName(kind, step.table, step.to))}`);
       if (step.column.unique) statements.push(renameIndex("uq"));
       if (step.column.indexed) statements.push(renameIndex("ix"));
+      if (step.column.searchIndexed) statements.push(renameIndex("tg"));
       if (step.column.requiredWhenPublished) statements.push(renameConstraint("ck"));
       if (step.column.foreignKey) statements.push(renameConstraint("fk"));
       return statements;
@@ -125,6 +126,16 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
     case "drop_index": {
       const name = indexRef(derivedName(step.unique ? "uq" : "ix", step.table, step.column));
       const query = sql`drop index ${sql.raw(concurrently ? "concurrently " : "")}${name}`;
+      return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently, ownTransaction: false }];
+    }
+    case "add_search_index": {
+      // gin_trgm_ops is pg_trgm's (migration 0017; 0076 notes where it must be installed).
+      const name = ident(derivedName("tg", step.table, step.column));
+      const query = sql`create index ${sql.raw(concurrently ? "concurrently " : "")}${name} on ${table} using gin (${ident(step.column)} gin_trgm_ops)`;
+      return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently, ownTransaction: false }];
+    }
+    case "drop_search_index": {
+      const query = sql`drop index ${sql.raw(concurrently ? "concurrently " : "")}${indexRef(derivedName("tg", step.table, step.column))}`;
       return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently, ownTransaction: false }];
     }
     case "add_foreign_key": {

@@ -49,7 +49,7 @@ const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 /** The shape after one step. Used to build plans and, by apply.ts, to record the applied shape. */
 export function applyStepToShape(shape: TableShape | null, step: PlanStep): TableShape | null {
   if (step.kind === "create_table") {
-    return { table: step.table, columns: Object.fromEntries(step.columns.map((c) => [c.name, { ...c, requiredWhenPublished: false, unique: false, indexed: false, foreignKey: undefined }])) };
+    return { table: step.table, columns: Object.fromEntries(step.columns.map((c) => [c.name, { ...c, requiredWhenPublished: false, unique: false, indexed: false, foreignKey: undefined, searchIndexed: undefined }])) };
   }
   if (step.kind === "drop_table") return null;
   if (!shape) throw new Error(`Step ${step.kind} needs an existing table`);
@@ -62,7 +62,7 @@ export function applyStepToShape(shape: TableShape | null, step: PlanStep): Tabl
   switch (step.kind) {
     case "add_column":
       if (next.columns[step.column.name]) throw new Error(`Step add_column: column "${step.column.name}" already exists`);
-      next.columns[step.column.name] = { ...step.column, requiredWhenPublished: false, unique: false, indexed: false, foreignKey: undefined };
+      next.columns[step.column.name] = { ...step.column, requiredWhenPublished: false, unique: false, indexed: false, foreignKey: undefined, searchIndexed: undefined };
       break;
     case "drop_column":
       column(step.column);
@@ -83,7 +83,7 @@ export function applyStepToShape(shape: TableShape | null, step: PlanStep): Tabl
       break;
     case "replace_column":
       column(step.column.name);
-      next.columns[step.column.name] = { ...step.column, requiredWhenPublished: false, unique: false, indexed: false, foreignKey: undefined };
+      next.columns[step.column.name] = { ...step.column, requiredWhenPublished: false, unique: false, indexed: false, foreignKey: undefined, searchIndexed: undefined };
       break;
     case "backfill_column":
     case "drop_field_metadata":
@@ -99,6 +99,12 @@ export function applyStepToShape(shape: TableShape | null, step: PlanStep): Tabl
       break;
     case "drop_index":
       column(step.column)[step.unique ? "unique" : "indexed"] = false;
+      break;
+    case "add_search_index":
+      column(step.column).searchIndexed = true;
+      break;
+    case "drop_search_index":
+      delete column(step.column).searchIndexed;
       break;
     case "add_foreign_key":
       column(step.column).foreignKey = { onDelete: step.onDelete };
@@ -127,6 +133,7 @@ function constraintAdds(table: string, target: ColumnShape, stage: PlanStep["sta
   if (target.requiredWhenPublished) steps.push({ kind: "set_required", stage, table, column: target.name });
   if (target.unique) steps.push({ kind: "add_index", stage, table, column: target.name, unique: true });
   if (target.indexed) steps.push({ kind: "add_index", stage, table, column: target.name, unique: false });
+  if (target.searchIndexed) steps.push({ kind: "add_search_index", stage, table, column: target.name });
   if (target.foreignKey) steps.push({ kind: "add_foreign_key", stage, table, column: target.name, onDelete: target.foreignKey.onDelete });
   return steps;
 }
@@ -134,8 +141,8 @@ function constraintAdds(table: string, target: ColumnShape, stage: PlanStep["sta
 // Expand-stage order: renames, then relaxations (drops of constraints), then type changes, then new
 // columns, then new constraints. Destructive stage: drops, then replacements and their constraints.
 const EXPAND_ORDER: PlanStep["kind"][] = [
-  "rename_column", "drop_foreign_key", "drop_index", "drop_required", "change_type", "change_field_type",
-  "create_table", "add_column", "backfill_column", "set_required", "add_index", "add_foreign_key", "drop_field_metadata",
+  "rename_column", "drop_foreign_key", "drop_index", "drop_search_index", "drop_required", "change_type", "change_field_type",
+  "create_table", "add_column", "backfill_column", "set_required", "add_index", "add_search_index", "add_foreign_key", "drop_field_metadata",
 ];
 const orderOf = (kind: PlanStep["kind"]) => {
   const index = EXPAND_ORDER.indexOf(kind);
@@ -176,7 +183,7 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
   const targetShape = shapeForSchema(input.table, target, input.currentShape, input.renames);
   const indexes = indexCount(targetShape);
   if (indexes > limits.maxIndexesPerModel) {
-    problems.push({ code: "cap_exceeded", message: `A model can have at most ${limits.maxIndexesPerModel} indexed fields (unique, indexed or relation); this one has ${indexes}.` });
+    problems.push({ code: "cap_exceeded", message: `A model can have at most ${limits.maxIndexesPerModel} indexes (unique, indexed, relation or search); this one has ${indexes}.` });
   }
 
   // A column whose field is no longer in the schema the table was last planned to is waiting for its
@@ -277,6 +284,7 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
       }
       if (have.unique && !want.unique) drafts.push({ kind: "drop_index", stage: "expand", table, column: want.name, unique: true });
       if (have.indexed && !want.indexed) drafts.push({ kind: "drop_index", stage: "expand", table, column: want.name, unique: false });
+      if (have.searchIndexed && !want.searchIndexed) drafts.push({ kind: "drop_search_index", stage: "expand", table, column: want.name });
       if (have.requiredWhenPublished && !want.requiredWhenPublished) drafts.push({ kind: "drop_required", stage: "expand", table, column: want.name });
       if (have.pgType !== want.pgType) {
         drafts.push({ kind: "change_type", stage: "expand", table, column: want.name, from: have.pgType, to: want.pgType, fromField: have.fieldType, toField: want.fieldType });
@@ -289,6 +297,7 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
       }
       if (!have.unique && want.unique) drafts.push({ kind: "add_index", stage: "expand", table, column: want.name, unique: true });
       if (!have.indexed && want.indexed) drafts.push({ kind: "add_index", stage: "expand", table, column: want.name, unique: false });
+      if (!have.searchIndexed && want.searchIndexed) drafts.push({ kind: "add_search_index", stage: "expand", table, column: want.name });
       if (want.foreignKey && (!have.foreignKey || want.foreignKey.onDelete !== have.foreignKey.onDelete)) {
         drafts.push({ kind: "add_foreign_key", stage: "expand", table, column: want.name, onDelete: want.foreignKey.onDelete });
       }

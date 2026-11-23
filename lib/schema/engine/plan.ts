@@ -43,6 +43,11 @@ export interface ColumnShape {
   indexed: boolean;
   /** To-one relation: FK to public.content_entries(id), plus an index on the column. */
   foreignKey?: { onDelete: ForeignKeyAction };
+  /**
+   * pg_trgm GIN index on the column, for search (prose text fields: see SEARCH_FIELD_TYPES). Present
+   * only when true, so shapes recorded before this flag existed keep their hashes.
+   */
+  searchIndexed?: true;
 }
 
 /**
@@ -96,6 +101,9 @@ export type PlanStep = StepBase & (
   /** Built CONCURRENTLY by the runner. A unique index fails on duplicates: see blockingRows. */
   | { kind: "add_index"; table: string; column: string; unique: boolean; blockingRows?: number }
   | { kind: "drop_index"; table: string; column: string; unique: boolean }
+  /** pg_trgm GIN index (gin_trgm_ops) for search, built CONCURRENTLY by the runner. */
+  | { kind: "add_search_index"; table: string; column: string }
+  | { kind: "drop_search_index"; table: string; column: string }
   /** NOT VALID, then VALIDATE. */
   | { kind: "add_foreign_key"; table: string; column: string; onDelete: ForeignKeyAction }
   | { kind: "drop_foreign_key"; table: string; column: string }

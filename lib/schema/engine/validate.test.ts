@@ -65,7 +65,7 @@ describe("validatePlan (plans read back from the ledger)", () => {
     expect(refusal(forge(p, (c) => { c.targetShapeHash = c.baseShapeHash; c.targetShape = c.baseShape; }))).toBe("invalid_plan");
 
     const mixed = plan(v1, model(f("title"), f("extra")));
-    expect(mixed.steps.map((s) => s.stage)).toEqual(["expand", "destructive"]);
+    expect(mixed.steps.map((s) => s.stage)).toEqual(["expand", "expand", "destructive"]);
     expect(refusal(forge(mixed, (c) => { c.steps.reverse(); }))).toBe("invalid_plan");
   });
 
