@@ -50,7 +50,7 @@ https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/crea
 1. Open the quick-create link while signed in to your AWS account, and check the region in the top-right corner.
 2. Fill in **Email for the budget alert**, then choose how you'll reach the site. The template refuses to start without one of these:
    - **Your domain** (for example `cms.example.com`): the site gets HTTPS and setup is at `https://<domain>/setup`.
-   - Or **Your IP address for SSH** and **EC2 key pair**: setup goes through an SSH tunnel. Find your address by searching "what is my IP", and add `/32`. You also need SSH with a domain, to read the setup code from the server's log, so setting both is best.
+   - Or **Your IP address for SSH** and **EC2 key pair**: setup goes through an SSH tunnel. Find your address by searching "what is my IP", and add `/32`. With a domain, SSH is optional: the setup code is also shown in the AWS console.
    - **Where the database runs**: `managed` (recommended) or `on-this-server` (cheaper).
 3. Tick **I acknowledge that AWS CloudFormation might create IAM resources**. That's the server's role, shown in the template.
 4. **Create stack**. It takes about 10 to 15 minutes.
@@ -59,11 +59,11 @@ From the command line, `aws cloudformation validate-template` and a change set (
 
 ## After launch
 
-The stack's **Outputs** tab has `SetupAddress`, `PublicIp`, `SshTunnel`, `DatabaseSecretArn` (set on the server as `POLYNOVEA_DB_SECRET_REF`) and `BucketName`.
+The stack's **Outputs** tab has `SetupAddress`, `SetupCode`, `PublicIp`, `SshTunnel`, `DatabaseSecretArn` (set on the server as `POLYNOVEA_DB_SECRET_REF`) and `BucketName`.
 
 1. **With a domain**, point its A record at `PublicIp`. Caddy gets the certificate within a few minutes of that.
 2. **First boot takes several minutes** on plain Ubuntu: it installs updates, Docker and the CMS. Progress: `sudo journalctl -u polynovea-bootstrap -f`.
-3. **Find the setup code** in the CMS's log over SSH: `sudo journalctl -t polynovea | grep -i setup`.
+3. **Find the setup code.** In the AWS console: **EC2 → Instances →** select `<stack name>-server` **→ Actions → Monitor and troubleshoot → Get system log**, and look for the line with "Setup code". It appears a few minutes after the server starts (refresh if it isn't there yet), and only until setup is finished. It works once and expires after an hour. Anyone in this AWS account who can read the system log can see it during that time. Over SSH: `sudo journalctl -t polynovea | grep -i "setup code"`.
 4. **Open the wizard** at `SetupAddress`: `https://<domain>/setup`, or, without a domain, `http://localhost:3000/setup` while the `SshTunnel` command is running.
 5. **Database step**: `managed` → **Created for you**. `on-this-server` → **On this server**, with **Amazon S3 bucket**; the wizard suggests the bucket.
 

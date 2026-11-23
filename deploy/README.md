@@ -25,8 +25,8 @@ The CMS listens on the server itself only (127.0.0.1:3000). There are two ways i
 
 | You set | Ports open to the internet | Setup wizard | Setup code |
 | --- | --- | --- | --- |
-| A domain (`Domain` / `domain`) | 80 and 443, answered by Caddy, which gets a free Let's Encrypt certificate once the domain's A record points at the server's `PublicIp` | `https://<domain>/setup` | In the server's log, over SSH: `sudo journalctl -t polynovea` |
-| No domain, your IP address (`AdminCidr` / `adminCidr`) and an SSH key | Only SSH, from your address | `http://localhost:3000/setup` through the SSH tunnel from the `SshTunnel` output | The same log, in the same SSH session |
+| A domain (`Domain` / `domain`) | 80 and 443, answered by Caddy, which gets a free Let's Encrypt certificate once the domain's A record points at the server's `PublicIp` | `https://<domain>/setup` | In the cloud console (the `SetupCode` output has the exact clicks), or over SSH |
+| No domain, your IP address (`AdminCidr` / `adminCidr`) and an SSH key | Only SSH, from your address | `http://localhost:3000/setup` through the SSH tunnel from the `SshTunnel` output | The same, or in the SSH session |
 
 With a domain set, the wizard refuses the SSH tunnel: once the site has a public address, setup must happen on that address.
 
@@ -42,7 +42,7 @@ The template writes non-secret settings to `/etc/polynovea/polynovea.env`, using
 | `POLYNOVEA_DOMAIN`, `POLYNOVEA_ACME_EMAIL` | When a domain is given: turns on HTTPS through Caddy |
 | `POLYNOVEA_IMAGE_REF`, `POLYNOVEA_CADDY_IMAGE_REF` | The CMS and Caddy images, pinned by digest, when given. A Polynovea server image already carries both. |
 
-The image sets `HOSTNAME`, `PORT`, `POLYNOVEA_TRUSTED_PROXIES` and `POLYNOVEA_CONFIG_DIR` itself; the templates never do.
+The release package sets `HOSTNAME`, `PORT` and `POLYNOVEA_CONFIG_DIR` itself, and `POLYNOVEA_TRUSTED_PROXIES` (to 127.0.0.1) only when a domain is set. The templates never set any of them.
 
 The secret holds JSON with `host`, `port`, `username`, `password` and `dbname`, the shape `lib/setup/database/createdForYou.ts` reads. `deploy/templates.test.ts` checks that every template produces a reference and a secret that parser accepts.
 

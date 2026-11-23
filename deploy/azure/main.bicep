@@ -417,7 +417,7 @@ resource dataDisk 'Microsoft.Compute/disks@2024-03-02' = {
 
 // Custom data is readable on the VM and kept by cloud-init, so it holds no secrets: only the secret's
 // URI, the storage names, the domain and the image digests. The keys are the release package's
-// contract; the image itself sets HOSTNAME, PORT, POLYNOVEA_TRUSTED_PROXIES and POLYNOVEA_CONFIG_DIR.
+// contract; the release package sets HOSTNAME, PORT, POLYNOVEA_TRUSTED_PROXIES and POLYNOVEA_CONFIG_DIR.
 var settings = join(
   [
     '# Written by the Polynovea Azure template. Non-secret values only.'
@@ -552,6 +552,9 @@ resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
 output setupAddress string = hasDomain
   ? 'https://${domain}/setup (after the domain\'s A record points at ${publicIp.properties.ipAddress})'
   : 'http://localhost:3000/setup, through the sshTunnel command'
+
+@description('Where to find the one-time setup code the wizard asks for. It is shown only until setup is finished, works once and expires after an hour. Anyone in this subscription who can read the VM\'s serial console can see it during that time.')
+output setupCode string = 'Azure portal > Virtual machines > ${prefix}-vm > Help > Serial console (or Help > Boot diagnostics > Serial log). Look for the line with "Setup code" (it appears a few minutes after the VM starts; refresh if it isn\'t there yet).'
 
 @description('SSH from adminCidr with your key. Without a domain this is also the route into the setup wizard.')
 output sshTunnel string = !hasAdminCidr

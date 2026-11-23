@@ -6,9 +6,11 @@
 //
 //   node deploy/scripts/sync-vm-bootstrap.mjs                  # from the repo's release package files
 //   node deploy/scripts/sync-vm-bootstrap.mjs --from <dir> ... # from other folders (searched in order)
+//   node deploy/scripts/sync-vm-bootstrap.mjs --git <commit>   # from a commit of the release package
 //   node deploy/scripts/sync-vm-bootstrap.mjs --check          # exit 1 if anything is out of date
 //
 // deploy/templates.test.ts runs the same check whenever the release package's files are present.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
@@ -30,9 +32,11 @@ export const VM_FILES = [
   "run-caddy.sh",
   "has-domain.sh",
   "data-disk.sh",
+  "console-code.sh",
   "Caddyfile",
   "polynovea-data-disk.service",
   "var-lib-polynovea.mount",
+  "polynovea-console-code.service",
   "polynovea.service",
   "polynovea-caddy.service",
   "provision.sh",
@@ -108,23 +112,34 @@ if [ ! -f /etc/systemd/system/polynovea.service ]; then
   rm -rf "$FILES"
   install -d -m 0700 "$FILES"
 ${parts.join("")}
+  # provision.sh installs, pulls by digest and, with POLYNOVEA_START_NOW=1, starts the units itself.
   POLYNOVEA_IMAGE_REF="$(value POLYNOVEA_IMAGE_REF)" \\
   POLYNOVEA_CADDY_IMAGE_REF="$(value POLYNOVEA_CADDY_IMAGE_REF)" \\
   POLYNOVEA_RELEASE_ID=cloud-template \\
   POLYNOVEA_CLOUD="$CLOUD" \\
+  POLYNOVEA_FILES="$FILES" \\
+  POLYNOVEA_START_NOW=1 \\
     sh "$FILES/provision.sh"
+  STARTED=1
+else
+  STARTED=0
 fi
 
-# The release package's signature check, when it provides one (exit non-zero = refuse to start).
+# The release package's signature check, when it provides one (exit non-zero = refuse to start;
+# on plain Ubuntu the units are already starting, and the trap above stops and disables them).
 if [ -x "$VERIFY" ]; then
   "$VERIFY"
 else
   echo "polynovea-bootstrap: no $VERIFY in this release; images are trusted by digest only" >&2
 fi
 
-systemctl daemon-reload
-systemctl start polynovea-data-disk.service var-lib-polynovea.mount
-systemctl restart polynovea.service polynovea-caddy.service
+# A Polynovea server image started its units at boot, before user data wrote the settings: restart
+# them so they read the settings.
+if [ "$STARTED" = 0 ]; then
+  systemctl daemon-reload
+  systemctl start polynovea-data-disk.service var-lib-polynovea.mount
+  systemctl restart polynovea-console-code.service polynovea.service polynovea-caddy.service
+fi
 `;
 }
 
@@ -167,15 +182,46 @@ export function expectedOutputs(contents, root = ROOT) {
   return out;
 }
 
+/** The VM files' contents at a git commit (DEFAULT_SOURCES layout). Null when any is missing. */
+export function contentsAtCommit(rev, root = ROOT) {
+  const contents = {};
+  for (const name of VM_FILES) {
+    const text = DEFAULT_SOURCES.map((dir) => {
+      try {
+        return execFileSync("git", ["show", `${rev}:${dir}/${name}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      } catch {
+        return null;
+      }
+    }).find((t) => t !== null);
+    if (text == null) return null;
+    contents[name] = text;
+  }
+  return contents;
+}
+
 function main(argv) {
   const check = argv.includes("--check");
   const from = argv.flatMap((a, i) => (argv[i - 1] === "--from" ? [a] : []));
-  const sources = findSources(from.length ? from.map((d) => path.resolve(d)) : DEFAULT_SOURCES);
-  if (!sources) {
-    console.error(`The release package's VM files were not found in: ${(from.length ? from : DEFAULT_SOURCES).join(", ")}`);
-    process.exit(2);
+  const rev = argv[argv.indexOf("--git") + 1];
+  let contents;
+  if (argv.includes("--git")) {
+    if (!rev || !/^[A-Za-z0-9._/-]+$/.test(rev)) {
+      console.error("--git needs a commit, branch or tag");
+      process.exit(2);
+    }
+    contents = contentsAtCommit(rev);
+    if (!contents) {
+      console.error(`The release package's VM files were not all found at ${rev} in: ${DEFAULT_SOURCES.join(", ")}`);
+      process.exit(2);
+    }
+  } else {
+    const sources = findSources(from.length ? from.map((d) => path.resolve(d)) : DEFAULT_SOURCES);
+    if (!sources) {
+      console.error(`The release package's VM files were not found in: ${(from.length ? from : DEFAULT_SOURCES).join(", ")}`);
+      process.exit(2);
+    }
+    contents = Object.fromEntries(Object.entries(sources).map(([name, file]) => [name, readFileSync(file, "utf8")]));
   }
-  const contents = Object.fromEntries(Object.entries(sources).map(([name, file]) => [name, readFileSync(file, "utf8")]));
   const stale = [];
   for (const [file, text] of Object.entries(expectedOutputs(contents))) {
     const target = path.resolve(ROOT, file);
