@@ -20,7 +20,7 @@ const UDT: Record<string, PgColumnType> = {
 };
 const FK_ACTION: Record<string, ForeignKeyAction> = { r: "restrict", n: "set_null" };
 
-type PhysicalColumn = Omit<ColumnShape, "fieldType">;
+type PhysicalColumn = Omit<ColumnShape, "fieldType" | "field">;
 
 /**
  * The table as PostgreSQL's catalog describes it, in shape form (without field types, which are not
@@ -29,7 +29,7 @@ type PhysicalColumn = Omit<ColumnShape, "fieldType">;
 export async function physicalShape(query: (text: string, values?: unknown[]) => Promise<Record<string, unknown>[]>, table: string): Promise<Record<string, PhysicalColumn> | null> {
   const columns = await query(
     `select column_name, udt_name, is_nullable from information_schema.columns
-     where table_schema = 'content' and table_name = $1 and column_name not in ('entry_id', 'variant', 'locale')`, [table]);
+     where table_schema = 'content' and table_name = $1 and column_name not in ('_entry_id', '_variant', '_locale')`, [table]);
   const exists = await query("select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'content' and c.relname = $1", [table]);
   if (!exists.length) return null;
   const indexes = new Set((await query("select indexname from pg_indexes where schemaname = 'content' and tablename = $1", [table])).map((r) => String(r.indexname)));
@@ -59,7 +59,7 @@ export async function physicalShape(query: (text: string, values?: unknown[]) =>
 /** A shape without field types, for comparison with physicalShape. */
 export function physicalOf(shape: TableShape | null): Record<string, PhysicalColumn> | null {
   if (!shape) return null;
-  return Object.fromEntries(Object.values(shape.columns).map(({ fieldType: _fieldType, ...rest }) => [rest.name, rest]));
+  return Object.fromEntries(Object.values(shape.columns).map(({ fieldType: _fieldType, field: _field, ...rest }) => [rest.name, rest]));
 }
 
 /** Test databases keep every run's model tables, so the tests lift the install-wide model cap. */

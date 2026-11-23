@@ -3,11 +3,11 @@
 // { renderStep, computePlanHash, validatePlan, assertStageCurrent, applyStageBookkeeping }.
 export * from "@/lib/schema/engine/plan";
 export { canonicalJson, hashCanonical, hashModelSchema, hashShape } from "@/lib/schema/engine/hash";
-export { NAME_PATTERN, nameProblem, POSTGRES_RESERVED_WORDS, tableNameCandidates, derivedName, assertIdentifier } from "@/lib/schema/engine/names";
+export { KEY_PATTERN, COLUMN_NAME_PATTERN, STORAGE_COLUMNS, nameProblem, columnNameFor, tableNameCandidates, derivedName, assertIdentifier } from "@/lib/schema/engine/names";
 export { DEFAULT_SCHEMA_LIMITS, SCHEMA_LIMIT_ENV, schemaLimitsFromEnv, type SchemaLimits } from "@/lib/schema/engine/limits";
-export { columnForField, shapeForSchema, isLosslessTypeChange, FOREIGN_KEY_ACTIONS } from "@/lib/schema/engine/columns";
+export { columnForField, columnOfField, shapeForSchema, isLosslessTypeChange, FOREIGN_KEY_ACTIONS } from "@/lib/schema/engine/columns";
 export { buildMigrationPlan, applyStepToShape, computePlanHash, type FieldRename, type PlanInput } from "@/lib/schema/engine/planner";
-export { describeStep, describePlan, type DescribeContext } from "@/lib/schema/engine/describe";
+export { describeStep, describePlan, describeContextFor, type DescribeContext } from "@/lib/schema/engine/describe";
 export { renderStep, CONTENT_SCHEMA, type RenderOptions } from "@/lib/schema/engine/render";
 export { countDestructiveImpact } from "@/lib/schema/engine/impact";
 export { validatePlan, DATA_DELETING_STEPS } from "@/lib/schema/engine/validate";

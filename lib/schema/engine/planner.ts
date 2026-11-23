@@ -2,8 +2,8 @@
 // the ordered steps that get from one to the other. Pure: no database access. Inputs that need the
 // database (the current shape, reserved names, model count) are loaded by apply.ts.
 import { canonicalJson, hashCanonical, hashModelSchema, hashShape } from "@/lib/schema/engine/hash";
-import { columnForField, hasNoColumn, indexCount, isLosslessTypeChange, shapeForSchema } from "@/lib/schema/engine/columns";
-import { describeStep, type DescribeContext } from "@/lib/schema/engine/describe";
+import { columnOfField, hasNoColumn, indexCount, isLosslessTypeChange, shapeForSchema } from "@/lib/schema/engine/columns";
+import { describeStep, fieldsByColumn, type DescribeContext } from "@/lib/schema/engine/describe";
 import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "@/lib/schema/engine/limits";
 import { nameProblem, TABLE_NAME_PATTERN } from "@/lib/schema/engine/names";
 import type { ColumnShape, MigrationPlan, PlanProblem, PlanResult, PlanStep, TableShape } from "@/lib/schema/engine/plan";
@@ -68,9 +68,9 @@ export function applyStepToShape(shape: TableShape | null, step: PlanStep): Tabl
       break;
     case "rename_column": {
       const current = column(step.from);
-      if (next.columns[step.to]) throw new Error(`Step rename_column: column "${step.to}" already exists`);
+      if (step.to !== step.from && next.columns[step.to]) throw new Error(`Step rename_column: column "${step.to}" already exists`);
       delete next.columns[step.from];
-      next.columns[step.to] = { ...current, name: step.to };
+      next.columns[step.to] = { ...current, name: step.to, field: step.field };
       break;
     }
     case "change_type":
@@ -168,13 +168,10 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
     if (problem) problems.push(problem);
     if (seen.has(field.key)) problems.push({ code: "invalid_schema", message: `Field key "${field.key}" is used twice.` });
     seen.add(field.key);
-    if (field.type === "relation" && !field.relation) {
-      problems.push({ code: "invalid_schema", message: `Relation field "${field.key}" needs a target model.` });
-    }
   }
   if (problems.length) return problems;
 
-  const targetShape = shapeForSchema(input.table, target);
+  const targetShape = shapeForSchema(input.table, target, input.currentShape, input.renames);
   const indexes = indexCount(targetShape);
   if (indexes > limits.maxIndexesPerModel) {
     problems.push({ code: "cap_exceeded", message: `A model can have at most ${limits.maxIndexesPerModel} indexed fields (unique, indexed or relation); this one has ${indexes}.` });
@@ -182,8 +179,7 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
 
   const deleted = new Set(input.reservedFieldNames ?? []);
   const renamedAway = new Set(input.renamedFieldNames ?? []);
-  const currentColumns = input.currentShape?.columns ?? {};
-  const currentFieldKeys = new Set([...Object.keys(currentColumns), ...(input.currentSchema?.fields.map((f) => f.key) ?? [])]);
+  const currentFieldKeys = new Set([...Object.values(input.currentShape?.columns ?? {}).map((c) => c.field), ...(input.currentSchema?.fields.map((f) => f.key) ?? [])]);
   const renamedTo = new Set((input.renames ?? []).map((r) => r.to));
   for (const field of target.fields) {
     const isNew = !currentFieldKeys.has(field.key);
@@ -197,10 +193,13 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
   const tos = new Set<string>();
   for (const rename of input.renames ?? []) {
     const bad = (why: string) => problems.push({ code: "invalid_rename", message: `Cannot rename "${rename.from}" to "${rename.to}": ${why}.` });
-    if (!currentColumns[rename.from]) bad(`"${rename.from}" is not a stored field`);
-    else if (targetShape.columns[rename.from]) bad(`"${rename.from}" is still in the model`);
-    else if (!targetShape.columns[rename.to]) bad(`"${rename.to}" is not a stored field in the new model`);
-    else if (currentColumns[rename.to]) bad(`"${rename.to}" already exists`);
+    const old = columnOfField(input.currentShape, rename.from);
+    const next = columnOfField(targetShape, rename.to);
+    if (!old) bad(`"${rename.from}" is not a stored field`);
+    else if (target.fields.some((f) => f.key === rename.from)) bad(`"${rename.from}" is still in the model`);
+    else if (!next) bad(`"${rename.to}" is not a stored field in the new model`);
+    else if (columnOfField(input.currentShape, rename.to)) bad(`"${rename.to}" already exists`);
+    else if (!isLosslessTypeChange(old.pgType, next.pgType)) bad("a rename keeps the stored values, so the new field must hold the same kind of value");
     else if (froms.has(rename.from) || tos.has(rename.to)) bad("each field can be renamed once per change");
     froms.add(rename.from);
     tos.add(rename.to);
@@ -221,7 +220,7 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
 
   const { table, targetSchema: target } = input;
   const current = normalizeShape(input.currentShape);
-  const targetShape = target ? normalizeShape(shapeForSchema(table, target)) : null;
+  const targetShape = target ? normalizeShape(shapeForSchema(table, target, current, input.renames)) : null;
   const drafts: Draft[] = [];
   const notes: string[] = [];
 
@@ -229,24 +228,26 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
     if (current) drafts.push({ kind: "drop_table", stage: "destructive", table });
   } else if (!current) {
     // Columns in the model's field order (the shape itself is keyed, so its order carries no meaning).
-    const columns = target.fields.flatMap((field) => (targetShape!.columns[field.key] ? [targetShape!.columns[field.key]] : []));
+    const columns = target.fields.flatMap((field) => { const column = columnOfField(targetShape, field.key); return column ? [column] : []; });
     drafts.push({ kind: "create_table", stage: "expand", table, columns });
     for (const field of target.fields) {
-      const column = targetShape!.columns[field.key];
+      const column = columnOfField(targetShape, field.key);
       if (column) drafts.push(...constraintAdds(table, column, "expand", undefined));
     }
   } else {
     const work = clone(current);
     for (const rename of input.renames ?? []) {
-      drafts.push({ kind: "rename_column", stage: "expand", table, from: rename.from, to: rename.to, column: work.columns[rename.from] });
-      work.columns[rename.to] = { ...work.columns[rename.from], name: rename.to };
-      delete work.columns[rename.from];
+      const old = columnOfField(work, rename.from)!;
+      const to = columnOfField(targetShape, rename.to)!.name;
+      drafts.push({ kind: "rename_column", stage: "expand", table, from: old.name, to, field: rename.to, column: old });
+      delete work.columns[old.name];
+      work.columns[to] = { ...old, name: to, field: rename.to };
     }
 
     for (const field of target.fields) {
-      const want = targetShape!.columns[field.key];
+      const want = columnOfField(targetShape, field.key);
       if (!want) continue;
-      const have = work.columns[field.key];
+      const have = columnOfField(work, field.key);
       if (!have) {
         drafts.push({ kind: "add_column", stage: "expand", table, column: want });
         drafts.push(...constraintAdds(table, want, "expand", field.defaultValue ?? undefined));
@@ -258,29 +259,29 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
         continue;
       }
       if (have.foreignKey && (!want.foreignKey || want.foreignKey.onDelete !== have.foreignKey.onDelete)) {
-        drafts.push({ kind: "drop_foreign_key", stage: "expand", table, column: field.key });
+        drafts.push({ kind: "drop_foreign_key", stage: "expand", table, column: want.name });
       }
-      if (have.unique && !want.unique) drafts.push({ kind: "drop_index", stage: "expand", table, column: field.key, unique: true });
-      if (have.indexed && !want.indexed) drafts.push({ kind: "drop_index", stage: "expand", table, column: field.key, unique: false });
-      if (have.requiredWhenPublished && !want.requiredWhenPublished) drafts.push({ kind: "drop_required", stage: "expand", table, column: field.key });
+      if (have.unique && !want.unique) drafts.push({ kind: "drop_index", stage: "expand", table, column: want.name, unique: true });
+      if (have.indexed && !want.indexed) drafts.push({ kind: "drop_index", stage: "expand", table, column: want.name, unique: false });
+      if (have.requiredWhenPublished && !want.requiredWhenPublished) drafts.push({ kind: "drop_required", stage: "expand", table, column: want.name });
       if (have.pgType !== want.pgType) {
-        drafts.push({ kind: "change_type", stage: "expand", table, column: field.key, from: have.pgType, to: want.pgType, fromField: have.fieldType, toField: want.fieldType });
+        drafts.push({ kind: "change_type", stage: "expand", table, column: want.name, from: have.pgType, to: want.pgType, fromField: have.fieldType, toField: want.fieldType });
       } else if (have.fieldType !== want.fieldType) {
-        drafts.push({ kind: "change_field_type", stage: "expand", table, column: field.key, fromField: have.fieldType, toField: want.fieldType });
+        drafts.push({ kind: "change_field_type", stage: "expand", table, column: want.name, fromField: have.fieldType, toField: want.fieldType });
       }
       if (!have.requiredWhenPublished && want.requiredWhenPublished) {
-        if (field.defaultValue !== undefined) drafts.push({ kind: "backfill_column", stage: "expand", table, column: field.key, pgType: want.pgType, value: field.defaultValue });
-        drafts.push({ kind: "set_required", stage: "expand", table, column: field.key });
+        if (field.defaultValue !== undefined) drafts.push({ kind: "backfill_column", stage: "expand", table, column: want.name, pgType: want.pgType, value: field.defaultValue });
+        drafts.push({ kind: "set_required", stage: "expand", table, column: want.name });
       }
-      if (!have.unique && want.unique) drafts.push({ kind: "add_index", stage: "expand", table, column: field.key, unique: true });
-      if (!have.indexed && want.indexed) drafts.push({ kind: "add_index", stage: "expand", table, column: field.key, unique: false });
+      if (!have.unique && want.unique) drafts.push({ kind: "add_index", stage: "expand", table, column: want.name, unique: true });
+      if (!have.indexed && want.indexed) drafts.push({ kind: "add_index", stage: "expand", table, column: want.name, unique: false });
       if (want.foreignKey && (!have.foreignKey || want.foreignKey.onDelete !== have.foreignKey.onDelete)) {
-        drafts.push({ kind: "add_foreign_key", stage: "expand", table, column: field.key, onDelete: want.foreignKey.onDelete });
+        drafts.push({ kind: "add_foreign_key", stage: "expand", table, column: want.name, onDelete: want.foreignKey.onDelete });
       }
     }
 
     for (const name of Object.keys(work.columns).sort()) {
-      if (!targetShape!.columns[name]) drafts.push({ kind: "drop_column", stage: "destructive", table, column: name });
+      if (!targetShape!.columns[name]) drafts.push({ kind: "drop_column", stage: "destructive", table, column: name, field: work.columns[name].field });
     }
     const targetKeys = new Set(target.fields.map((f) => f.key));
     const renamedFrom = new Set((input.renames ?? []).map((r) => r.from));
@@ -301,7 +302,11 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
   const indexed = drafts.map((draft, position) => ({ draft, position }));
   const expand = indexed.filter((d) => d.draft.stage === "expand").sort((a, b) => orderOf(a.draft.kind) - orderOf(b.draft.kind) || a.position - b.position);
   const destructive = indexed.filter((d) => d.draft.stage === "destructive");
-  const context: DescribeContext = { modelName: target?.name ?? input.currentSchema?.name ?? input.modelApiKey, schemas: [target, input.currentSchema ?? null] };
+  const context: DescribeContext = {
+    modelName: target?.name ?? input.currentSchema?.name ?? input.modelApiKey,
+    schemas: [target, input.currentSchema ?? null],
+    fieldByColumn: fieldsByColumn(current, targetShape),
+  };
   const steps = [...expand, ...destructive].map(({ draft }) => ({ ...draft, summary: describeStep(draft as PlanStep, context) }) as PlanStep);
 
   let expandedShape = current;

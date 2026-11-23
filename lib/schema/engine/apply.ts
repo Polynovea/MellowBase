@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import { SchemaEngineError } from "@/lib/schema/engine/errors";
+import { describeContextFor } from "@/lib/schema/engine/describe";
 import { countDestructiveImpact } from "@/lib/schema/engine/impact";
 import { hashShape } from "@/lib/schema/engine/hash";
 import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "@/lib/schema/engine/limits";
@@ -103,7 +104,7 @@ export async function prepareMigrationPlan(db: Executor, input: PrepareInput): P
     reservedModelNames: reserved.models,
   });
   if (!result.ok) return result;
-  const context = { modelName: input.targetSchema?.name ?? input.currentSchema?.name ?? input.model.apiKey, schemas: [input.targetSchema, input.currentSchema] };
+  const context = describeContextFor(result.plan, input.targetSchema?.name ?? input.currentSchema?.name ?? input.model.apiKey, [input.targetSchema, input.currentSchema]);
   return { ok: true, plan: await countDestructiveImpact(db, result.plan, context) };
 }
 
@@ -149,8 +150,8 @@ export async function assertStageCurrent(
     throw new SchemaEngineError("reserved_name", `The model API key "${plan.modelApiKey}" belonged to a model deleted in the last 30 days and cannot be reused yet.`);
   }
   const clash = steps.flatMap((step) => {
-    if (step.kind === "rename_column") return reserved.fields.has(step.to) ? [step.to] : [];
-    const added = step.kind === "add_column" ? [step.column.name] : step.kind === "create_table" ? step.columns.map((c) => c.name) : [];
+    if (step.kind === "rename_column") return reserved.fields.has(step.field) ? [step.field] : [];
+    const added = step.kind === "add_column" ? [step.column.field] : step.kind === "create_table" ? step.columns.map((c) => c.field) : [];
     return added.filter((name) => reserved.fields.has(name) || reserved.renamedFields.has(name));
   })[0];
   if (clash) throw new SchemaEngineError("reserved_name", `The field key "${clash}" was deleted or renamed in the last 30 days and cannot be reused yet.`);
@@ -185,16 +186,16 @@ export async function applyStageBookkeeping(trx: Transaction<DB>, plan: Migratio
   for (const step of steps) {
     switch (step.kind) {
       case "rename_column":
-        await trx.updateTable("content_field_permissions").set({ field_key: step.to, updated_at: sql<string>`now()` })
-          .where("content_model_id", "=", plan.modelId).where("field_key", "=", step.from).execute();
+        await trx.updateTable("content_field_permissions").set({ field_key: step.field, updated_at: sql<string>`now()` })
+          .where("content_model_id", "=", plan.modelId).where("field_key", "=", step.column.field).execute();
         // Renaming back releases the name's own rename reservation.
         await trx.deleteFrom("schema_name_reservations").where("content_model_id", "=", plan.modelId).where("kind", "=", "field")
-          .where("name", "=", step.to).where("reason", "=", "renamed").execute();
-        await reserveName(trx, plan, "field", step.from, "renamed");
+          .where("name", "=", step.field).where("reason", "=", "renamed").execute();
+        await reserveName(trx, plan, "field", step.column.field, "renamed");
         break;
       case "drop_field_metadata":
       case "drop_column": {
-        const field = step.kind === "drop_column" ? step.column : step.field;
+        const field = step.field;
         await deleteFieldPermissions(trx, plan, field);
         await reserveName(trx, plan, "field", field, "deleted");
         break;

@@ -132,11 +132,14 @@ describe("migration plan: changes", () => {
 describe("migration plan: rules and caps", () => {
   const v1 = model(f("title"));
 
-  it("refuses bad names, reserved words and system names", () => {
-    expect(problems(v1, model(f("order")))).toContain("reserved_word");
-    expect(problems(v1, model(f("Title")))).toContain("invalid_name");
-    expect(problems(v1, model(f("ctid")))).toContain("system_name");
-    expect(problems(null, { ...model(f("title")), apiKey: "select" }, { modelApiKey: "select" })).toContain("reserved_word");
+  it("refuses only keys that break the canonical rule; reserved words and system names get safe columns", () => {
+    expect(problems(v1, model(f("Title")))).toEqual(["invalid_name"]);
+    expect(problems(v1, model(f("_x")))).toEqual(["invalid_name"]);
+    expect(problems(v1, model(f("order"), f("ctid"), f("id"), f("locale")))).toEqual([]);
+    expect(problems(null, { ...model(f("title")), apiKey: "select" }, { modelApiKey: "select" })).toEqual([]);
+    const p = plan(null, model(f("order"), f("ctid")));
+    const columns = Object.values(p.targetShape!.columns).map((c) => [c.field, c.name === c.field]);
+    expect(columns.sort()).toEqual([["ctid", false], ["order", true]]);
   });
 
   it("refuses a field or model name reserved after deletion", () => {
@@ -167,7 +170,8 @@ describe("migration plan: rules and caps", () => {
     expect(problems(v1, model(f("headline")), { renames: [{ from: "missing", to: "headline" }] })).toEqual(["invalid_rename"]);
     expect(problems(v1, model(f("title"), f("headline")), { renames: [{ from: "title", to: "headline" }] })).toEqual(["invalid_rename"]);
     expect(problems(v1, { ...v1, apiKey: "article" })).toContain("invalid_schema");
-    expect(problems(v1, model(f("link", "relation")))).toContain("invalid_schema");
+    expect(problems(v1, model(f("link", "relation")))).toEqual([]);
+    expect(problems(model(f("title"), f("n", "integer")), model(f("title"), f("m", "boolean")), { renames: [{ from: "n", to: "m" }] })).toEqual(["invalid_rename"]);
   });
 });
 
