@@ -58,6 +58,7 @@ export async function logPlatformEventDirect(payload: PlatformAuditPayload): Pro
 export async function queueWebhookEventDirect(
   executor: DbExecutor,
   params: { workspaceId: string; eventType: string; eventId: string; payload: Record<string, unknown> },
+  correlationId: string = randomUUID(),
 ): Promise<void> {
   const subscriptions = await executor
     .selectFrom("webhook_subscriptions")
@@ -70,7 +71,6 @@ export async function queueWebhookEventDirect(
   );
   if (!matching.length) return;
 
-  const correlationId = randomUUID();
   for (const subscription of matching) {
     const delivery = await executor
       .insertInto("webhook_deliveries")
