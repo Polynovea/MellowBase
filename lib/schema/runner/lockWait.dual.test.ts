@@ -89,7 +89,7 @@ describe("an index built CONCURRENTLY while a 30-second transaction runs elsewhe
     const model = await h.newModel();
     await h.createTable(model, [column("slug", "text")]);
     const ids = await h.entries(model, 20);
-    for (const id of ids) await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, slug) values ($1, '', 'draft', $1::text)`, [id]);
+    for (const id of ids) await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, slug) values ($1, '', 'draft', $2)`, [id, id]);
     const ledgerId = await h.request(model, h.plan(model, shape(model.table, [column("slug", "text", { unique: true })]),
       [{ kind: "add_index", stage: "expand", column: "slug", unique: true }]));
 
