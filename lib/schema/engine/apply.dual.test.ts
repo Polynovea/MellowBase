@@ -116,7 +116,8 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     expect(String(await errorOf(m.prepare(m.schema(f("title"), f("secret")))))).toMatch(/waiting to be deleted; confirm or cancel that first/);
 
     for (const confirmation of ["", "Post", `${m.apiKey}x`]) {
-      expect(await errorOf(applyDestructiveStage(owner, { ledgerId: awaitingConfirmationId!, confirmation, confirmedBy: m.adminUserId }))).toMatchObject({ code: "confirmation_mismatch" });
+      expect(await errorOf(applyDestructiveStage(owner, { ledgerId: awaitingConfirmationId!, confirmation, confirmedBy: m.adminUserId })))
+        .toMatchObject({ code: "confirmation_mismatch", message: `Type the model's API key (${m.apiKey}) to confirm the deletion.` });
     }
     expect(Object.keys((await physicalShape(backend.query, table))!)).toContain("secret");
 

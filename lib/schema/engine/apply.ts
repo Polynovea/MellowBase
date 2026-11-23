@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import { SchemaEngineError } from "@/lib/schema/engine/errors";
-import { describeContextFor } from "@/lib/schema/engine/describe";
+import { confirmationPrompt, describeContextFor } from "@/lib/schema/engine/describe";
 import { countDestructiveImpact } from "@/lib/schema/engine/impact";
 import { hashShape } from "@/lib/schema/engine/hash";
 import { DEFAULT_SCHEMA_LIMITS, POSTGRES_MAX_COLUMNS, type SchemaLimits } from "@/lib/schema/engine/limits";
@@ -349,7 +349,7 @@ export async function applyDestructiveStage(
       }
       const expected = await expectedConfirmation(trx, row.content_model_id ?? "");
       if (typeof args.confirmation !== "string" || args.confirmation.trim() !== expected) {
-        throw new SchemaEngineError("confirmation_mismatch", `Type the model's API key (${expected}) to confirm the deletion.`);
+        throw new SchemaEngineError("confirmation_mismatch", confirmationPrompt(expected));
       }
       await assertStageCurrent(trx, plan, "destructive", { limits: args.limits });
       await runStage(trx, plan, "destructive");

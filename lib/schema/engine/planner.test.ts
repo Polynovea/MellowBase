@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildMigrationPlan, computePlanHash, type PlanInput } from "@/lib/schema/engine/planner";
-import { withSummaries } from "@/lib/schema/engine/describe";
+import { describePlan, withSummaries } from "@/lib/schema/engine/describe";
 import { shapeForSchema } from "@/lib/schema/engine/columns";
 import { hashShape } from "@/lib/schema/engine/hash";
 import type { MigrationPlan, PlanStep } from "@/lib/schema/engine/plan";
@@ -217,5 +217,13 @@ describe("migration plan: a field waiting to be deleted", () => {
       currentShape: shapeForSchema(TABLE, table), currentSchema: model(f("title")), targetSchema: model(f("title"), f("body", "long_text")),
     });
     expect(result.ok ? [] : result.problems).toEqual([{ code: "pending_deletion", message: 'The field "body" is waiting to be deleted; confirm or cancel that first.' }]);
+  });
+});
+
+describe("plain words: the confirmation", () => {
+  it("asks for the model's API key, not its name", () => {
+    const p = plan(model(f("title"), f("body")), model(f("title")));
+    expect(describePlan(p).at(-1)).toEqual({ stage: "destructive", text: "Type the model's API key (post) to confirm the deletion." });
+    expect(describePlan(plan(model(f("title")), model(f("title"), f("body")))).some((line) => /API key/.test(line.text))).toBe(false);
   });
 });

@@ -88,9 +88,16 @@ export function describeStep(step: PlanStep, context: DescribeContext): string {
   }
 }
 
-/** Every line of the plan, expand stage first. */
+/** What the UI asks before a destructive stage runs. The worker checks the answer against the model row. */
+export function confirmationPrompt(apiKey: string): string {
+  return `Type the model's API key (${apiKey}) to confirm the deletion.`;
+}
+
+/** Every line of the plan, expand stage first, ending with the confirmation prompt when one is needed. */
 export function describePlan(plan: MigrationPlan): { stage: PlanStep["stage"]; text: string }[] {
-  return plan.steps.map((step) => ({ stage: step.stage, text: step.summary }));
+  const lines = plan.steps.map((step) => ({ stage: step.stage, text: step.summary }));
+  if (plan.requiresConfirmation) lines.push({ stage: "destructive", text: confirmationPrompt(plan.modelApiKey) });
+  return lines;
 }
 
 /** Refreshes each step's summary (after impact counts are filled in). */

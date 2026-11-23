@@ -7,7 +7,7 @@ export { KEY_PATTERN, COLUMN_NAME_PATTERN, STORAGE_COLUMNS, nameProblem, columnN
 export { DEFAULT_SCHEMA_LIMITS, SCHEMA_LIMIT_ENV, schemaLimitsFromEnv, type SchemaLimits } from "@/lib/schema/engine/limits";
 export { columnForField, columnOfField, shapeForSchema, isLosslessTypeChange, FOREIGN_KEY_ACTIONS } from "@/lib/schema/engine/columns";
 export { buildMigrationPlan, applyStepToShape, computePlanHash, type FieldRename, type PlanInput } from "@/lib/schema/engine/planner";
-export { describeStep, describePlan, describeContextFor, type DescribeContext } from "@/lib/schema/engine/describe";
+export { describeStep, describePlan, describeContextFor, confirmationPrompt, type DescribeContext } from "@/lib/schema/engine/describe";
 export { renderStep, CONTENT_SCHEMA, type RenderOptions } from "@/lib/schema/engine/render";
 export { countDestructiveImpact } from "@/lib/schema/engine/impact";
 export { validatePlan, DATA_DELETING_STEPS } from "@/lib/schema/engine/validate";
