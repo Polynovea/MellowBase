@@ -1,5 +1,5 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { webQualityPolicyRow } from "@/lib/content/assuranceData";
+import * as siteData from "@/lib/content/siteData";
 
 export interface WebQualityPolicy {
   workspace_id: string;
@@ -91,7 +91,7 @@ export async function saveWebQualityPolicy(params: {
   settings?: Record<string, unknown>;
 }) {
   const current = await getWebQualityPolicy(params.workspaceId);
-  const { data, error } = await createServiceRoleClient().rpc("cms_upsert_web_quality_policy", {
+  const data = await siteData.callUpsertWebQualityPolicy({
     p_workspace_id: params.workspaceId,
     p_actor_id: params.actorId,
     p_site_base_url: params.siteBaseUrl ?? current.site_base_url,
@@ -106,7 +106,6 @@ export async function saveWebQualityPolicy(params: {
     p_media_budget: { ...DEFAULT_MEDIA_BUDGET, ...(params.mediaBudget ?? current.media_budget_json) },
     p_settings: { ...DEFAULT_QUALITY_SETTINGS, ...(params.settings ?? current.settings_json) },
   });
-  if (error || !data) throw new Error(error?.message || "Could not save Web Quality policy");
   return data as WebQualityPolicy;
 }
 
@@ -143,26 +142,18 @@ interface SitemapRow {
 }
 
 export async function getSitemapEntries(workspaceId: string): Promise<{ enabled: boolean; entries: SitemapRow[]; policy: WebQualityPolicy }> {
-  const db = createServiceRoleClient();
   const policy = await getWebQualityPolicy(workspaceId);
   if (!policy.sitemap_enabled) return { enabled: false, entries: [], policy };
-  const { data: routes } = await db.from("content_routes")
-    .select("id,entry_id,locale,path,updated_at,indexing_policy,sitemap_included,sitemap_priority,sitemap_changefreq")
-    .eq("workspace_id", workspaceId).eq("status", "active").eq("is_canonical", true).eq("sitemap_included", true).neq("indexing_policy", "noindex")
-    .order("path");
-  const entryIds = [...new Set((routes ?? []).map((route) => route.entry_id).filter((id): id is string => Boolean(id)))];
-  const { data: entries } = entryIds.length
-    ? await db.from("content_entries").select("id,status,updated_at").eq("workspace_id", workspaceId).in("id", entryIds)
-    : { data: [] as Array<{ id: string; status: string; updated_at: string }> };
-  const entryById = new Map((entries ?? []).map((entry) => [entry.id, entry]));
+  const { routes, entries } = await siteData.sitemapRows(workspaceId);
+  const entryById = new Map(entries.map((entry) => [entry.id, entry]));
   const canonicalByEntry = new Map<string, Array<{ locale: string; path: string }>>();
-  for (const route of routes ?? []) if (route.entry_id) {
+  for (const route of routes) if (route.entry_id) {
     const list = canonicalByEntry.get(route.entry_id) ?? [];
     list.push({ locale: route.locale, path: route.path });
     canonicalByEntry.set(route.entry_id, list);
   }
   const result: SitemapRow[] = [];
-  for (const route of routes ?? []) {
+  for (const route of routes) {
     const entry = route.entry_id ? entryById.get(route.entry_id) : null;
     if (route.entry_id && (!entry || entry.status !== "published")) continue;
     const alternates = route.entry_id ? (canonicalByEntry.get(route.entry_id) ?? []).map((alt) => ({ ...alt, url: absoluteUrl(policy.site_base_url, alt.path) })) : [];
@@ -192,16 +183,8 @@ export async function runSiteDiscoverabilityAudit(workspaceId: string): Promise<
   findings: SiteAuditFinding[];
   toolingBoundary: string;
 }> {
-  const db = createServiceRoleClient();
   const policy = await getWebQualityPolicy(workspaceId);
-  const [routesRes, redirectsRes, entriesRes] = await Promise.all([
-    db.from("content_routes").select("id,entry_id,locale,path,title,parent_route_id,is_canonical,status,indexing_policy,sitemap_included").eq("workspace_id", workspaceId).neq("status", "archived"),
-    db.from("content_redirects").select("id,locale,source_path,target_path,is_active").eq("workspace_id", workspaceId).eq("is_active", true),
-    db.from("content_entries").select("id,status,current_draft_version_id,published_version_id,content_model_id").eq("workspace_id", workspaceId),
-  ]);
-  const routes = routesRes.data ?? [];
-  const redirects = redirectsRes.data ?? [];
-  const entries = entriesRes.data ?? [];
+  const { routes, redirects, entries, versions } = await siteData.siteAuditRows(workspaceId);
   const findings: SiteAuditFinding[] = [];
   const activeRouteKeys = new Set(routes.filter((r) => r.status === "active").map((r) => `${r.locale}:${r.path}`));
   const canonicalEntryIds = new Set(routes.filter((r) => r.is_canonical && r.status === "active" && r.entry_id).map((r) => r.entry_id as string));
@@ -228,10 +211,8 @@ export async function runSiteDiscoverabilityAudit(workspaceId: string): Promise<
     }
   }
 
-  const currentVersionIds = [...new Set(entries.map((e) => e.current_draft_version_id ?? e.published_version_id).filter((id): id is string => Boolean(id)))];
-  const { data: versions } = currentVersionIds.length ? await db.from("content_entry_versions").select("id,entry_id,data_jsonb,locale").in("id", currentVersionIds) : { data: [] as Array<{ id: string; entry_id: string; data_jsonb: Record<string, unknown>; locale: string }> };
   const titleMap = new Map<string, string[]>();
-  for (const version of versions ?? []) {
+  for (const version of versions) {
     const title = pickString(version.data_jsonb, ["seo_title", "meta_title", "title", "name"]);
     if (!title) continue;
     const normalized = title.toLocaleLowerCase();

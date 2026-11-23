@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 wave 3: localization writes (locales, translation links, review, stale marking) and web-quality policy, sitemap and site audit on the direct path; the sitemap and audit no longer stop at 1000 rows, and link and review writes commit with their audit events.
 - Fixed: release previews (`/preview/<token>` for a release) always came back empty on Supabase, because their lookup of entries and models was ambiguous. Preview tokens and saved entry views can run on the direct PostgreSQL path (`content=postgres`).
 - Content search and saved searches can run on the direct PostgreSQL path (`content=postgres`); the saved-search filter uses bound parameters instead of a PostgREST filter string, and a malformed ID filter returns no results instead of an error.
 - Editorial workflow and collaboration (assignments, comments, watchers, the editorial queue) can run on the direct PostgreSQL path (`content=postgres`). **Security:** comment mentions are limited to active workspace members on both paths (a mention notifies its recipient about the entry), and an entry's workflow is read only through the entry's workspace. Fixed: the "My work" queue never listed entry assignments on Supabase (ambiguous relationship).
