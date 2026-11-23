@@ -67,6 +67,9 @@ const editorRow = {
 beforeEach(() => {
   mockCreateServiceRoleClient.mockReset();
   profileRow = null;
+  // Pinned here, never read from the shell: these cases are about the Supabase (bearer) provider,
+  // and the built-in cases set their own.
+  delete process.env.AUTH_PROVIDER;
   profileError = null;
 });
 

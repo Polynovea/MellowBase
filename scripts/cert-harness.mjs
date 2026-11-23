@@ -15,22 +15,15 @@
  * does not trip the per-address sign-in limit.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
 import pg from "pg";
 import { createOTP } from "@better-auth/utils/otp";
 import { base32 } from "@better-auth/utils/base32";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 import { createBuiltinUser } from "../lib/auth/bootstrapOwner.mjs";
+import { loadLocalEnv } from "./lib/loadLocalEnv.mjs";
 
-// Load environment variables from .env.local
-if (existsSync(".env.local")) {
-  for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
-    const match = raw.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (match && !process.env[match[1]]) {
-      process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, "");
-    }
-  }
-}
+// Settings come from the environment; .env.local, when present, fills any that are unset.
+loadLocalEnv();
 
 export const BASE_URL = (process.env.CMS_CERT_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
 const ORIGIN = new URL(BASE_URL).origin;
