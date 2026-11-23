@@ -14,7 +14,7 @@ import type { DB } from "@/lib/db/generated/database";
 import { SchemaEngineError } from "@/lib/schema/engine/errors";
 import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "@/lib/schema/engine/limits";
 import type { MigrationPlan, PlanStage } from "@/lib/schema/engine/plan";
-import { buildMigrationPlan, computePlanHash, type FieldRename } from "@/lib/schema/engine/planner";
+import { buildMigrationPlan, computePlanHash, computeStageHash, type FieldRename } from "@/lib/schema/engine/planner";
 import { chooseTableName, loadModelTable, loadReservedNames } from "@/lib/schema/engine/apply";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 
@@ -51,7 +51,8 @@ export async function buildPlanFromTrustedState(db: Executor, input: TrustedPlan
   if (input.targetVersionId === null && model.status !== "archived") {
     throw new SchemaEngineError("invalid_plan", "A model's table can only be deleted after the model is archived.");
   }
-  const renames = Array.isArray(input.renames) ? input.renames.map((r) => ({ from: String(r?.from), to: String(r?.to) })) : [];
+  // Renames belong to the expand stage; by the destructive stage they have been applied.
+  const renames = input.stage === "expand" && Array.isArray(input.renames) ? input.renames.map((r) => ({ from: String(r?.from), to: String(r?.to) })) : [];
   if (input.targetVersionId === null && renames.length) throw new SchemaEngineError("invalid_plan", "Deleting a model cannot rename fields.");
 
   const state = await loadModelTable(db, model.id);
@@ -85,13 +86,46 @@ export async function buildPlanFromTrustedState(db: Executor, input: TrustedPlan
 }
 
 /**
- * The worker's check: rebuild the plan from trusted state and refuse unless it hashes exactly as the
- * request said. Returns the rebuilt plan, which is the only plan the worker may execute.
+ * The worker's check: rebuild the plan from trusted state and refuse unless the requested stage hashes
+ * exactly as the request said (computeStageHash). Returns the rebuilt plan, which is the only plan the
+ * worker may execute (only its steps for `stage`).
  */
 export async function assertRequestedPlan(db: Executor, input: TrustedPlanInput & { requestedPlanHash: string }): Promise<MigrationPlan> {
   const plan = await buildPlanFromTrustedState(db, input);
-  if (computePlanHash(plan) !== plan.planHash || plan.planHash !== input.requestedPlanHash) {
+  if (computePlanHash(plan) !== plan.planHash || computeStageHash(plan, input.stage) !== input.requestedPlanHash) {
     throw new SchemaEngineError("stale_plan", "This change no longer matches the model. Review the change again.");
   }
   return plan;
+}
+
+/** A ledger row as the worker reads it. Only these fields are used; every other column is ignored. */
+export interface LedgerPlanRequest {
+  content_model_id: string | null;
+  target_version_id: string | null;
+  stage: string;
+  /** The stage hash the request stored (computeStageHash). */
+  plan_hash: string;
+  /** Requested renames (expand stage only), as stored by the request. */
+  renames?: unknown;
+}
+
+/**
+ * The worker's entry point for a ledger row: rebuilds the plan from trusted state using only the row's
+ * model id, target version, stage, renames and stage hash, and refuses unless the hashes match. The
+ * row's table name, api key and any stored plan are never read.
+ */
+export async function buildPlanForLedgerRequest(db: Executor, request: LedgerPlanRequest, options: { limits?: SchemaLimits } = {}): Promise<MigrationPlan> {
+  if (request.stage !== "expand" && request.stage !== "destructive") throw new SchemaEngineError("invalid_plan", "This change request has no valid stage.");
+  if (!request.content_model_id) throw new SchemaEngineError("not_found", "This model no longer exists.");
+  const renames = Array.isArray(request.renames)
+    ? request.renames.map((r: unknown) => ({ from: String((r as { from?: unknown })?.from), to: String((r as { to?: unknown })?.to) }))
+    : [];
+  return assertRequestedPlan(db, {
+    contentModelId: request.content_model_id,
+    targetVersionId: request.target_version_id,
+    renames,
+    stage: request.stage,
+    requestedPlanHash: String(request.plan_hash),
+    limits: options.limits,
+  });
 }

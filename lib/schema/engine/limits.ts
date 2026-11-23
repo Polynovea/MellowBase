@@ -1,6 +1,13 @@
 // Per-install caps on what the schema engine will build. Defaults: 200 models, 150 fields per model,
 // 50 indexes per model. The operator can change them with environment variables; anything that is not
 // a positive whole number falls back to the default rather than lifting the cap.
+//
+// PostgreSQL also has a hard limit of 1,600 columns per table, and it counts deleted columns too: a
+// dropped column keeps its slot until the table is rewritten. A model that has added and deleted many
+// fields can therefore hit the limit with few live fields; the engine refuses to add more and the
+// table needs a rebuild (a full copy into a fresh table) first.
+export const POSTGRES_MAX_COLUMNS = 1_600;
+
 export interface SchemaLimits {
   maxModels: number;
   maxFieldsPerModel: number;

@@ -11,7 +11,7 @@
 //   may execute a step its own way (lock_timeout and retries, CONCURRENTLY, expand and contract) as
 //   long as the end state matches the step.
 // - Steps come in two stages. "expand" steps never delete data and run when the plan is applied.
-//   "destructive" steps delete data, need the model name typed, and run as a separate, later step.
+//   "destructive" steps delete data, need the model's API key typed, and run as a separate, later step.
 // - Applying a stage is refused unless the table's current shape hash equals the hash that stage was
 //   planned from (baseShapeHash for expand, expandedShapeHash for destructive).
 import type { RawBuilder } from "kysely";
@@ -138,7 +138,7 @@ export interface MigrationPlan {
 
 /** Why a plan could not be built: a name rule, a cap, or a reserved name. Plain words, safe to show. */
 export interface PlanProblem {
-  code: "invalid_name" | "reserved_word" | "system_name" | "reserved_name" | "cap_exceeded" | "invalid_rename" | "invalid_schema";
+  code: "invalid_name" | "reserved_name" | "pending_deletion" | "cap_exceeded" | "invalid_rename" | "invalid_schema";
   message: string;
 }
 
@@ -152,4 +152,10 @@ export interface RenderedStatement {
   transactional: boolean;
   /** Takes a lock that can queue other queries: run it under lock_timeout with retries. */
   lockSensitive: boolean;
+  /**
+   * Run in its own short transaction and commit straight after, so the lock it takes (SHARE ROW
+   * EXCLUSIVE on content_entries for a foreign key) or the time it runs (VALIDATE, backfill) is not
+   * held together with the rest of the stage.
+   */
+  ownTransaction: boolean;
 }

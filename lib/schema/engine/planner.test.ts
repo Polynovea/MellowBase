@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildMigrationPlan, computePlanHash, type PlanInput } from "@/lib/schema/engine/planner";
-import { withSummaries } from "@/lib/schema/engine/describe";
+import { buildMigrationPlan, computePlanHash, computeStageHash, type PlanInput } from "@/lib/schema/engine/planner";
+import { describePlan, withSummaries } from "@/lib/schema/engine/describe";
 import { shapeForSchema } from "@/lib/schema/engine/columns";
 import { hashShape } from "@/lib/schema/engine/hash";
 import type { MigrationPlan, PlanStep } from "@/lib/schema/engine/plan";
@@ -205,5 +205,43 @@ describe("migration plan: hash and plain words", () => {
       "Makes Title (title) required when published: blocked until 12 published entries have a value",
       "Makes Title (title) unique: blocked until 12 duplicate values are changed",
     ]);
+  });
+});
+
+describe("migration plan: a field waiting to be deleted", () => {
+  it("cannot be re-added until its deletion is confirmed or cancelled", () => {
+    // The table still has `body`, but the schema it was last planned to no longer does.
+    const table = model(f("title"), f("body", "long_text"));
+    const result = buildMigrationPlan({
+      workspaceId: "ws", modelId: "model-1", modelApiKey: "post", table: TABLE,
+      currentShape: shapeForSchema(TABLE, table), currentSchema: model(f("title")), targetSchema: model(f("title"), f("body", "long_text")),
+    });
+    expect(result.ok ? [] : result.problems).toEqual([{ code: "pending_deletion", message: 'The field "body" is waiting to be deleted; confirm or cancel that first.' }]);
+  });
+});
+
+describe("plain words: the confirmation", () => {
+  it("asks for the model's API key, not its name", () => {
+    const p = plan(model(f("title"), f("body")), model(f("title")));
+    expect(describePlan(p).at(-1)).toEqual({ stage: "destructive", text: "Type the model's API key (post) to confirm the deletion." });
+    expect(describePlan(plan(model(f("title")), model(f("title"), f("body")))).some((line) => /API key/.test(line.text))).toBe(false);
+  });
+});
+
+describe("stage hashes", () => {
+  it("the destructive stage hashes the same from the full plan and when rebuilt after the expand stage", () => {
+    const before = model(f("title"), f("body", "long_text"), f("price", "text"), f("old"));
+    const after = model(f("headline", "text", { required: true, defaultValue: "x" }), f("body", "long_text"), f("price", "integer"), f("extra", "integer", { unique: true }));
+    const full = plan(before, after, { renames: [{ from: "title", to: "headline" }], targetVersionId: "33333333-3333-4333-8333-333333333333" });
+    expect(full.steps.some((s) => s.stage === "expand") && full.steps.some((s) => s.stage === "destructive")).toBe(true);
+
+    const result = buildMigrationPlan({
+      workspaceId: "ws", modelId: "model-1", modelApiKey: "post", table: TABLE,
+      currentShape: full.expandedShape, currentSchema: after, targetSchema: after, targetVersionId: "33333333-3333-4333-8333-333333333333",
+    });
+    if (!result.ok) throw new Error(result.problems[0].message);
+    expect(result.plan.steps.every((s) => s.stage === "destructive")).toBe(true);
+    expect(computeStageHash(result.plan, "destructive")).toBe(computeStageHash(full, "destructive"));
+    expect(computeStageHash(full, "expand")).not.toBe(computeStageHash(full, "destructive"));
   });
 });

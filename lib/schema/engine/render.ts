@@ -3,7 +3,7 @@
 // (a backfill default) is a bound parameter. Nothing user-supplied is concatenated into SQL.
 import { sql, type RawBuilder } from "kysely";
 import { isPgColumnType } from "@/lib/schema/engine/columns";
-import { assertIdentifier, derivedName, TABLE_NAME_PATTERN } from "@/lib/schema/engine/names";
+import { assertIdentifier, derivedName, STORAGE_COLUMNS, TABLE_NAME_PATTERN } from "@/lib/schema/engine/names";
 import type { ColumnShape, ForeignKeyAction, PgColumnType, PlanStep, RenderedStatement } from "@/lib/schema/engine/plan";
 
 export const CONTENT_SCHEMA = "content";
@@ -38,7 +38,7 @@ function usingExpression(column: string, from: PgColumnType, to: PgColumnType): 
   return sql`${col}::${pgType(to)}`;
 }
 
-const tx = (query: RawBuilder<unknown>, lockSensitive = true): RenderedStatement => ({ sql: query, transactional: true, lockSensitive });
+const tx = (query: RawBuilder<unknown>, lockSensitive = true, ownTransaction = false): RenderedStatement => ({ sql: query, transactional: true, lockSensitive, ownTransaction });
 
 function columnDefinition(column: ColumnShape): RawBuilder<unknown> {
   return sql`${ident(column.name)} ${pgType(column.pgType)}`;
@@ -57,9 +57,13 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
     case "create_table": {
       const columns = step.columns.map(columnDefinition);
       const fieldColumns = columns.length ? sql`, ${sql.join(columns, sql`, `)}` : sql``;
+      // The entry foreign key is added after the table exists, as NOT VALID and then VALIDATE, each in
+      // its own transaction: adding it takes SHARE ROW EXCLUSIVE on content_entries, so it must be short
+      // and retried under lock_timeout, not held while the rest of the table is created.
+      const entryFk = ident(derivedName("fk", step.table, STORAGE_COLUMNS.entryId));
       return [
         tx(sql`create table ${table} (
-          _entry_id uuid not null references public.content_entries (id) on delete cascade,
+          _entry_id uuid not null,
           _variant text not null check (_variant in ('draft', 'published')),
           _locale text not null${fieldColumns},
           primary key (_entry_id, _variant, _locale)
@@ -67,6 +71,8 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
         tx(sql`grant select, insert, update, delete on ${table} to ${sql.id(APP_ROLE)}`, false),
         tx(sql`alter table ${table} enable row level security`, false),
         tx(sql`create policy ${sql.id(APP_POLICY)} on ${table} for all to ${sql.id(APP_ROLE)} using (true) with check (true)`, false),
+        tx(sql`alter table ${table} add constraint ${entryFk} foreign key (_entry_id) references public.content_entries (id) on delete cascade not valid`, true, true),
+        tx(sql`alter table ${table} validate constraint ${entryFk}`, false, true),
       ];
     }
     case "drop_table":
@@ -99,13 +105,13 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
         tx(sql`alter table ${table} add column ${columnDefinition(step.column)}`),
       ];
     case "backfill_column":
-      return [tx(sql`update ${table} set ${ident(step.column)} = ${backfillValue(step.value, step.pgType)} where ${ident(step.column)} is null`, false)];
+      return [tx(sql`update ${table} set ${ident(step.column)} = ${backfillValue(step.value, step.pgType)} where ${ident(step.column)} is null`, false, true)];
     case "set_required": {
       const name = ident(derivedName("ck", step.table, step.column));
       return [
         tx(sql`alter table ${table} add constraint ${name} check (_variant <> 'published' or ${ident(step.column)} is not null) not valid`),
         // VALIDATE takes a SHARE UPDATE EXCLUSIVE lock: reads and writes continue during the scan.
-        tx(sql`alter table ${table} validate constraint ${name}`, false),
+        tx(sql`alter table ${table} validate constraint ${name}`, false, true),
       ];
     }
     case "drop_required":
@@ -114,19 +120,19 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
       const name = ident(derivedName(step.unique ? "uq" : "ix", step.table, step.column));
       const columns = step.unique ? sql`(${ident(step.column)}, _variant, _locale)` : sql`(${ident(step.column)})`;
       const query = sql`create ${sql.raw(step.unique ? "unique index" : "index")} ${sql.raw(concurrently ? "concurrently " : "")}${name} on ${table} ${columns}`;
-      return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently }];
+      return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently, ownTransaction: false }];
     }
     case "drop_index": {
       const name = indexRef(derivedName(step.unique ? "uq" : "ix", step.table, step.column));
       const query = sql`drop index ${sql.raw(concurrently ? "concurrently " : "")}${name}`;
-      return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently }];
+      return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently, ownTransaction: false }];
     }
     case "add_foreign_key": {
       if (!Object.prototype.hasOwnProperty.call(FK_ACTION_SQL, step.onDelete)) throw new Error(`Unknown foreign key action refused: ${JSON.stringify(String(step.onDelete))}`);
       const name = ident(derivedName("fk", step.table, step.column));
       return [
-        tx(sql`alter table ${table} add constraint ${name} foreign key (${ident(step.column)}) references public.content_entries (id) on delete ${sql.raw(FK_ACTION_SQL[step.onDelete])} not valid`),
-        tx(sql`alter table ${table} validate constraint ${name}`, false),
+        tx(sql`alter table ${table} add constraint ${name} foreign key (${ident(step.column)}) references public.content_entries (id) on delete ${sql.raw(FK_ACTION_SQL[step.onDelete])} not valid`, true, true),
+        tx(sql`alter table ${table} validate constraint ${name}`, false, true),
       ];
     }
     case "drop_foreign_key":

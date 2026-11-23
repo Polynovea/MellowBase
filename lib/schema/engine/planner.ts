@@ -6,7 +6,7 @@ import { columnOfField, hasNoColumn, indexCount, isLosslessTypeChange, shapeForS
 import { describeStep, fieldsByColumn, type DescribeContext } from "@/lib/schema/engine/describe";
 import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "@/lib/schema/engine/limits";
 import { nameProblem, TABLE_NAME_PATTERN } from "@/lib/schema/engine/names";
-import type { ColumnShape, MigrationPlan, PlanProblem, PlanResult, PlanStep, TableShape } from "@/lib/schema/engine/plan";
+import type { ColumnShape, MigrationPlan, PlanProblem, PlanResult, PlanStage, PlanStep, TableShape } from "@/lib/schema/engine/plan";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 
 export interface FieldRename {
@@ -177,6 +177,18 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
   const indexes = indexCount(targetShape);
   if (indexes > limits.maxIndexesPerModel) {
     problems.push({ code: "cap_exceeded", message: `A model can have at most ${limits.maxIndexesPerModel} indexed fields (unique, indexed or relation); this one has ${indexes}.` });
+  }
+
+  // A column whose field is no longer in the schema the table was last planned to is waiting for its
+  // deletion to be confirmed. Re-adding the field now would bring back its old values: refuse.
+  if (input.currentSchema && input.currentShape) {
+    const inSchema = new Set(input.currentSchema.fields.map((f) => f.key));
+    const pending = new Set(Object.values(input.currentShape.columns).map((c) => c.field).filter((key) => !inSchema.has(key)));
+    for (const field of target.fields) {
+      if (pending.has(field.key)) {
+        problems.push({ code: "pending_deletion", message: `The field "${field.key}" is waiting to be deleted; confirm or cancel that first.` });
+      }
+    }
   }
 
   const deleted = new Set(input.reservedFieldNames ?? []);
@@ -351,6 +363,21 @@ export function stepIdentity(step: PlanStep): Record<string, unknown> {
   delete (rest as Record<string, unknown>).affectedRows;
   delete (rest as Record<string, unknown>).blockingRows;
   return rest;
+}
+
+/**
+ * The hash of one stage of a plan: model and table identity, the stage, the shape hashes it starts and
+ * ends at, the target schema and version, and that stage's steps. Each ledger row stores the hash of
+ * its own stage. The destructive stage hashes the same whether it is taken from the full plan made at
+ * request time or rebuilt from the table after the expand stage ran (buildPlanFromTrustedState), since
+ * both start at the expanded shape and plan the same steps.
+ */
+export function computeStageHash(plan: MigrationPlan, stage: PlanStage): string {
+  const { formatVersion, workspaceId, modelId, modelApiKey, table, targetSchemaHash } = plan;
+  const start = stage === "expand" ? plan.baseShapeHash : plan.expandedShapeHash;
+  const end = stage === "expand" ? plan.expandedShapeHash : plan.targetShapeHash;
+  const steps = plan.steps.filter((step) => step.stage === stage).map(stepIdentity);
+  return hashCanonical({ formatVersion, workspaceId, modelId, modelApiKey, table, stage, start, end, targetSchemaHash, targetVersionId: plan.targetVersionId ?? null, steps });
 }
 
 /** Recomputes a plan's hash from its contents (the runner checks a stored plan was not altered). */

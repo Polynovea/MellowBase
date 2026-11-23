@@ -14,14 +14,14 @@ import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import { SchemaEngineError } from "@/lib/schema/engine/errors";
-import { describeContextFor } from "@/lib/schema/engine/describe";
+import { confirmationPrompt, describeContextFor } from "@/lib/schema/engine/describe";
 import { countDestructiveImpact } from "@/lib/schema/engine/impact";
 import { hashShape } from "@/lib/schema/engine/hash";
-import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "@/lib/schema/engine/limits";
+import { DEFAULT_SCHEMA_LIMITS, POSTGRES_MAX_COLUMNS, type SchemaLimits } from "@/lib/schema/engine/limits";
 import { tableNameCandidates } from "@/lib/schema/engine/names";
 import type { MigrationPlan, PlanResult, PlanStage, PlanStep, TableShape } from "@/lib/schema/engine/plan";
 import { applyStepToShape, buildMigrationPlan, type FieldRename } from "@/lib/schema/engine/planner";
-import { renderStep } from "@/lib/schema/engine/render";
+import { CONTENT_SCHEMA, renderStep } from "@/lib/schema/engine/render";
 import { validatePlan } from "@/lib/schema/engine/validate";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 
@@ -157,6 +157,18 @@ export async function assertStageCurrent(
   if (!row && steps.some((step) => step.kind === "create_table") && (await countModelTables(trx, plan.modelId)) >= limits.maxModels) {
     throw new SchemaEngineError("cap_exceeded", `This install already has ${limits.maxModels} models, the most allowed.`);
   }
+  // PostgreSQL's 1,600-column limit counts deleted columns too.
+  const adding = steps.filter((step) => step.kind === "add_column" || step.kind === "replace_column").length;
+  if (row && adding > 0) {
+    const used = await sql<{ n: string }>`
+      select count(*) as n from pg_catalog.pg_attribute a
+      join pg_catalog.pg_class c on c.oid = a.attrelid
+      join pg_catalog.pg_namespace s on s.oid = c.relnamespace
+      where s.nspname = ${CONTENT_SCHEMA} and c.relname = ${plan.table} and a.attnum > 0`.execute(trx);
+    if (Number(used.rows[0]?.n ?? 0) + adding > POSTGRES_MAX_COLUMNS) {
+      throw new SchemaEngineError("cap_exceeded", "This model's table has reached PostgreSQL's limit of 1,600 columns, which also counts deleted fields. The table needs a rebuild before more fields can be added.");
+    }
+  }
   const reserved = await loadReservedNames(trx, plan.workspaceId, plan.modelId);
   if (!row && steps.some((step) => step.kind === "create_table") && reserved.models.has(plan.modelApiKey)) {
     throw new SchemaEngineError("reserved_name", `The model API key "${plan.modelApiKey}" belonged to a model deleted in the last 30 days and cannot be reused yet.`);
@@ -195,6 +207,13 @@ async function deleteFieldPermissions(trx: Transaction<DB>, plan: MigrationPlan,
  */
 export async function applyStageBookkeeping(trx: Transaction<DB>, plan: MigrationPlan, stage: PlanStage): Promise<void> {
   const steps = stageSteps(plan, stage);
+  if (stage === "expand") {
+    // A field whose column waits for the destructive stage has already left the schema: its permission
+    // rows go now, so nothing can grant access to it while it waits (the name is reserved on deletion).
+    for (const step of stageSteps(plan, "destructive")) {
+      if (step.kind === "drop_column") await deleteFieldPermissions(trx, plan, step.field);
+    }
+  }
   for (const step of steps) {
     switch (step.kind) {
       case "rename_column":
@@ -237,7 +256,13 @@ export async function applyStageBookkeeping(trx: Transaction<DB>, plan: Migratio
   })).execute();
 }
 
-/** The reference executor's loop: every statement of the stage in the caller's transaction, indexes not concurrent. */
+/**
+ * The reference executor's loop: every statement of the stage in the caller's transaction, indexes not
+ * concurrent. It deliberately ignores `ownTransaction`: it is the test reference, and keeping the
+ * stage and its bookkeeping atomic is what lets a failure leave nothing behind. The migration runner
+ * honours `ownTransaction` (short FK adds, VALIDATE and backfill committed on their own) and records
+ * progress so it can resume.
+ */
 async function runStage(trx: Transaction<DB>, plan: MigrationPlan, stage: PlanStage): Promise<void> {
   await sql`select set_config('lock_timeout', ${DDL_LOCK_TIMEOUT}, true)`.execute(trx);
   for (const step of stageSteps(plan, stage)) {
@@ -255,7 +280,7 @@ function ledgerRow(plan: MigrationPlan, stage: PlanStage, requestedBy: string | 
 
 export interface ExpandResult {
   ledgerId: string;
-  /** The ledger row of the destructive stage, waiting for the typed model name; null if there is none. */
+  /** The ledger row of the destructive stage, waiting for the model's API key to be typed; null if there is none. */
   awaitingConfirmationId: string | null;
 }
 
@@ -324,7 +349,7 @@ export async function applyDestructiveStage(
       }
       const expected = await expectedConfirmation(trx, row.content_model_id ?? "");
       if (typeof args.confirmation !== "string" || args.confirmation.trim() !== expected) {
-        throw new SchemaEngineError("confirmation_mismatch", `Type the model's API key (${expected}) to confirm the deletion.`);
+        throw new SchemaEngineError("confirmation_mismatch", confirmationPrompt(expected));
       }
       await assertStageCurrent(trx, plan, "destructive", { limits: args.limits });
       await runStage(trx, plan, "destructive");

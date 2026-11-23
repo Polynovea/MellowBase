@@ -127,10 +127,19 @@ as $$
   from public.content_model_versions v
 $$;
 
+-- Which versions keep their previous hash: ids only (model id and version number), never schema
+-- content, at most 50 lines, then the count.
 do $$
 declare
   kept bigint;
+  item record;
 begin
+  for item in
+    select r.content_model_id, r.version_number from public.polynovea_schema_rehash_map() r
+    where r.new_hash is null order by r.content_model_id, r.version_number limit 50
+  loop
+    raise notice 'schema hash re-hash: model % version % keeps its previous hash', item.content_model_id, item.version_number;
+  end loop;
   select count(*) into kept from public.polynovea_schema_rehash_map() r where r.new_hash is null;
   raise notice 'schema hash re-hash: % schema version(s) keep their previous hash', kept;
 end;
