@@ -6,9 +6,10 @@
  *
  * - Supabase: the GoTrue access token as `Authorization: Bearer`.
  * - Built-in: nothing for the credential (the browser sends the HttpOnly session cookie itself),
- *   plus the session-bound CSRF token on state-changing requests. A request refused with
- *   STEP_UP_REQUIRED asks the user to confirm who they are and is retried once afterwards;
- *   MFA_REQUIRED sends them to set up two-step sign-in.
+ *   plus the session-bound CSRF token on state-changing requests; MFA_REQUIRED sends the user to
+ *   set up two-step sign-in.
+ * - Both: a request refused with STEP_UP_REQUIRED asks the user to confirm who they are (sign in
+ *   again) and is retried once afterwards, with the new session's credential.
  */
 import { browserAuthProvider } from "@/lib/auth/settings";
 import { getSupabaseBrowserIdentityProvider } from "@/lib/auth/supabaseProvider";
@@ -74,11 +75,12 @@ export function installAdminFetch(): void {
 
     // A Request body can be read once; keep a pristine copy for the retry after a step-up.
     const original = input instanceof Request ? input.clone() : null;
-    const send = async (): Promise<Response> => {
+    const send = async (afterStepUp = false): Promise<Response> => {
       const source = original ? original.clone() : null;
       const headers = new Headers(source ? source.headers : init?.headers);
       if (provider === "supabase") {
-        if (!headers.has("authorization")) {
+        // After a step-up the page's own header still carries the old token; use the new session's.
+        if (afterStepUp || !headers.has("authorization")) {
           const { session } = await getSupabaseBrowserIdentityProvider().getSession();
           if (session?.accessToken) headers.set("Authorization", `Bearer ${session.accessToken}`);
         }
@@ -95,15 +97,14 @@ export function installAdminFetch(): void {
     };
 
     let response = await send();
-    if (provider !== "builtin") return response;
     const code = await securityCode(response);
-    if (code === "CSRF_FAILED") {
+    if (code === "CSRF_FAILED" && provider === "builtin") {
       resetCsrfToken();
       response = await send();
     } else if (code === "STEP_UP_REQUIRED" && stepUpHandler && (await stepUpHandler())) {
       resetCsrfToken();
-      response = await send();
-    } else if (code === "MFA_REQUIRED" && !window.location.pathname.startsWith("/admin/security")) {
+      response = await send(true);
+    } else if (code === "MFA_REQUIRED" && provider === "builtin" && !window.location.pathname.startsWith("/admin/security")) {
       window.location.assign("/admin/security?setup=mfa");
     }
     return response;

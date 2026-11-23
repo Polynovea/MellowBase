@@ -21,10 +21,10 @@
  */
 import { createHash } from "node:crypto";
 import { betterAuth, type BetterAuthPlugin } from "better-auth";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { admin, twoFactor } from "better-auth/plugins";
 import { passkey } from "@better-auth/passkey";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import { AuthDateColumnsPlugin } from "@/lib/auth/betterAuth/dateColumns";
 import { hashPassword, needsRehash, verifyPassword } from "@/lib/auth/betterAuth/passwordHash";
@@ -38,7 +38,7 @@ export const IDLE_TIMEOUT_SECONDS = 12 * 60 * 60;
 export const ABSOLUTE_TIMEOUT_SECONDS = 7 * 24 * 60 * 60;
 /** Step-up window: sensitive actions need a sign-in within this many seconds. */
 export const STEP_UP_SECONDS = 10 * 60;
-/** Per-account sign-in throttle (on top of the per-IP limits): attempts per window. */
+/** Per-account sign-in throttle, on top of the per-IP limits: after 30 attempts, sign-in for that account pauses until 15 minutes pass with no attempt. */
 export const ACCOUNT_SIGN_IN_LIMIT = { max: 30, windowSeconds: 15 * 60 };
 
 /** Paths whose success creates a new session for the browser. */
@@ -170,18 +170,19 @@ export function createPolynoveaAuth(settings: PolynoveaAuthSettings) {
         }
 
         if (ctx.path === "/sign-in/email" && typeof ctx.body?.email === "string") {
+          // One atomic statement, so parallel attempts cannot all read a fresh window: the count
+          // restarts only after a quiet window, and every attempt extends it.
           const now = Date.now();
-          const key = accountThrottleKey(ctx.body.email);
-          const adapter = ctx.context.adapter;
-          const row = await adapter.findOne<{ count: number; lastRequest: number | string }>({ model: "rateLimit", where: [{ field: "key", value: key }] });
-          if (!row || now - Number(row.lastRequest) > ACCOUNT_SIGN_IN_LIMIT.windowSeconds * 1000) {
-            if (row) await adapter.update({ model: "rateLimit", where: [{ field: "key", value: key }], update: { count: 1, lastRequest: now } });
-            else await adapter.create({ model: "rateLimit", data: { key, count: 1, lastRequest: now } }).catch(() => undefined);
-          } else {
-            const updated = await adapter.incrementOne<{ count: number }>({ model: "rateLimit", where: [{ field: "key", value: key }], increment: { count: 1 } });
-            if ((updated?.count ?? 0) > ACCOUNT_SIGN_IN_LIMIT.max) {
-              throw new APIError("TOO_MANY_REQUESTS", { message: "Too many sign-in attempts. Try again later." });
-            }
+          const cutoff = now - ACCOUNT_SIGN_IN_LIMIT.windowSeconds * 1000;
+          const { rows } = await sql<{ count: number }>`
+            insert into ${sql.table(`${AUTH_SCHEMA}.rateLimit`)} as r ("key", "count", "lastRequest")
+            values (${accountThrottleKey(ctx.body.email)}, 1, ${now})
+            on conflict ("key") do update
+              set "count" = case when r."lastRequest" < ${cutoff} then 1 else r."count" + 1 end,
+                  "lastRequest" = ${now}
+            returning "count"`.execute(settings.db);
+          if (Number(rows[0]?.count ?? 0) > ACCOUNT_SIGN_IN_LIMIT.max) {
+            throw new APIError("TOO_MANY_REQUESTS", { message: "Too many sign-in attempts. Try again later." });
           }
         }
 
@@ -201,7 +202,8 @@ export function createPolynoveaAuth(settings: PolynoveaAuthSettings) {
         }
 
         if ((ctx.path === "/change-password" || ctx.path === "/set-password") && typeof ctx.body?.newPassword === "string") {
-          const session = ctx.context.session ?? null;
+          // Before hooks run ahead of the endpoint's own session middleware, so read the session here.
+          const session = await getSessionFromCtx(ctx).catch(() => null);
           const user = session?.user as HookUser | undefined;
           try {
             await assertAcceptablePassword({

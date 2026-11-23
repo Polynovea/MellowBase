@@ -277,7 +277,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
   return (
     <>
       {children}
-      {usesBuiltinAuth() && <StepUpDialog email={session.user.email} />}
+      <StepUpDialog email={session.user.email} />
     </>
   );
 }
