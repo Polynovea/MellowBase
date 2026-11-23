@@ -2,5 +2,5 @@
 // applies a stage (ownerPool, runner, execute, expandContract) is imported directly by the migration
 // worker and must never be imported by the CMS server (see ownerPoolBoundary.test.ts).
 export {
-  confirmPlanStage, planStageStatus, requestPlanStage, requestSchemaChange, retryPlanStage, type PlanStageRequest,
+  cancelPlanStage, confirmPlanStage, planStageStatus, requestPlanStage, requestSchemaChange, retryPlanStage, type PlanStageRequest,
 } from "@/lib/schema/runner/request";

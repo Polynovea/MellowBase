@@ -67,9 +67,9 @@ describe("0074: read-only tables for the app role", () => {
               has_function_privilege('polynovea_app', p.oid, 'execute') as app,
               exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a where a.grantee = 0 and a.privilege_type = 'EXECUTE') as public_exec
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-        where n.nspname = 'public' and p.proname in ('polynovea_confirm_schema_stage', 'polynovea_retry_schema_stage') order by 1`,
+        where n.nspname = 'public' and p.proname in ('polynovea_confirm_schema_stage', 'polynovea_retry_schema_stage', 'polynovea_cancel_schema_stage') order by 1`,
     );
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     for (const row of rows) {
       expect(row).toMatchObject({ prosecdef: true, owner: "polynovea_owner", app: true, public_exec: false });
       expect(row.proconfig).toContain('search_path=""');

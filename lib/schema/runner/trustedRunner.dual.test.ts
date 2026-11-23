@@ -2,7 +2,7 @@
 // (content_model_tables, the target content_model_versions row, the model row and the re-validated
 // renames) by the engine's assertRequestedPlan, and must hash exactly as the ledger row asked. Models
 // and versions are made the way the CMS makes them (modelService, as the app role).
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getDb } from "@/lib/db/index";
 import { describeWithDatabase } from "@/lib/db/testing/database";
 import { buildPlanFromTrustedState, type MigrationPlan } from "@/lib/schema/engine";
@@ -10,7 +10,7 @@ import { uniqueKey } from "@/lib/schema/engine/testing";
 import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
 import { kyselyOn } from "@/lib/schema/runner/engine";
 import { productionEngine } from "@/lib/schema/runner/engineAdapter";
-import { confirmPlanStage, requestPlanStage, requestSchemaChange } from "@/lib/schema/runner/request";
+import { cancelPlanStage, confirmPlanStage, requestPlanStage, requestSchemaChange } from "@/lib/schema/runner/request";
 import { runNextStage } from "@/lib/schema/runner/runner";
 import { buildPlan, column, shape, TEST_LIMITS } from "@/lib/schema/runner/testing/plans";
 import { connect } from "@/lib/schema/runner/testing/dualFixtures";
@@ -117,5 +117,66 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
     await expect(app.query("delete from content_model_versions where id = $1", [m.v1])).rejects.toMatchObject({ code: "42501" });
     const [kept] = await backend.query<{ n: number }>("select count(*)::int as n from content_model_versions where id = $1", [m.v1]);
     expect(kept.n).toBe(1);
+  });
+
+  describe("stale and unwanted requests (security re-review C)", () => {
+    async function twoVersions() {
+      const m = await model([field("title"), field("secret")]);
+      const first = await request(m, m.v1);
+      expect(await run(m.modelId)).toEqual({ ledgerId: first.expandLedgerId, outcome: "succeeded" });
+      const next = async (fields: ReturnType<typeof field>[]) => {
+        const current = (await getModel(m.workspaceId, m.modelId))!;
+        const changed = await applyChange({ model: current, proposedSchema: { name: "Post", apiKey: m.apiKey, fields }, acknowledgeUnsafe: true, actorAdminUserId: m.adminUserId });
+        if (!changed.ok || !changed.data.version) throw new Error("version not created");
+        return changed.data.version.id;
+      };
+      return { m, next };
+    }
+    const statusOf = async (id: string | null) => (await backend.query<{ status: string }>("select status from schema_migration_ledger where id = $1", [id]))[0]?.status;
+
+    it("a deletion planned against an older version cannot be confirmed once the model has a newer one", async () => {
+      const { m, next } = await twoVersions();
+      const v2 = await next([field("title")]);
+      const dropSecret = await request(m, v2);
+      expect(dropSecret.destructiveLedgerId).not.toBeNull();
+      await next([field("title"), field("other")]);
+      await expect(confirmPlanStage(kyselyOn(app), { ledgerId: dropSecret.destructiveLedgerId!, confirmedBy: m.adminUserId, typedApiKey: m.apiKey }))
+        .rejects.toMatchObject({ code: "55000", message: "schema_stage_superseded" });
+      expect(await statusOf(dropSecret.destructiveLedgerId)).toBe("awaiting_confirmation");
+    });
+
+    it("a new request supersedes the model's older requests that have not started", async () => {
+      const { m, next } = await twoVersions();
+      const v2 = await next([field("title"), field("body")]);
+      const older = await request(m, v2);
+      const v3 = await next([field("title"), field("summary")]);
+      const newer = await request(m, v3);
+      expect(await statusOf(older.expandLedgerId)).toBe("superseded");
+      expect(await statusOf(newer.expandLedgerId)).toBe("pending");
+      // Both rows of one request survive each other.
+      const v4 = await next([field("title"), field("extra")]);
+      const both = await request(m, v4);
+      expect([await statusOf(both.expandLedgerId), await statusOf(both.destructiveLedgerId)]).toEqual(["pending", "awaiting_confirmation"]);
+      expect(await statusOf(newer.expandLedgerId)).toBe("superseded");
+    });
+
+    it("cancel drops a request that has not started, and nothing else", async () => {
+      const { m, next } = await twoVersions();
+      const v2 = await next([field("title"), field("body")]);
+      const pendingDrop = await request(m, v2);
+      await expect(cancelPlanStage(kyselyOn(app), { ledgerId: pendingDrop.destructiveLedgerId!, cancelledBy: "00000000-0000-4000-8000-000000000001" }))
+        .rejects.toMatchObject({ code: "22023", message: "schema_cancel_unknown_user" });
+      await cancelPlanStage(kyselyOn(app), { ledgerId: pendingDrop.destructiveLedgerId!, cancelledBy: m.adminUserId });
+      expect(await statusOf(pendingDrop.destructiveLedgerId)).toBe("cancelled");
+      await expect(cancelPlanStage(kyselyOn(app), { ledgerId: pendingDrop.destructiveLedgerId!, cancelledBy: m.adminUserId })).rejects.toMatchObject({ code: "55000" });
+      // A succeeded or running row cannot be cancelled.
+      expect(await run(m.modelId)).toEqual({ ledgerId: pendingDrop.expandLedgerId, outcome: "succeeded" });
+      await expect(cancelPlanStage(kyselyOn(app), { ledgerId: pendingDrop.expandLedgerId!, cancelledBy: m.adminUserId })).rejects.toMatchObject({ code: "55000" });
+      const v3 = await next([field("title"), field("later")]);
+      const running = await request(m, v3);
+      await backend.query("update schema_migration_ledger set status = 'running' where id = $1", [running.expandLedgerId]);
+      await expect(cancelPlanStage(kyselyOn(app), { ledgerId: running.expandLedgerId!, cancelledBy: m.adminUserId })).rejects.toMatchObject({ code: "55000" });
+      await backend.query("update schema_migration_ledger set status = 'pending' where id = $1", [running.expandLedgerId]);
+    });
   });
 });

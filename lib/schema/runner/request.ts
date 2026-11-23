@@ -2,8 +2,9 @@
 // request's own columns; a trigger sets its status from the stage), confirm a deletion and retry a
 // failed stage through two owner-side functions, and read the outcome. The migration worker
 // (polynovea_owner, its own process and pool) rebuilds the plan from trusted state and applies it.
-import { sql } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { DbExecutor } from "@/lib/db";
+import type { DB } from "@/lib/db/generated/database";
 import type { SchemaLimits } from "@/lib/schema/engine/limits";
 import type { MigrationPlan, PlanStage } from "@/lib/schema/engine/plan";
 import { computeStageHash } from "@/lib/schema/engine/planner";
@@ -36,9 +37,14 @@ export async function requestSchemaChange(
   });
   const base = { plan, requestedBy: input.requestedBy, targetVersionId: input.targetVersionId };
   const hasStage = (stage: PlanStage) => plan.steps.some((step) => step.stage === stage);
-  const expand = hasStage("expand") ? await requestPlanStage(db, { ...base, stage: "expand", renames: input.renames ?? [] }) : null;
-  const destructive = hasStage("destructive") ? await requestPlanStage(db, { ...base, stage: "destructive" }) : null;
-  return { plan, expandLedgerId: expand?.ledgerId ?? null, destructiveLedgerId: destructive?.ledgerId ?? null };
+  // One transaction: the request's rows share created_at, so the supersede trigger replaces the model's
+  // older requests and never this request's own other row.
+  const queue = async (trx: DbExecutor) => {
+    const expand = hasStage("expand") ? await requestPlanStage(trx, { ...base, stage: "expand", renames: input.renames ?? [] }) : null;
+    const destructive = hasStage("destructive") ? await requestPlanStage(trx, { ...base, stage: "destructive" }) : null;
+    return { plan, expandLedgerId: expand?.ledgerId ?? null, destructiveLedgerId: destructive?.ledgerId ?? null };
+  };
+  return db.isTransaction ? queue(db) : (db as Kysely<DB>).transaction().execute(queue);
 }
 
 /**
@@ -66,6 +72,14 @@ export async function requestPlanStage(db: DbExecutor, request: PlanStageRequest
  */
 export async function confirmPlanStage(db: DbExecutor, input: { ledgerId: string; confirmedBy: string | null; typedApiKey: string }): Promise<void> {
   await sql`select public.polynovea_confirm_schema_stage(${input.ledgerId}::uuid, ${input.confirmedBy}::uuid, ${input.typedApiKey})`.execute(db);
+}
+
+/**
+ * Cancels a request that has not started (pending or awaiting confirmation). Throws (SQLSTATE 55000
+ * schema_stage_not_cancellable, 22023 schema_cancel_unknown_user, P0002 not found) otherwise.
+ */
+export async function cancelPlanStage(db: DbExecutor, input: { ledgerId: string; cancelledBy: string }): Promise<void> {
+  await sql`select public.polynovea_cancel_schema_stage(${input.ledgerId}::uuid, ${input.cancelledBy}::uuid)`.execute(db);
 }
 
 /** Puts a failed stage back in the queue; the worker resumes it where it stopped. */

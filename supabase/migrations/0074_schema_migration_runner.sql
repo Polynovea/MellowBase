@@ -226,6 +226,37 @@ begin
 end;
 $$;
 
+-- A request can be cancelled (polynovea_cancel_schema_stage) before it runs.
+alter table public.schema_migration_ledger drop constraint if exists schema_migration_ledger_status_check;
+alter table public.schema_migration_ledger add constraint schema_migration_ledger_status_check
+  check (status in ('pending', 'awaiting_confirmation', 'running', 'succeeded', 'failed', 'superseded', 'cancelled'));
+alter table public.schema_migration_ledger
+  add column if not exists cancelled_by uuid references public.admin_users (id) on delete set null,
+  add column if not exists cancelled_at timestamptz;
+
+-- A newer request for a model replaces every older request of that model that has not started:
+-- pending and awaiting_confirmation rows from earlier transactions become superseded, so a deletion
+-- planned against an old version can never be confirmed later. (The rows of one request, written in
+-- one transaction, share created_at and leave each other alone.) Owner-side: the app cannot UPDATE.
+create or replace function public.polynovea_schema_ledger_supersede()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.schema_migration_ledger
+     set status = 'superseded', finished_at = pg_catalog.now()
+   where content_model_id = new.content_model_id and id <> new.id
+     and status in ('pending', 'awaiting_confirmation') and created_at < new.created_at;
+  return null;
+end;
+$$;
+
+drop trigger if exists schema_migration_ledger_supersede on public.schema_migration_ledger;
+create trigger schema_migration_ledger_supersede after insert on public.schema_migration_ledger
+  for each row execute function public.polynovea_schema_ledger_supersede();
+
 drop trigger if exists schema_migration_ledger_request on public.schema_migration_ledger;
 create trigger schema_migration_ledger_request before insert on public.schema_migration_ledger
   for each row execute function public.polynovea_schema_ledger_request();
@@ -261,7 +292,7 @@ declare
   model_key text;
 begin
   -- Errors are plain codes; the typed text is never logged or echoed.
-  select l.id, l.stage, l.status, l.workspace_id, l.content_model_id, l.model_api_key
+  select l.id, l.stage, l.status, l.workspace_id, l.content_model_id, l.model_api_key, l.target_version_id
     into request
     from public.schema_migration_ledger l
    where l.id = p_ledger_id
@@ -282,6 +313,15 @@ begin
   end if;
   if p_typed_api_key is distinct from model_key then
     raise exception using errcode = '22023', message = 'schema_confirmation_mismatch';
+  end if;
+  -- Only a request for the model's current version can be confirmed: a deletion planned against an
+  -- older version may drop a field the current version uses again.
+  if request.target_version_id is not null and request.target_version_id is distinct from (
+    select v.id from public.content_model_versions v
+      join public.content_models m on m.id = v.content_model_id
+     where m.id = request.content_model_id and v.version_number = m.current_schema_version
+  ) then
+    raise exception using errcode = '55000', message = 'schema_stage_superseded';
   end if;
   -- The audit trail names a real, active admin user who is an active member of the request's
   -- workspace, never free text.
@@ -322,11 +362,45 @@ begin
 end;
 $$;
 
--- Both functions: the app role only (never PUBLIC, anon, authenticated or service_role).
+-- "Cancel" in the UI: a request that has not started (pending or awaiting confirmation) is dropped,
+-- by an active admin who is an active member of its workspace (the same check as confirming).
+create or replace function public.polynovea_cancel_schema_stage(p_ledger_id uuid, p_cancelled_by uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  request record;
+begin
+  select l.id, l.status, l.workspace_id into request from public.schema_migration_ledger l where l.id = p_ledger_id for update;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'schema_stage_not_found';
+  end if;
+  if request.status not in ('pending', 'awaiting_confirmation') then
+    raise exception using errcode = '55000', message = 'schema_stage_not_cancellable';
+  end if;
+  if not exists (
+    select 1 from public.admin_users a
+      join public.workspace_members wm on wm.admin_user_id = a.id
+     where a.id = p_cancelled_by and coalesce(a.is_active, true)
+       and wm.workspace_id = request.workspace_id and wm.status = 'active'
+  ) then
+    raise exception using errcode = '22023', message = 'schema_cancel_unknown_user';
+  end if;
+  update public.schema_migration_ledger
+     set status = 'cancelled', cancelled_by = p_cancelled_by, cancelled_at = pg_catalog.clock_timestamp(), finished_at = pg_catalog.clock_timestamp()
+   where id = p_ledger_id;
+end;
+$$;
+
+-- The three functions: the app role only (never PUBLIC, anon, authenticated or service_role).
 revoke all on function public.polynovea_confirm_schema_stage(uuid, uuid, text) from public;
 revoke all on function public.polynovea_retry_schema_stage(uuid) from public;
 grant execute on function public.polynovea_confirm_schema_stage(uuid, uuid, text) to polynovea_app;
 grant execute on function public.polynovea_retry_schema_stage(uuid) to polynovea_app;
+revoke all on function public.polynovea_cancel_schema_stage(uuid, uuid) from public;
+grant execute on function public.polynovea_cancel_schema_stage(uuid, uuid) to polynovea_app;
 
 -- ── App access ───────────────────────────────────────────────────────────────────────────────────
 -- The helper from 0072 (the latest), unchanged except for one explicit list of tables the app role may
@@ -363,7 +437,7 @@ declare
     'content_model_tables', 'schema_name_reservations', 'schema_migration_confirmations'];
   ledger_request_columns text := 'workspace_id, content_model_id, model_api_key, table_name, stage, plan_hash, '
     || 'base_shape_hash, target_schema_hash, plan_json, requested_by, target_version_id, renames';
-  app_only_functions text[] := array['polynovea_confirm_schema_stage', 'polynovea_retry_schema_stage'];
+  app_only_functions text[] := array['polynovea_confirm_schema_stage', 'polynovea_retry_schema_stage', 'polynovea_cancel_schema_stage'];
 begin
   execute 'grant usage on schema public to polynovea_app';
 
