@@ -1,17 +1,21 @@
 import { checkAttempt, recordFailure, recordSuccess, sourceKey, type AttemptDecision } from "@/lib/setup/attemptLimiter";
-import { guardSetupRequest, setupClientAddress, setupJson, setupTransport } from "@/lib/setup/requestGuards";
-import { verifySetupCode } from "@/lib/setup/setupCode";
+import { assertMode, ModeError } from "@/lib/setup/mode";
+import { guardSetupRequest, setupClientAddress, setupJson, setupTransport, withSetupHeaders } from "@/lib/setup/requestGuards";
+import { consumeSetupCode, issueReplacementSetupCode } from "@/lib/setup/setupCode";
 import { setupSessionCookie, startSetupSession } from "@/lib/setup/setupSession";
 
 /**
  * POST /api/setup/code with JSON {"code": "..."}: checks the setup code and starts the setup
  * session (the __Host-polynovea-setup cookie). Order matters:
  *
+ * 0. Setup mode only (assertMode): on a finished install this is a 404, like every setup route,
+ *    even if the middleware was skipped.
  * 1. Request guards (HTTPS or loopback, own Origin, no code in the URL): refused before anything is
  *    read or counted.
  * 2. The attempt limiter for this source: a locked source is refused even with the right code.
- * 3. The code itself. Wrong codes are counted; a right one clears the source and takes over any
- *    earlier browser's session.
+ * 3. The code itself. Wrong codes are counted. A right one is used up (one use only), clears the
+ *    source, takes over any earlier browser's session, and a replacement code is printed to the
+ *    server log for continuing in another browser.
  *
  * The code is never logged, never echoed and never put in a URL.
  */
@@ -72,6 +76,13 @@ function waitResponse(decision: Extract<AttemptDecision, { allowed: false }>): R
 }
 
 export async function POST(request: Request): Promise<Response> {
+  try {
+    await assertMode("setup");
+  } catch (error) {
+    if (error instanceof ModeError) return withSetupHeaders(error.toResponse());
+    throw error;
+  }
+
   const refused = guardSetupRequest(request);
   if (refused) return refused;
   // The guard has already established this; it is read again for the session record.
@@ -84,7 +95,7 @@ export async function POST(request: Request): Promise<Response> {
   const code = readCode(await readBody(request));
   if (code === null) return setupJson(400, { error: BAD_BODY, code: "SETUP_BAD_REQUEST" });
 
-  if (!verifySetupCode(code)) {
+  if (!consumeSetupCode(code)) {
     const next = recordFailure(source);
     console.warn(`[setup] Wrong setup code from ${source}.`);
     if (!next.allowed && next.reason === "locked") return waitResponse(next);
@@ -94,5 +105,6 @@ export async function POST(request: Request): Promise<Response> {
   recordSuccess(source);
   const started = startSetupSession(transport);
   console.info(`[setup] Setup code accepted${started.tookOver ? "; the setup session in the other browser was ended" : ""}.`);
+  issueReplacementSetupCode();
   return setupJson(200, { data: { next: SETUP_NEXT_STEP, tookOver: started.tookOver } }, { "Set-Cookie": setupSessionCookie(started.token) });
 }

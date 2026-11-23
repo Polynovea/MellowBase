@@ -1,20 +1,22 @@
 import { BlockList, isIP } from "node:net";
 import { parseTrustedProxies } from "@/lib/auth/settings";
+import { readPeerInfo, type PeerInfo } from "./peerStamp";
 
 /**
  * Checks every setup POST must pass before anything else runs, plus the headers every setup
  * response carries. Shared by all wizard steps (setup-code, db-step, owner-step).
  *
- * - Transport: HTTPS as reported by a trusted proxy (X-Forwarded-Proto), or loopback (an SSH tunnel
- *   to localhost). Plain HTTP to a public address would send the setup code in the clear.
+ * - Transport: HTTPS, as reported by a trusted proxy (X-Forwarded-Proto) or by the socket itself;
+ *   or plain HTTP through a real SSH tunnel (see setupTransport). Plain HTTP to a public address
+ *   would send the setup code in the clear.
  * - Origin must be this request's own origin and, when set, POLYNOVEA_PUBLIC_URL's.
  * - `code` in the query string is refused: URLs end up in proxy and access logs.
  *
- * Client addresses follow the built-in auth's trusted-proxy rule (lib/auth/betterAuth/server.ts):
- * X-Forwarded-For is walked right to left past POLYNOVEA_TRUSTED_PROXIES and the first other
- * address is the client. Next.js fills X-Forwarded-For/-Proto/-Host from the socket only when the
- * request has none, so these headers are only believed when the proxy list is set, which is the
- * deployment contract ("the app port must not be reachable except through them").
+ * Everything starts from the real connection (peerStamp.ts), never from what the client says:
+ * X-Forwarded-For/-Proto/-Host are believed only when the immediate peer is in
+ * POLYNOVEA_TRUSTED_PROXIES, and then X-Forwarded-For is walked right to left past the trusted
+ * proxies (the built-in auth's rule). Otherwise the client is the socket's peer. Without the stamp
+ * nothing is believed and every check fails closed.
  *
  * Failures are logged with the reason; the response is one generic message.
  */
@@ -77,23 +79,11 @@ function lastValue(headers: Headers, name: string): string | null {
   return parts.length ? parts[parts.length - 1] : null;
 }
 
-/** The client's address under the trusted-proxy rule, or null when it cannot be read. */
-export function setupClientAddress(headers: Headers, env: Env = process.env): string | null {
-  const chain = (headers.get("x-forwarded-for") ?? "").split(",").map(cleanAddress).filter((a): a is string => a !== null);
-  if (chain.length === 0) return null;
-  const trusted = trustedProxyList(env);
-  if (!trusted) return chain[chain.length - 1];
-  for (let i = chain.length - 1; i >= 0; i -= 1) {
-    if (!isTrusted(trusted, chain[i])) return chain[i];
-  }
-  // Every hop is a proxy we trust (a request from the proxy host itself): the first hop is the client.
-  return chain[0];
-}
-
 export function isLoopbackAddress(address: string | null): boolean {
-  if (!address) return false;
-  if (isIP(address) === 4) return address.startsWith("127.");
-  return address === "::1";
+  const clean = address ? cleanAddress(address) : null;
+  if (!clean) return false;
+  if (isIP(clean) === 4) return clean.startsWith("127.");
+  return clean === "::1";
 }
 
 function hostIsLoopback(host: string): boolean {
@@ -101,32 +91,74 @@ function hostIsLoopback(host: string): boolean {
   return LOOPBACK_HOSTS.has(name) || /^127(?:\.\d{1,3}){3}$/.test(name);
 }
 
-function forwardedHttps(headers: Headers, env: Env): boolean {
-  return trustedProxyList(env) !== null && lastValue(headers, "x-forwarded-proto")?.toLowerCase() === "https";
+/** The real connection and whether its peer is a proxy we trust; null when unknown (fail closed). */
+interface Connection {
+  info: PeerInfo;
+  peer: string | null;
+  viaTrustedProxy: boolean;
+}
+
+function connection(headers: Headers, env: Env): Connection | null {
+  const info = readPeerInfo(headers);
+  if (!info) return null;
+  const peer = info.peer ? cleanAddress(info.peer) : null;
+  const trusted = trustedProxyList(env);
+  return { info, peer, viaTrustedProxy: Boolean(peer && trusted && isTrusted(trusted, peer)) };
+}
+
+/**
+ * The client's address: the socket's peer, or, when that peer is a trusted proxy, the first
+ * untrusted address walking X-Forwarded-For right to left. Null when the connection is unknown.
+ */
+export function setupClientAddress(headers: Headers, env: Env = process.env): string | null {
+  const conn = connection(headers, env);
+  if (!conn) return null;
+  if (!conn.viaTrustedProxy) return conn.peer;
+  const trusted = trustedProxyList(env)!;
+  const chain = (headers.get("x-forwarded-for") ?? "").split(",").map(cleanAddress).filter((a): a is string => a !== null);
+  for (let i = chain.length - 1; i >= 0; i -= 1) {
+    if (!isTrusted(trusted, chain[i])) return chain[i];
+  }
+  // Every hop is a proxy we trust (a request from the proxy host itself): the first hop is the client.
+  return chain[0] ?? conn.peer;
+}
+
+function isHttps(headers: Headers, conn: Connection): boolean {
+  if (conn.info.tls) return true;
+  return conn.viaTrustedProxy && lastValue(headers, "x-forwarded-proto")?.toLowerCase() === "https";
 }
 
 /** Host the browser asked for: X-Forwarded-Host from a trusted proxy, else Host. */
-function requestHost(headers: Headers, env: Env): string | null {
-  const forwarded = trustedProxyList(env) ? lastValue(headers, "x-forwarded-host") : null;
+function requestHost(headers: Headers, conn: Connection): string | null {
+  const forwarded = conn.viaTrustedProxy ? lastValue(headers, "x-forwarded-host") : null;
   return (forwarded ?? headers.get("host"))?.trim().toLowerCase() || null;
 }
 
 /**
- * How this request reached the CMS, if the setup code may travel over it: HTTPS through a trusted
- * proxy, or a loopback client asking for a loopback host (an SSH tunnel). Null otherwise.
+ * How this request reached the CMS, if the setup code may travel over it. Null otherwise.
+ *
+ * - "https": the socket is TLS, or a trusted proxy says the browser used HTTPS.
+ * - "loopback" (an SSH tunnel), only when all of these hold: the server listens on 127.0.0.1 or ::1
+ *   only (not 0.0.0.0/::), the socket's peer is loopback, the request carries no forwarding header
+ *   (so no local proxy is relaying someone else), and the browser asked for a loopback host.
  */
 export function setupTransport(headers: Headers, env: Env = process.env): SetupTransport | null {
-  if (forwardedHttps(headers, env)) return "https";
-  const host = requestHost(headers, env);
-  if (host && hostIsLoopback(host) && isLoopbackAddress(setupClientAddress(headers, env))) return "loopback";
+  const conn = connection(headers, env);
+  if (!conn) return null;
+  if (isHttps(headers, conn)) return "https";
+  const host = requestHost(headers, conn);
+  const boundToLoopback = isLoopbackAddress(conn.info.bound);
+  if (boundToLoopback && !conn.info.forwarded && isLoopbackAddress(conn.peer) && host && hostIsLoopback(host)) return "loopback";
   return null;
 }
 
-/** This request's own origin as the browser sees it, or null when there is no Host. */
+/** This request's own origin as the browser sees it, or null when unknown. */
 export function setupOwnOrigin(headers: Headers, env: Env = process.env): string | null {
-  const host = requestHost(headers, env);
+  const conn = connection(headers, env);
+  if (!conn) return null;
+  const host = requestHost(headers, conn);
   if (!host) return null;
-  return `${forwardedHttps(headers, env) ? "https" : "http"}://${host}`;
+  return `${isHttps(headers, conn) ? "https" : "http"}://${host}`;
 }
 
 function publicOrigin(env: Env): string | null {
@@ -155,7 +187,8 @@ export function hasCodeInQuery(url: string): boolean {
 export function setupRequestProblem(request: SetupRequestLike, env: Env = process.env): string | null {
   if (hasCodeInQuery(request.url)) return "setup code in the query string";
   if ((request.method ?? "POST").toUpperCase() !== "POST") return "not a POST";
-  if (!setupTransport(request.headers, env)) return "neither HTTPS through a trusted proxy nor loopback";
+  if (!readPeerInfo(request.headers)) return "connection details unavailable (the peer stamp is not installed; it is set up by boot tasks in setup mode)";
+  if (!setupTransport(request.headers, env)) return "neither HTTPS nor an SSH tunnel to a loopback-only server";
   const fetchSite = request.headers.get("sec-fetch-site");
   if (fetchSite && fetchSite !== "same-origin") return "cross-site request";
   const origin = request.headers.get("origin")?.trim().toLowerCase();

@@ -102,6 +102,10 @@ export default function AddressChoice({ current, port = "3000" }: { current: Add
           {!current && (
             <ol className="ml-5 list-decimal space-y-1.5 text-sm text-fg-secondary">
               <li>
+                Make sure the CMS listens only on the server itself: start it with <code>HOSTNAME=127.0.0.1</code>. Setup over the tunnel is
+                refused while the CMS listens on every network address.
+              </li>
+              <li>
                 On your own computer, open a terminal and run:{" "}
                 <code className="whitespace-nowrap">
                   ssh -L {port}:localhost:{port} you@your-server

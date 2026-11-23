@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LOCK_MS, MAX_WRONG_ATTEMPTS, resetAttemptLimiterForTests } from "@/lib/setup/attemptLimiter";
-import { issueSetupCode, resetSetupCodeForTests } from "@/lib/setup/setupCode";
+import { ModeError, assertMode } from "@/lib/setup/mode";
+import { peerStampEntryForTests, type PeerInfo } from "@/lib/setup/peerStamp";
+import { issueSetupCode, resetSetupCodeForTests, setupCodeExpiresAt } from "@/lib/setup/setupCode";
 import { SETUP_SESSION_COOKIE, requireSetupSession, resetSetupSessionsForTests } from "@/lib/setup/setupSession";
 import { POST } from "./route";
 
+vi.mock("@/lib/setup/mode", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/setup/mode")>()), assertMode: vi.fn() }));
+
 const T0 = Date.UTC(2026, 10, 23, 12, 0, 0);
 
-const tunnelHeaders = {
+/** A browser through an SSH tunnel to a server bound to 127.0.0.1 (as Next.js and the stamp present it). */
+const TUNNEL: PeerInfo = { peer: "127.0.0.1", bound: "127.0.0.1", tls: false, forwarded: false };
+const tunnelHeaders: Record<string, string> = {
   host: "localhost:3000",
   origin: "http://localhost:3000",
   "x-forwarded-for": "127.0.0.1",
@@ -14,8 +20,10 @@ const tunnelHeaders = {
   "content-type": "application/json",
 };
 
-function post(body: unknown, headers: Record<string, string> = tunnelHeaders, url = "http://localhost:3000/api/setup/code") {
-  return new Request(url, { method: "POST", headers, body: typeof body === "string" ? body : JSON.stringify(body) });
+function post(body: unknown, headers: Record<string, string> = tunnelHeaders, url = "http://localhost:3000/api/setup/code", conn: PeerInfo = TUNNEL) {
+  const all = new Headers(headers);
+  all.set(...peerStampEntryForTests(conn));
+  return new Request(url, { method: "POST", headers: all, body: typeof body === "string" ? body : JSON.stringify(body) });
 }
 
 function cookieToken(response: Response): string {
@@ -35,7 +43,16 @@ beforeEach(() => {
   resetAttemptLimiterForTests();
   resetSetupSessionsForTests();
   code = issueSetupCode({ env: {}, now: T0 }).display!;
+  vi.mocked(assertMode).mockResolvedValue({ mode: "setup", databaseSource: null, databaseReady: false, reason: "", checkedAt: T0 });
 });
+
+/** The replacement code the route printed after the last successful use. */
+function printedReplacement(): string {
+  const line = vi.mocked(console.info).mock.calls.flat().map(String).reverse().find((l) => l.includes("use this new code"));
+  const match = line && /new code: ([0-9A-Z-]+)/.exec(line);
+  if (!match) throw new Error("no replacement code printed");
+  return match[1];
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -90,9 +107,18 @@ describe("POST /api/setup/code", () => {
     expect(afterLock.status).toBe(200);
   });
 
-  it("a second browser entering the code takes over", async () => {
+  it("the code works once: a second use fails even inside the hour", async () => {
+    expect((await POST(post({ code }))).status).toBe(200);
+    const again = await POST(post({ code }));
+    expect(again.status).toBe(401);
+    expect(again.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("after a use, a replacement code is printed to the log, and it is what takes setup over to another browser", async () => {
     const first = cookieToken(await POST(post({ code })));
-    const secondResponse = await POST(post({ code }));
+    const replacement = printedReplacement();
+    expect(replacement).not.toBe(code);
+    const secondResponse = await POST(post({ code: replacement }));
     expect((await secondResponse.json()).data.tookOver).toBe(true);
     expect(() => requireSetupSession({ headers: new Headers({ cookie: `${SETUP_SESSION_COOKIE}=${first}` }) })).toThrow("Setup continued in another browser.");
   });
@@ -110,9 +136,43 @@ describe("POST /api/setup/code", () => {
     expect(response.headers.get("set-cookie")).toBeNull();
   });
 
+  it("on a finished install it is a 404 and never touches the code", async () => {
+    vi.mocked(assertMode).mockRejectedValueOnce(new ModeError("running", ["setup"]));
+    const response = await POST(post({ code }));
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(setupCodeExpiresAt()).not.toBeNull();
+    expect((await POST(post({ code }))).status).toBe(200);
+  });
+
+  it("refuses a spoofed loopback: XFF 127.0.0.1 and Host localhost from a remote peer", async () => {
+    const spoof = { peer: "198.51.100.7", bound: "0.0.0.0", tls: false, forwarded: true };
+    expect((await POST(post({ code }, tunnelHeaders, undefined, spoof))).status).toBe(403);
+  });
+
+  it("refuses the tunnel when the server listens on every interface", async () => {
+    expect((await POST(post({ code }, tunnelHeaders, undefined, { ...TUNNEL, bound: "0.0.0.0" }))).status).toBe(403);
+  });
+
+  it("refuses a request without the peer stamp", async () => {
+    const bare = new Request("http://localhost:3000/api/setup/code", { method: "POST", headers: tunnelHeaders, body: JSON.stringify({ code }) });
+    expect((await POST(bare)).status).toBe(403);
+  });
+
+  it("rotating X-Forwarded-For values from one peer cannot escape the lockout", async () => {
+    // Forwarding headers make the tunnel ineligible, so use HTTPS on the socket to reach the limiter.
+    const direct = { peer: "198.51.100.7", bound: "0.0.0.0", tls: true, forwarded: true };
+    const https = { ...tunnelHeaders, host: "cms.example.com", origin: "https://cms.example.com" };
+    for (let i = 0; i < MAX_WRONG_ATTEMPTS; i += 1) {
+      await POST(post({ code: `wrong-${i}` }, { ...https, "x-forwarded-for": `192.0.2.${i}` }, "https://cms.example.com/api/setup/code", direct));
+    }
+    const locked = await POST(post({ code }, { ...https, "x-forwarded-for": "192.0.2.200" }, "https://cms.example.com/api/setup/code", direct));
+    expect(locked.status).toBe(429);
+  });
+
   it("refuses plain HTTP from a remote address and a foreign Origin", async () => {
-    const remote = { ...tunnelHeaders, host: "203.0.113.5:3000", origin: "http://203.0.113.5:3000", "x-forwarded-for": "198.51.100.7" };
-    expect((await POST(post({ code }, remote))).status).toBe(403);
+    const remote = { ...tunnelHeaders, host: "203.0.113.5:3000", origin: "http://203.0.113.5:3000" };
+    expect((await POST(post({ code }, remote, undefined, { peer: "198.51.100.7", bound: "0.0.0.0", tls: false, forwarded: false }))).status).toBe(403);
     expect((await POST(post({ code }, { ...tunnelHeaders, origin: "http://evil.localhost:3000" }))).status).toBe(403);
   });
 

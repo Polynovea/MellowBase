@@ -25,7 +25,8 @@ export default async function SetupCodePage({ searchParams }: { searchParams: Se
         <h2 className="ui-section-title">Enter the setup code</h2>
         <p className="ui-section-description">
           When the CMS started, it printed a one-time setup code in the server log, next to the setup address. Entering it proves you're the person
-          who runs this server. It works for one hour; restarting the CMS prints a new one.
+          who runs this server. It works once, within an hour; after you use it, the log shows a fresh code in case you need to continue in
+          another browser.
         </p>
       </header>
 

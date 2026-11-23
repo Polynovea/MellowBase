@@ -7,7 +7,8 @@ import { isIP } from "node:net";
  *   IPv6 /64 (one home or one VM usually gets a whole /64, so per-address limits would be free to
  *   dodge). The client address comes from the trusted-proxy rule in requestGuards.ts.
  * - Global ceiling: past 200 wrong codes in an hour, every source must wait a minute between
- *   attempts. That slows a distributed guesser but never locks the wizard outright: a single global
+ *   attempts, including a source seen for the first time (its first request only starts the
+ *   clock). That slows a distributed guesser but never locks the wizard outright: a single global
  *   lock was rejected because anyone on the internet could keep setup locked forever.
  * - In memory only. A restart resets it, together with the code it protects.
  *
@@ -87,19 +88,7 @@ function prune(now: number): void {
   }
 }
 
-/** Whether this source may try a code now. Does not count anything by itself. */
-export function checkAttempt(key: string, now: number = Date.now()): AttemptDecision {
-  const source = state().sources.get(key);
-  if (source && source.lockedUntil > now) return { allowed: false, reason: "locked", retryAfterMs: source.lockedUntil - now };
-  if (source && globalPressure(now)) {
-    const wait = source.lastAttempt + PRESSURE_SPACING_MS - now;
-    if (wait > 0) return { allowed: false, reason: "slowed", retryAfterMs: wait };
-  }
-  return { allowed: true };
-}
-
-/** Counts a wrong code. Returns the decision for this source's next attempt. */
-export function recordFailure(key: string, now: number = Date.now()): AttemptDecision {
+function track(key: string, now: number): SourceState {
   const limiter = state();
   let source = limiter.sources.get(key);
   if (!source) {
@@ -111,6 +100,31 @@ export function recordFailure(key: string, now: number = Date.now()): AttemptDec
     source = { failures: [], lockedUntil: 0, lastAttempt: now };
     limiter.sources.set(key, source);
   }
+  return source;
+}
+
+/**
+ * Whether this source may try a code now. Under global pressure it also starts the source's
+ * one-a-minute clock: a first-time source waits a minute too, and an allowed attempt resets it.
+ */
+export function checkAttempt(key: string, now: number = Date.now()): AttemptDecision {
+  const existing = state().sources.get(key);
+  if (existing && existing.lockedUntil > now) return { allowed: false, reason: "locked", retryAfterMs: existing.lockedUntil - now };
+  if (!globalPressure(now)) return { allowed: true };
+  if (!existing) {
+    track(key, now);
+    return { allowed: false, reason: "slowed", retryAfterMs: PRESSURE_SPACING_MS };
+  }
+  const wait = existing.lastAttempt + PRESSURE_SPACING_MS - now;
+  if (wait > 0) return { allowed: false, reason: "slowed", retryAfterMs: wait };
+  existing.lastAttempt = now;
+  return { allowed: true };
+}
+
+/** Counts a wrong code. Returns the decision for this source's next attempt. */
+export function recordFailure(key: string, now: number = Date.now()): AttemptDecision {
+  const limiter = state();
+  const source = track(key, now);
   source.lastAttempt = now;
   // Only failures inside the lock window count towards a lock; an old mistake does not.
   source.failures = source.failures.filter((at) => now - at < LOCK_MS);

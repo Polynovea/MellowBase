@@ -94,15 +94,26 @@ describe("global ceiling", () => {
     expect(checkAttempt(owner, T0 + 1001)).toEqual({ allowed: true });
   });
 
-  it("past the ceiling, sources are slowed to one attempt a minute, never locked", () => {
+  it("past the ceiling, every source is slowed to one attempt a minute, a new one included, never locked", () => {
     flood(GLOBAL_CEILING);
     const owner = sourceKey("192.0.2.10");
     const now = T0 + 5000;
-    // A source that has not guessed yet is never held back.
-    expect(checkAttempt(owner, now)).toEqual({ allowed: true });
-    const afterMistake = recordFailure(owner, now);
-    expect(afterMistake).toEqual({ allowed: false, reason: "slowed", retryAfterMs: PRESSURE_SPACING_MS });
+    // A source seen for the first time waits too: its first request only starts the clock.
+    expect(checkAttempt(owner, now)).toEqual({ allowed: false, reason: "slowed", retryAfterMs: PRESSURE_SPACING_MS });
+    expect(checkAttempt(owner, now + PRESSURE_SPACING_MS - 1)).toMatchObject({ allowed: false, reason: "slowed" });
     expect(checkAttempt(owner, now + PRESSURE_SPACING_MS)).toEqual({ allowed: true });
+    // The allowed attempt restarts the clock, so the next one waits again.
+    expect(checkAttempt(owner, now + PRESSURE_SPACING_MS + 1)).toMatchObject({ allowed: false, reason: "slowed" });
+    const afterMistake = recordFailure(owner, now + 2 * PRESSURE_SPACING_MS);
+    expect(afterMistake).toEqual({ allowed: false, reason: "slowed", retryAfterMs: PRESSURE_SPACING_MS });
+    expect(checkAttempt(owner, now + 3 * PRESSURE_SPACING_MS)).toEqual({ allowed: true });
+  });
+
+  it("an attacker rotating through new sources gets no free first attempt under pressure", () => {
+    flood(GLOBAL_CEILING);
+    const now = T0 + 5000;
+    const allowed = Array.from({ length: 50 }, (_, i) => checkAttempt(sourceKey(`2001:db8:${i}::1`), now).allowed);
+    expect(allowed.every((ok) => ok === false)).toBe(true);
   });
 
   it("an attacker keeping the ceiling full forever still cannot lock the owner out", () => {
@@ -110,8 +121,9 @@ describe("global ceiling", () => {
     for (let minute = 0; minute < 120; minute += 5) {
       const now = T0 + minute * 60_000;
       flood(GLOBAL_CEILING, now);
-      // The owner waits out any spacing and is always eventually allowed.
-      const decision = checkAttempt(owner, now + PRESSURE_SPACING_MS);
+      const first = checkAttempt(owner, now);
+      // The owner waits out the spacing at most once and is then allowed.
+      const decision = first.allowed ? first : checkAttempt(owner, now + first.retryAfterMs);
       expect(decision).toEqual({ allowed: true });
     }
   });

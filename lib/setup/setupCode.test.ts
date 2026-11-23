@@ -14,8 +14,8 @@ vi.mock("node:crypto", async (importOriginal) => {
 });
 
 const {
-  SETUP_CODE_ENV, SETUP_CODE_TTL_MS, SetupCodeConfigError, classifyEnvironmentCode, encodeCrockford, formatSetupCode, issueAndPrintSetupCode,
-  issueSetupCode, normaliseSetupCode, resetSetupCodeForTests, setupCodeExpiresAt, verifySetupCode,
+  SETUP_CODE_ENV, SETUP_CODE_TTL_MS, SetupCodeConfigError, classifyEnvironmentCode, consumeSetupCode, encodeCrockford, formatSetupCode,
+  issueAndPrintSetupCode, issueReplacementSetupCode, issueSetupCode, normaliseSetupCode, resetSetupCodeForTests, setupCodeExpiresAt, verifySetupCode,
 } = await import("./setupCode");
 
 const T0 = Date.UTC(2026, 10, 23, 12, 0, 0);
@@ -178,6 +178,52 @@ describe("POLYNOVEA_SETUP_CODE", () => {
     const env: Record<string, string | undefined> = { [SETUP_CODE_ENV]: "  " };
     expect(issue(env).source).toBe("generated");
     expect(SETUP_CODE_ENV in env).toBe(false);
+  });
+});
+
+describe("one use only", () => {
+  it("a correct code works once; a second use fails even inside the hour", () => {
+    const code = issue().display!;
+    expect(consumeSetupCode(code, T0 + 1)).toBe(true);
+    expect(consumeSetupCode(code, T0 + 2)).toBe(false);
+    expect(verifySetupCode(code, T0 + 3)).toBe(false);
+    expect(setupCodeExpiresAt()).toBeNull();
+  });
+
+  it("a wrong code does not use up the right one", () => {
+    const code = issue().display!;
+    expect(consumeSetupCode("WRONG", T0 + 1)).toBe(false);
+    expect(consumeSetupCode(code, T0 + 2)).toBe(true);
+  });
+
+  it("an operator-supplied code is one use too", () => {
+    issue({ [SETUP_CODE_ENV]: "7K3M9Q2T8VXZ4HNP6RJWBCDEFG" });
+    expect(consumeSetupCode("7K3M9Q2T8VXZ4HNP6RJWBCDEFG", T0 + 1)).toBe(true);
+    expect(consumeSetupCode("7K3M9Q2T8VXZ4HNP6RJWBCDEFG", T0 + 2)).toBe(false);
+  });
+
+  it("the replacement is a new generated code, printed to the log, with its own hour", () => {
+    const first = issue().display!;
+    consumeSetupCode(first, T0 + 1);
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const replacement = issueReplacementSetupCode({ now: T0 + 10_000 });
+    expect(replacement).toMatchObject({ source: "generated", expiresAt: T0 + 10_000 + SETUP_CODE_TTL_MS });
+    expect(replacement.display).not.toBe(first);
+    expect(info.mock.calls[0][0]).toContain(replacement.display!);
+    expect(info.mock.calls[0][0]).toContain("no longer works");
+    info.mockRestore();
+    expect(consumeSetupCode(first, T0 + 20_000)).toBe(false);
+    expect(consumeSetupCode(replacement.display!, T0 + 20_000)).toBe(true);
+  });
+
+  it("the replacement never reads POLYNOVEA_SETUP_CODE again", () => {
+    process.env[SETUP_CODE_ENV] = "7K3M9Q2T8VXZ4HNP6RJWBCDEFG";
+    try {
+      expect(issueReplacementSetupCode({ now: T0, announce: () => {} }).source).toBe("generated");
+      expect(process.env[SETUP_CODE_ENV]).toBe("7K3M9Q2T8VXZ4HNP6RJWBCDEFG");
+    } finally {
+      delete process.env[SETUP_CODE_ENV];
+    }
   });
 });
 
