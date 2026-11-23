@@ -85,6 +85,8 @@ describe("service_role (Supabase's service key) cannot write what the worker tru
     const { rows: [model] } = await owner.query("insert into content_models (workspace_id, name, api_key) values ($1, 'M', $2) returning id, api_key", [ws.id, `sr_${suffix}`]);
     await admin.query("begin");
     try {
+      // Privilege changes wait for the suite's privilege lock (see withPrivilegeLock).
+      await admin.query("select pg_advisory_xact_lock(7401, 1)");
       await admin.query("grant insert, update on public.schema_migration_ledger to service_role");
       // As on Supabase, service_role bypasses row-level security (it must see the model's row).
       await admin.query("alter role service_role bypassrls");
