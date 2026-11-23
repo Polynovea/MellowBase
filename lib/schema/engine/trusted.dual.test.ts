@@ -55,7 +55,7 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     expect(early).toMatchObject({ code: "stage_not_ready" });
 
     const request2 = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: v2, renames, stage: "expand" });
-    expect(request2.steps.map((s) => s.kind)).toEqual(["rename_column", "add_column", "drop_column"]);
+    expect(request2.steps.map((s) => s.kind)).toEqual(["rename_column", "add_column", "add_search_index", "drop_column"]);
     // The request stores one stage hash per ledger row, both computed from the full plan now.
     const expandHash = computeStageHash(request2, "expand");
     const destructiveHash = computeStageHash(request2, "destructive");

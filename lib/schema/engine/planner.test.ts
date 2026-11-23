@@ -161,7 +161,9 @@ describe("migration plan: rules and caps", () => {
     expect(problems(null, v1, { limits, otherModelCount: 2 })).toEqual(["cap_exceeded"]);
     expect(problems(null, v1, { limits, otherModelCount: 1 })).toEqual([]);
     expect(problems(v1, model(f("a"), f("b"), f("c"), f("d")), { limits })).toEqual(["cap_exceeded"]);
-    expect(problems(v1, model(f("a", "text", { unique: true }), f("b", "text", { index: true })), { limits })).toEqual(["cap_exceeded"]);
+    // Search indexes never count as an error (they fill what is left); real indexes over the cap do.
+    expect(problems(v1, model(f("a", "text", { unique: true }), f("b", "text", { index: true })), { limits })).toEqual([]);
+    expect(problems(v1, model(f("a", "text", { unique: true }), f("b", "text", { index: true }), f("c", "integer", { index: true })), { limits })).toEqual(["cap_exceeded"]);
     // Defaults: 150 fields is allowed, 151 is not.
     const many = (n: number) => model(...Array.from({ length: n }, (_, i) => f(`field_${i}`, "integer")));
     expect(problems(null, many(150))).toEqual([]);
@@ -184,9 +186,25 @@ describe("migration plan: search indexes", () => {
     expect(Object.values(shape.columns).filter((c) => c.searchIndexed).map((c) => c.field)).toEqual(["title", "body", "notes"]);
     // The flag is absent (not false) elsewhere, so shapes recorded before it keep their hashes.
     expect("searchIndexed" in shape.columns.slug).toBe(false);
-    const prose = (n: number) => model(...Array.from({ length: n }, (_, i) => f(`t_${i}`, "long_text")));
-    expect(problems(null, prose(50))).toEqual([]);
-    expect(problems(null, prose(51))).toEqual(["cap_exceeded"]);
+  });
+
+  it("never blocks a model: real indexes use the budget first, search indexes take what is left in field order", () => {
+    const prose = (n: number, ...extra: FieldDefinition[]) => model(...extra, ...Array.from({ length: n }, (_, i) => f(`t_${i}`, "long_text")));
+    const searchIndexed = (p: MigrationPlan) => Object.values(p.targetShape!.columns).filter((c) => c.searchIndexed).map((c) => c.field);
+    const real = [f("views", "integer", { index: true }), f("code", "slug", { unique: true }), author];
+    const big = plan(null, prose(60, ...real));
+    expect(searchIndexed(big).sort()).toEqual(Array.from({ length: 47 }, (_, i) => `t_${i}`).sort());
+    expect(big.notes).toContain("13 text fields won't get a search index (index limit reached); they stay searchable, more slowly.");
+    expect(kinds(big).filter((k) => k === "add_search_index")).toHaveLength(47);
+
+    // A real index added when the budget is full takes the last search index's place.
+    const withIndex = prose(60, ...real, f("rank", "integer", { index: true }));
+    const next = buildMigrationPlan({ workspaceId: "ws", modelId: "model-1", modelApiKey: "post", table: TABLE, currentShape: big.targetShape, currentSchema: prose(60, ...real), targetSchema: withIndex });
+    if (!next.ok) throw new Error(next.problems[0].message);
+    expect(kinds(next.plan)).toEqual(["drop_search_index", "add_column", "add_index"]);
+    expect(next.plan.steps[0]).toMatchObject({ column: "t_46" });
+    // Only real indexes over the cap are an error.
+    expect(problems(null, model(...Array.from({ length: 51 }, (_, i) => f(`n_${i}`, "integer", { index: true }))))).toEqual(["cap_exceeded"]);
   });
 
   it("adds and removes the search index with the field type, and keeps it through a rename", () => {
@@ -268,6 +286,8 @@ describe("stage hashes", () => {
     if (!result.ok) throw new Error(result.problems[0].message);
     expect(result.plan.steps.every((s) => s.stage === "destructive")).toBe(true);
     expect(computeStageHash(result.plan, "destructive")).toBe(computeStageHash(full, "destructive"));
+    // The shapes carry search indexes (headline and body are prose fields), and still hash the same.
+    expect(Object.values(full.targetShape!.columns).filter((c) => c.searchIndexed).map((c) => c.field).sort()).toEqual(["body", "headline"]);
     expect(computeStageHash(full, "expand")).not.toBe(computeStageHash(full, "destructive"));
   });
 });

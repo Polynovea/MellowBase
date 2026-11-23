@@ -146,7 +146,7 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
       await backend.query("insert into content_field_permissions (workspace_id, content_model_id, field_key, role_id) values ($1, $2, $3, $4)", [m.workspaceId, m.modelId, field, m.roleId]);
     }
     const plan = await m.prepare(m.schema(f("keep"), f("gamma")));
-    expect(plan.steps.map((s) => s.kind)).toEqual(["add_column", "drop_column", "drop_column"]);
+    expect(plan.steps.map((s) => s.kind)).toEqual(["add_column", "add_search_index", "drop_column", "drop_column"]);
     // Expand fails (sabotage: the column it adds already exists): the permission clean-up rolls back too.
     await backend.query(`alter table content.${table} add column gamma text`);
     expect(await errorOf(applyExpandStage(owner, { plan, requestedBy: null, limits: TEST_LIMITS }))).toMatchObject({ code: "apply_failed" });

@@ -51,6 +51,8 @@ const { productionEngine } = await import("../lib/schema/runner/engineAdapter.ts
 const { errorCode } = await import("../lib/schema/runner/errors.ts");
 const { rollbackExpandTask } = await import("../lib/schema/runner/expandContract.ts");
 const { tryLockModel, unlockModel } = await import("../lib/schema/runner/ledger.ts");
+const { trigramSchema } = await import("../lib/schema/engine/render.ts");
+const { kyselyOn } = await import("../lib/schema/runner/engine.ts");
 
 const once = process.argv.includes("--once");
 // --model <id> or --model=<id>: only that model's stages; contracts then only with --contracts.
@@ -67,7 +69,8 @@ const log = (event, fields = {}) => console.log(JSON.stringify({ at: new Date().
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
 
-const engine = productionEngine();
+// Built on the first session: search indexes name pg_trgm's operator class in the schema it is installed in.
+let engine;
 const pool = createOwnerPool();
 // The run's session: kept across polls (it holds the model's advisory lock while a stage runs), and
 // replaced when its connection dies (a failover, a restart, pg_terminate_backend). A stage that was
@@ -79,6 +82,7 @@ async function openSession() {
   next.on("error", () => { clientBroken = true; });
   clientBroken = false;
   await assertOwnerSession(next);
+  engine ??= productionEngine(undefined, { trgmSchema: (await trigramSchema(kyselyOn(next))) ?? undefined });
   return next;
 }
 const CONNECTION_CODES = new Set(["57P01", "57P02", "57P03", "08000", "08001", "08003", "08004", "08006", "ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT"]);

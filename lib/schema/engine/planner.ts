@@ -2,7 +2,7 @@
 // the ordered steps that get from one to the other. Pure: no database access. Inputs that need the
 // database (the current shape, reserved names, model count) are loaded by apply.ts.
 import { canonicalJson, hashCanonical, hashModelSchema, hashShape } from "@/lib/schema/engine/hash";
-import { columnOfField, hasNoColumn, indexCount, isLosslessTypeChange, shapeForSchema } from "@/lib/schema/engine/columns";
+import { columnOfField, fieldsWithoutSearchIndex, hasNoColumn, indexCount, isLosslessTypeChange, shapeForSchema } from "@/lib/schema/engine/columns";
 import { describeStep, fieldsByColumn, type DescribeContext } from "@/lib/schema/engine/describe";
 import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "@/lib/schema/engine/limits";
 import { nameProblem, TABLE_NAME_PATTERN } from "@/lib/schema/engine/names";
@@ -180,7 +180,7 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
   }
   if (problems.length) return problems;
 
-  const targetShape = shapeForSchema(input.table, target, input.currentShape, input.renames);
+  const targetShape = shapeForSchema(input.table, target, input.currentShape, input.renames, limits.maxIndexesPerModel);
   const indexes = indexCount(targetShape);
   if (indexes > limits.maxIndexesPerModel) {
     problems.push({ code: "cap_exceeded", message: `A model can have at most ${limits.maxIndexesPerModel} indexes (unique, indexed, relation or search); this one has ${indexes}.` });
@@ -241,7 +241,7 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
 
   const { table, targetSchema: target } = input;
   const current = normalizeShape(input.currentShape);
-  const targetShape = target ? normalizeShape(shapeForSchema(table, target, current, input.renames)) : null;
+  const targetShape = target ? normalizeShape(shapeForSchema(table, target, current, input.renames, limits.maxIndexesPerModel)) : null;
   const drafts: Draft[] = [];
   const notes: string[] = [];
 
@@ -319,6 +319,8 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
     for (const field of target.fields) {
       if (hasNoColumn(field)) notes.push(`"${field.label || field.key}" links to many entries; those links are stored separately, not in the model table.`);
     }
+    const unindexed = targetShape ? fieldsWithoutSearchIndex(target, targetShape).length : 0;
+    if (unindexed) notes.push(`${unindexed} text ${unindexed === 1 ? "field won't" : "fields won't"} get a search index (index limit reached); ${unindexed === 1 ? "it stays" : "they stay"} searchable, more slowly.`);
   }
 
   // Stable order: expand steps first (by kind, then as planned), then destructive steps as planned.

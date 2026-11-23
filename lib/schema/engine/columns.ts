@@ -4,6 +4,7 @@
 import { FIELD_TYPE_REGISTRY } from "@/lib/schema/fields/registry";
 import type { CanonicalSchema, FieldDefinition, RelationConfig } from "@/lib/schema/fields/types";
 import { columnNameFor } from "@/lib/schema/engine/names";
+import { DEFAULT_SCHEMA_LIMITS } from "@/lib/schema/engine/limits";
 import { PG_COLUMN_TYPES, type ColumnShape, type ForeignKeyAction, type PgColumnType, type TableShape } from "@/lib/schema/engine/plan";
 
 const PG_TYPES: ReadonlySet<string> = new Set(PG_COLUMN_TYPES);
@@ -25,6 +26,11 @@ export const FOREIGN_KEY_ACTIONS: Record<RelationConfig["onDelete"], ForeignKeyA
  * hold identifiers or fixed values (slug, email, url, select) are matched exactly, not searched.
  */
 export const SEARCH_FIELD_TYPES: ReadonlySet<FieldDefinition["type"]> = new Set(["text", "long_text", "markdown"]);
+
+/** Whether a field's column would get a search index if the index budget allows it. */
+export function wantsSearchIndex(field: FieldDefinition): boolean {
+  return SEARCH_FIELD_TYPES.has(field.type) && FIELD_TYPE_REGISTRY[field.type]?.postgresType === "text";
+}
 
 /** True for a relation that holds one target per entry, stored as a uuid column with a foreign key. */
 export function isToOneRelation(field: FieldDefinition): boolean {
@@ -58,7 +64,7 @@ export function columnForField(field: FieldDefinition, columnName: string): Colu
     indexed: !unique && (Boolean(field.index) || field.type === "relation"),
   };
   if (toOne && field.relation) column.foreignKey = { onDelete: FOREIGN_KEY_ACTIONS[field.relation.onDelete] };
-  if (pgType === "text" && SEARCH_FIELD_TYPES.has(field.type)) column.searchIndexed = true;
+  if (wantsSearchIndex(field)) column.searchIndexed = true;
   return column;
 }
 
@@ -77,6 +83,7 @@ export function shapeForSchema(
   schema: CanonicalSchema,
   current: TableShape | null = null,
   renames: readonly { from: string; to: string }[] = [],
+  maxIndexes: number = DEFAULT_SCHEMA_LIMITS.maxIndexesPerModel,
 ): TableShape {
   const taken = new Set(Object.keys(current?.columns ?? {}));
   const renamedFrom = new Map(renames.map((rename) => [rename.to, rename.from]));
@@ -106,7 +113,23 @@ export function shapeForSchema(
     const column = columnForField(field, name);
     if (column) columns[column.name] = column;
   }
+  // Search indexes are an optional speed-up and never block a model: real indexes (unique, plain,
+  // relation) use the per-model budget first, search indexes take what is left in the schema's field
+  // order (deterministic, so plan hashes are stable). A prose field past the budget has no trigram
+  // index; it stays searchable through content_search_documents and an unindexed match.
+  let budget = Math.max(0, maxIndexes - Object.values(columns).filter((column) => column.unique || column.indexed).length);
+  for (const field of schema.fields) {
+    const column = Object.values(columns).find((c) => c.field === field.key);
+    if (!column?.searchIndexed) continue;
+    if (budget > 0) budget -= 1;
+    else delete column.searchIndexed;
+  }
   return { table, columns };
+}
+
+/** Prose fields of `schema` that get no search index in `shape` (the index budget ran out). */
+export function fieldsWithoutSearchIndex(schema: CanonicalSchema, shape: TableShape): string[] {
+  return schema.fields.filter((field) => wantsSearchIndex(field) && columnOfField(shape, field.key) && !columnOfField(shape, field.key)!.searchIndexed).map((field) => field.key);
 }
 
 /** Indexes the columns have (unique, plain and search); counted against the per-model index cap. */
