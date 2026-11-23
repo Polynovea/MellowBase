@@ -46,10 +46,25 @@ async function loadVersion(db: Executor, contentModelId: string, versionId: stri
 /** Rebuilds the plan for a change from trusted state. Deterministic: same state, same plan hash. */
 export async function buildPlanFromTrustedState(db: Executor, input: TrustedPlanInput): Promise<MigrationPlan> {
   if (!UUID.test(String(input.contentModelId))) throw new SchemaEngineError("not_found", "This model no longer exists.");
-  const model = await db.selectFrom("content_models").select(["id", "workspace_id", "api_key", "status"]).where("id", "=", input.contentModelId).executeTakeFirst();
+  const model = await db.selectFrom("content_models").select(["id", "workspace_id", "api_key", "status", "current_schema_version"]).where("id", "=", input.contentModelId).executeTakeFirst();
   if (!model) throw new SchemaEngineError("not_found", "This model no longer exists.");
   if (input.targetVersionId === null && model.status !== "archived") {
     throw new SchemaEngineError("invalid_plan", "A model's table can only be deleted after the model is archived.");
+  }
+  if (input.targetVersionId !== null) {
+    // Only the model's current version may be built toward. A request made for an older version (for
+    // example a deletion confirmed after a newer version kept the field) would undo the newer one.
+    const latest = await db.selectFrom("content_model_versions").select("id")
+      .where("content_model_id", "=", model.id).where("version_number", "=", model.current_schema_version).executeTakeFirst();
+    if (latest && latest.id !== input.targetVersionId) {
+      if (UUID.test(input.targetVersionId)) {
+        const requested = await db.selectFrom("content_model_versions").select("content_model_id").where("id", "=", input.targetVersionId).executeTakeFirst();
+        if (requested?.content_model_id === model.id) {
+          throw new SchemaEngineError("stale_plan", "The model has a newer version than this change was planned for. Plan the change again.");
+        }
+      }
+      throw new SchemaEngineError("not_found", "This schema version does not exist for this model.");
+    }
   }
   // Renames belong to the expand stage; by the destructive stage they have been applied.
   const renames = input.stage === "expand" && Array.isArray(input.renames) ? input.renames.map((r) => ({ from: String(r?.from), to: String(r?.to) })) : [];

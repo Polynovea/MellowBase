@@ -75,6 +75,24 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     expect(Object.values((await loadModelTable(getDb(), m.modelId))!.shape.columns).map((c) => c.field).sort()).toEqual(["body", "headline"]);
   });
 
+  it("refuses a deletion planned for an older version once a newer version keeps the field", async () => {
+    const m = await model();
+    const first = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: m.v1, stage: "expand" });
+    await applyExpandStage(owner, { plan: first, requestedBy: null, limits: TEST_LIMITS });
+    const save = async (fields: ReturnType<typeof field>[]) => {
+      const changed = await applyChange({ model: (await getModel(m.workspaceId, m.modelId))!, proposedSchema: { name: "Post", apiKey: m.apiKey, fields }, acknowledgeUnsafe: true, actorAdminUserId: m.adminUserId });
+      if (!changed.ok || !changed.data.version) throw new Error("version not created");
+      return changed.data.version.id;
+    };
+    const v2 = await save([field("title")]);
+    const deletion = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: v2, stage: "expand" });
+    const destructiveHash = computeStageHash(deletion, "destructive");
+    await applyExpandStage(owner, { plan: await workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "expand", requestedPlanHash: computeStageHash(deletion, "expand") }), requestedBy: null, limits: TEST_LIMITS });
+    await save([field("title"), field("secret")]);
+    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "destructive", requestedPlanHash: destructiveHash }))).toMatchObject({ code: "stale_plan" });
+    expect(Object.values((await loadModelTable(getDb(), m.modelId))!.shape.columns).map((c) => c.field).sort()).toEqual(["secret", "title"]);
+  });
+
   it("refuses a ledger row whose plan targets another model's table, or another model's version", async () => {
     const a = await model();
     const b = await model();
