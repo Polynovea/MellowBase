@@ -14,7 +14,7 @@ import { applyStepToShape, computePlanHash } from "@/lib/schema/engine/planner";
 /** Steps that delete data: only ever in the destructive stage, which needs the typed confirmation. */
 export const DATA_DELETING_STEPS: ReadonlySet<PlanStep["kind"]> = new Set(["drop_column", "drop_table", "replace_column"]);
 /** What may follow a replace in the destructive stage: the new column's constraints. */
-const DESTRUCTIVE_STAGE_STEPS: ReadonlySet<PlanStep["kind"]> = new Set([...DATA_DELETING_STEPS, "backfill_column", "set_required", "add_index", "add_foreign_key"]);
+const DESTRUCTIVE_STAGE_STEPS: ReadonlySet<PlanStep["kind"]> = new Set([...DATA_DELETING_STEPS, "backfill_column", "set_required", "add_index", "add_search_index", "add_foreign_key"]);
 const FK_ACTIONS = new Set(["restrict", "set_null"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

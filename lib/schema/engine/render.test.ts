@@ -35,6 +35,17 @@ describe("rendered SQL", () => {
     expect(policy.sql).toBe('create policy "polynovea_app_all" on "content"."m_post" for all to "polynovea_app" using (true) with check (true)');
   });
 
+  it("builds and drops the pg_trgm search index CONCURRENTLY outside a transaction, and renames it with the column", () => {
+    const tg = derivedName("tg", "m_post", "title");
+    const [add] = compile({ kind: "add_search_index", stage: "expand", summary: "", table: "m_post", column: "title" }, true);
+    expect(add).toMatchObject({ sql: `create index concurrently "${tg}" on "content"."m_post" using gin ("title" gin_trgm_ops)`, transactional: false });
+    const [drop] = compile({ kind: "drop_search_index", stage: "expand", summary: "", table: "m_post", column: "title" }, true);
+    expect(drop).toMatchObject({ sql: `drop index concurrently "content"."${tg}"`, transactional: false });
+    expect(compile({ kind: "add_search_index", stage: "expand", summary: "", table: "m_post", column: "title" })[0]).toMatchObject({ transactional: true });
+    const renames = compile({ kind: "rename_column", stage: "expand", summary: "", table: "m_post", from: "title", to: "headline", field: "headline", column: { ...title, searchIndexed: true } });
+    expect(renames.map((s) => s.sql)).toContain(`alter index "content"."${tg}" rename to "${derivedName("tg", "m_post", "headline")}"`);
+  });
+
   it("quotes every identifier and binds the backfill value as a parameter", () => {
     const [fill] = compile({ kind: "backfill_column", stage: "expand", summary: "", table: "m_post", column: "title", pgType: "text", value: "x'); drop table users; --" });
     expect(fill.sql).toBe('update "content"."m_post" set "title" = cast($1 as text) where "title" is null');

@@ -19,6 +19,13 @@ export const FOREIGN_KEY_ACTIONS: Record<RelationConfig["onDelete"], ForeignKeyA
   archive_dependents: "restrict",
 };
 
+/**
+ * Field types whose values are prose people search for: their text columns get a pg_trgm index.
+ * The canonical schema has no per-field search setting, so the field type decides. Text fields that
+ * hold identifiers or fixed values (slug, email, url, select) are matched exactly, not searched.
+ */
+export const SEARCH_FIELD_TYPES: ReadonlySet<FieldDefinition["type"]> = new Set(["text", "long_text", "markdown"]);
+
 /** True for a relation that holds one target per entry, stored as a uuid column with a foreign key. */
 export function isToOneRelation(field: FieldDefinition): boolean {
   return field.type === "relation" && (field.relation?.cardinality === "many_to_one" || field.relation?.cardinality === "one_to_one");
@@ -51,6 +58,7 @@ export function columnForField(field: FieldDefinition, columnName: string): Colu
     indexed: !unique && (Boolean(field.index) || field.type === "relation"),
   };
   if (toOne && field.relation) column.foreignKey = { onDelete: FOREIGN_KEY_ACTIONS[field.relation.onDelete] };
+  if (pgType === "text" && SEARCH_FIELD_TYPES.has(field.type)) column.searchIndexed = true;
   return column;
 }
 
@@ -101,9 +109,9 @@ export function shapeForSchema(
   return { table, columns };
 }
 
-/** Indexes a column has (unique or plain); counted against the per-model index cap. */
+/** Indexes the columns have (unique, plain and search); counted against the per-model index cap. */
 export function indexCount(shape: TableShape): number {
-  return Object.values(shape.columns).filter((column) => column.unique || column.indexed).length;
+  return Object.values(shape.columns).reduce((sum, column) => sum + (column.unique || column.indexed ? 1 : 0) + (column.searchIndexed ? 1 : 0), 0);
 }
 
 /**

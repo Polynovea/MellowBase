@@ -80,7 +80,7 @@ export function tableNameCandidates(workspaceId: string, apiKey: string): string
   return plain.length <= 63 ? [plain, hashed] : [hashed];
 }
 
-export type DerivedNameKind = "uq" | "ix" | "fk" | "ck";
+export type DerivedNameKind = "uq" | "ix" | "fk" | "ck" | "tg";
 
 /**
  * The name of a column's index or constraint. Index names share one namespace per schema, so the name

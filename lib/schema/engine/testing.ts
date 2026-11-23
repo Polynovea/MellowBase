@@ -51,6 +51,7 @@ export async function physicalShape(query: (text: string, values?: unknown[]) =>
       name, pgType, requiredWhenPublished: !!check, unique: indexes.has(derivedName("uq", table, name)), indexed: indexes.has(derivedName("ix", table, name)),
     };
     if (fk) column.foreignKey = { onDelete: FK_ACTION[String(fk.confdeltype)] };
+    if (indexes.has(derivedName("tg", table, name))) column.searchIndexed = true;
     result[name] = column;
   }
   return result;

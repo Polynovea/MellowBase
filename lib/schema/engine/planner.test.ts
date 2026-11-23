@@ -34,7 +34,7 @@ const tags = f("tags", "relation", { relation: { targetModelApiKey: "tag", cardi
 describe("migration plan: field types to columns", () => {
   it("creates a table, then adds each constraint as its own step", () => {
     const p = plan(null, model(f("title", "text", { required: true, unique: true }), f("views", "integer", { index: true }), author, tags));
-    expect(kinds(p)).toEqual(["create_table", "set_required", "add_index", "add_index", "add_index", "add_foreign_key"]);
+    expect(kinds(p)).toEqual(["create_table", "set_required", "add_index", "add_index", "add_index", "add_search_index", "add_foreign_key"]);
     const create = p.steps[0] as Extract<PlanStep, { kind: "create_table" }>;
     expect(create.columns.map((c) => [c.name, c.pgType])).toEqual([["title", "text"], ["views", "bigint"], ["author", "uuid"]]);
     expect(p.requiresConfirmation).toBe(false);
@@ -58,14 +58,14 @@ describe("migration plan: changes", () => {
 
   it("adds a field without needing confirmation", () => {
     const p = plan(v1, model(...v1.fields, f("summary")));
-    expect(kinds(p)).toEqual(["add_column"]);
+    expect(kinds(p)).toEqual(["add_column", "add_search_index"]);
     expect(p.steps[0].summary).toBe("Adds a field: Summary (summary) (text)");
     expect(p.requiresConfirmation).toBe(false);
   });
 
   it("backfills a new required field that has a default before validating it", () => {
     const p = plan(v1, model(...v1.fields, f("status", "text", { required: true, defaultValue: "draft" })));
-    expect(kinds(p)).toEqual(["add_column", "backfill_column", "set_required"]);
+    expect(kinds(p)).toEqual(["add_column", "backfill_column", "set_required", "add_search_index"]);
     expect(p.steps.find((s) => s.kind === "set_required")!.summary).toMatch(/required when published/);
   });
 
@@ -86,7 +86,7 @@ describe("migration plan: changes", () => {
     expect(renamed.requiresConfirmation).toBe(false);
 
     const silent = plan(v1, target);
-    expect(kinds(silent, "expand")).toEqual(["add_column"]);
+    expect(kinds(silent, "expand")).toEqual(["add_column", "add_search_index"]);
     expect(kinds(silent, "destructive")).toEqual(["drop_column"]);
     expect(silent.requiresConfirmation).toBe(true);
   });
@@ -101,13 +101,14 @@ describe("migration plan: changes", () => {
     expect(kinds(narrow, "destructive")).toEqual(["replace_column"]);
 
     const sameColumn = plan(v1, model(f("title", "email"), f("body", "long_text"), f("price", "integer")));
-    expect(kinds(sameColumn)).toEqual(["change_field_type"]);
+    // An email is matched exactly, not searched: its search index goes.
+    expect(kinds(sameColumn)).toEqual(["drop_search_index", "change_field_type"]);
   });
 
   it("relaxes constraints before a type change and adds new ones after", () => {
     const from = model(f("title", "text", { required: true, unique: true }), author);
     const to = model(f("title", "json", { required: true }), f("author", "text"));
-    expect(kinds(plan(from, to))).toEqual(["drop_foreign_key", "drop_index", "drop_index", "change_type", "change_type"]);
+    expect(kinds(plan(from, to))).toEqual(["drop_foreign_key", "drop_index", "drop_index", "drop_search_index", "change_type", "change_type", "add_search_index"]);
   });
 
   it("removing a to-many relation removes its metadata (permissions, name) with no DDL", () => {
@@ -155,13 +156,14 @@ describe("migration plan: rules and caps", () => {
   });
 
   it("enforces the model, field and index caps, which the operator can change", () => {
-    const limits = { maxModels: 2, maxFieldsPerModel: 3, maxIndexesPerModel: 1 };
+    // v1's title and body are search-indexed: two indexes.
+    const limits = { maxModels: 2, maxFieldsPerModel: 3, maxIndexesPerModel: 2 };
     expect(problems(null, v1, { limits, otherModelCount: 2 })).toEqual(["cap_exceeded"]);
     expect(problems(null, v1, { limits, otherModelCount: 1 })).toEqual([]);
     expect(problems(v1, model(f("a"), f("b"), f("c"), f("d")), { limits })).toEqual(["cap_exceeded"]);
     expect(problems(v1, model(f("a", "text", { unique: true }), f("b", "text", { index: true })), { limits })).toEqual(["cap_exceeded"]);
     // Defaults: 150 fields is allowed, 151 is not.
-    const many = (n: number) => model(...Array.from({ length: n }, (_, i) => f(`field_${i}`)));
+    const many = (n: number) => model(...Array.from({ length: n }, (_, i) => f(`field_${i}`, "integer")));
     expect(problems(null, many(150))).toEqual([]);
     expect(problems(null, many(151))).toEqual(["cap_exceeded"]);
   });
@@ -172,6 +174,30 @@ describe("migration plan: rules and caps", () => {
     expect(problems(v1, { ...v1, apiKey: "article" })).toContain("invalid_schema");
     expect(problems(v1, model(f("link", "relation")))).toEqual([]);
     expect(problems(model(f("title"), f("n", "integer")), model(f("title"), f("m", "boolean")), { renames: [{ from: "n", to: "m" }] })).toEqual(["invalid_rename"]);
+  });
+});
+
+describe("migration plan: search indexes", () => {
+  it("search-indexes prose text fields only, and counts them against the index cap", () => {
+    const shape = shapeForSchema(TABLE, model(f("title"), f("body", "long_text"), f("notes", "markdown"), f("slug", "slug"), f("email", "email"),
+      f("url", "url"), f("kind", "select"), f("rich", "rich_text"), f("views", "integer")));
+    expect(Object.values(shape.columns).filter((c) => c.searchIndexed).map((c) => c.field)).toEqual(["title", "body", "notes"]);
+    // The flag is absent (not false) elsewhere, so shapes recorded before it keep their hashes.
+    expect("searchIndexed" in shape.columns.slug).toBe(false);
+    const prose = (n: number) => model(...Array.from({ length: n }, (_, i) => f(`t_${i}`, "long_text")));
+    expect(problems(null, prose(50))).toEqual([]);
+    expect(problems(null, prose(51))).toEqual(["cap_exceeded"]);
+  });
+
+  it("adds and removes the search index with the field type, and keeps it through a rename", () => {
+    const from = model(f("title"), f("code", "slug"));
+    expect(kinds(plan(from, model(f("title", "slug"), f("code", "slug"))))).toEqual(["drop_search_index", "change_field_type"]);
+    expect(kinds(plan(from, model(f("title"), f("code", "long_text"))))).toEqual(["change_field_type", "add_search_index"]);
+    const renamed = plan(from, model(f("headline"), f("code", "slug")), { renames: [{ from: "title", to: "headline" }] });
+    expect(kinds(renamed)).toEqual(["rename_column"]);
+    expect(renamed.targetShape!.columns.headline.searchIndexed).toBe(true);
+    expect(renamed.steps.map((s) => s.summary)).toHaveLength(1);
+    expect(plan(null, model(f("title"))).steps.find((s) => s.kind === "add_search_index")!.summary).toBe("Indexes Title (title) for search");
   });
 });
 
