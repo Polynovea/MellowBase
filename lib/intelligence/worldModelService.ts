@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as worldData from "@/lib/intelligence/worldData";
+import type { PersistedEdge } from "@/lib/intelligence/worldData";
 import { ensureEnvironmentComponents } from "@/lib/infrastructure/operabilityService";
 import { discoverPostgresOperationalState, type DeepPostgresDiscovery } from "@/lib/intelligence/deepDiscoveryService";
 import { discoverProviderCapabilities, type ProviderCapabilityDiscovery } from "@/lib/intelligence/providerCapabilityDiscoveryService";
@@ -47,18 +48,21 @@ function addEdge(target: OperationalWorldEdgeSeed[], seed: OperationalWorldEdgeS
   if (!target.some((item) => item.fromNodeKey === seed.fromNodeKey && item.toNodeKey === seed.toNodeKey && item.relationship === seed.relationship)) target.push(seed);
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function refreshOperationalWorldModel(params: {
   workspaceId: string;
   environmentId: string;
   actorId?: string | null;
   source?: "controller" | "system_doctor" | "manual" | "api" | "scheduler";
 }) {
-  const db = createServiceRoleClient();
+  // The environment is read before the run starts: a run for an environment outside the workspace
+  // would fail on its (environment_id, workspace_id) foreign key with database text.
+  const environment = UUID.test(params.environmentId) ? await worldData.environmentRow(params.workspaceId, params.environmentId) : null;
+  if (!environment) throw Object.assign(new Error("Environment not found"), { status: 404 });
   const correlationId = randomUUID();
   const startedAt = new Date().toISOString();
-  const { data: run, error: runError } = await db
-    .from("operational_discovery_runs")
-    .insert({
+  const run = await worldData.startDiscovery({
       workspace_id: params.workspaceId,
       environment_id: params.environmentId,
       status: "running",
@@ -66,44 +70,13 @@ export async function refreshOperationalWorldModel(params: {
       source: params.source ?? "controller",
       started_at: startedAt,
       created_by: params.actorId ?? null,
-    })
-    .select()
-    .single();
-  if (runError || !run) throw new Error(runError?.message || "Could not start operational discovery");
+    });
 
   try {
-    const { data: environment } = await db
-      .from("workspace_environments")
-      .select("*")
-      .eq("workspace_id", params.workspaceId)
-      .eq("id", params.environmentId)
-      .maybeSingle();
-    if (!environment) throw Object.assign(new Error("Environment not found"), { status: 404 });
 
     const components = await ensureEnvironmentComponents(params.workspaceId, params.environmentId);
-    const [connectionsResult, websitesResult, schemasResult, modelsResult, runtimeResult, backupsResult, doctorResult, syncResult] = await Promise.all([
-      db.from("workspace_connections").select("id,name,connector_type,connector_family,status,active,config_json,metadata_json,last_verified_at,last_success_at").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId),
-      db.from("website_connection_bindings").select("id,connection_id,publication_target_id,integration_method,status,last_test_at,last_error").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId),
-      db.from("environment_schema_deployments").select("id,content_model_id,schema_version,schema_hash,status,deployed_at,metadata_json").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).order("deployed_at", { ascending: false }),
-      db.from("content_models").select("id,api_key,name,status,current_schema_version").eq("workspace_id", params.workspaceId).eq("status", "active"),
-      db.from("cms_runtime_state").select("schema_migration,app_version,worker_version,updated_at").eq("singleton", true).maybeSingle(),
-      db.from("workspace_backups").select("id,status,checksum_sha256,created_at,verified_at").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).order("created_at", { ascending: false }).limit(5),
-      db.from("system_doctor_runs").select("id,status,summary_json,checked_at").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).order("checked_at", { ascending: false }).limit(1).maybeSingle(),
-      db.from("analytics_sync_state").select("connector_id,status,fresh_through,last_success_at,last_error,updated_at").eq("workspace_id", params.workspaceId),
-    ]);
-
-    const { data: secretProvider } = environment.secret_provider_id
-      ? await db.from("workspace_secret_providers").select("id,name,provider_kind,status,config_json,updated_at").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("id", environment.secret_provider_id).maybeSingle()
-      : { data: null };
-
-    const connections = connectionsResult.data ?? [];
-    const websites = websitesResult.data ?? [];
-    const schemaRows = schemasResult.data ?? [];
-    const models = modelsResult.data ?? [];
-    const runtime = runtimeResult.data ?? null;
-    const backups = backupsResult.data ?? [];
-    const doctor = doctorResult.data ?? null;
-    const syncStates = syncResult.data ?? [];
+    const { connections, websites, schemaRows, models, runtime, backups, doctor, syncStates } = await worldData.discoveryInputs(params.workspaceId, params.environmentId);
+    const secretProvider = environment.secret_provider_id ? await worldData.secretProvider(params.workspaceId, params.environmentId, environment.secret_provider_id) : null;
     let deepPostgres: DeepPostgresDiscovery | null = null;
     let deepPostgresError: string | null = null;
     let providerCapabilities: ProviderCapabilityDiscovery | null = null;
@@ -441,11 +414,7 @@ export async function refreshOperationalWorldModel(params: {
       is_stale: false,
       updated_at: startedAt,
     }));
-    const { data: persistedNodes, error: nodesError } = await db.from("operational_world_nodes").upsert(nodeRows, { onConflict: "workspace_id,environment_id,node_key" }).select("id,node_key");
-    if (nodesError) throw new Error(nodesError.message);
-    const nodeIdByKey = new Map((persistedNodes ?? []).map((row) => [row.node_key, row.id]));
-
-    const observationRows = nodes.map((node) => ({
+    const observationsFor = (nodeIdByKey: Map<string, string>) => nodes.map((node) => ({
       workspace_id: params.workspaceId,
       environment_id: params.environmentId,
       discovery_run_id: run.id,
@@ -460,12 +429,8 @@ export async function refreshOperationalWorldModel(params: {
       observed_at: startedAt,
       valid_until: validUntil(node.validForSeconds),
     }));
-    if (observationRows.length) {
-      const { error } = await db.from("operational_observations").insert(observationRows);
-      if (error) throw new Error(error.message);
-    }
 
-    const edgeRows = edges
+    const edgesFor = (nodeIdByKey: Map<string, string>) => edges
       .map((edge) => ({ edge, from: nodeIdByKey.get(edge.fromNodeKey), to: nodeIdByKey.get(edge.toNodeKey) }))
       .filter((item) => item.from && item.to)
       .map(({ edge, from, to }) => ({
@@ -479,15 +444,13 @@ export async function refreshOperationalWorldModel(params: {
         valid_until: validUntil(edge.validForSeconds),
         is_stale: false,
       }));
-    const { data: persistedEdges, error: edgesError } = edgeRows.length
-      ? await db.from("operational_world_edges").upsert(edgeRows, { onConflict: "environment_id,from_node_id,to_node_id,relationship" }).select("id,from_node_id,to_node_id,relationship")
-      : { data: [], error: null };
-    if (edgesError) throw new Error(edgesError.message);
-
-    if (persistedEdges?.length) {
-      const edgeSeedByIdentity = new Map(edges.map((edge) => [`${nodeIdByKey.get(edge.fromNodeKey)}:${nodeIdByKey.get(edge.toNodeKey)}:${edge.relationship}`, edge]));
-      const edgeObservationRows = persistedEdges.map((edge) => {
-        const seed = edgeSeedByIdentity.get(`${edge.from_node_id}:${edge.to_node_id}:${edge.relationship}`)!;
+    // Node ids are only known once the nodes are written, so edge observations look their seed up
+    // by the persisted edge's endpoint node keys.
+    const nodeKeyById = new Map<string, string>();
+    const edgeObservationsFor = (persistedEdges: PersistedEdge[]) => {
+      const edgeSeedByIdentity = new Map(edges.map((edge) => [`${edge.fromNodeKey}:${edge.toNodeKey}:${edge.relationship}`, edge]));
+      return persistedEdges.map((edge) => {
+        const seed = edgeSeedByIdentity.get(`${nodeKeyById.get(edge.from_node_id)}:${nodeKeyById.get(edge.to_node_id)}:${edge.relationship}`)!;
         return {
           workspace_id: params.workspaceId,
           environment_id: params.environmentId,
@@ -504,16 +467,13 @@ export async function refreshOperationalWorldModel(params: {
           valid_until: validUntil(seed.validForSeconds),
         };
       });
-      const { error } = await db.from("operational_observations").insert(edgeObservationRows);
-      if (error) throw new Error(error.message);
-    }
-
-    await db.from("operational_world_nodes").update({ is_stale: true }).eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).lt("last_observed_at", startedAt);
-    await db.from("operational_world_edges").update({ is_stale: true }).eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).lt("last_observed_at", startedAt);
+    };
+    const nodeKeys = new Set(nodes.map((node) => node.nodeKey));
+    const edgeCount = edges.filter((edge) => nodeKeys.has(edge.fromNodeKey) && nodeKeys.has(edge.toNodeKey)).length;
 
     const summary = {
       nodes: nodeRows.length,
-      edges: edgeRows.length,
+      edges: edgeCount,
       staleNodesExcluded: true,
       observationTtlSeconds: DEFAULT_OBSERVATION_TTL_SECONDS,
       environmentStatus: environment.status,
@@ -521,65 +481,63 @@ export async function refreshOperationalWorldModel(params: {
       deepPostgres: deepPostgres ? { supported: deepPostgres.supported, connectionId: deepPostgres.connectionId, capabilityStates: deepPostgres.capabilityStates, inventoryCounts: deepPostgres.safeEvidence.inventoryCounts ?? {} } : { supported: false, error: deepPostgresError },
       providerCapabilities: providerCapabilities ? providerCapabilities.summary : { storageConnections: 0, storageProbed: 0, declaredContracts: 0, contractsProbed: 0, runtimeCapabilities: 0, warnings: providerCapabilitiesError ? [{ capability: "provider_discovery", message: providerCapabilitiesError }] : [] },
     };
-    const { data: completed, error: completeError } = await db.from("operational_discovery_runs").update({ status: "succeeded", completed_at: new Date().toISOString(), summary_json: summary }).eq("id", run.id).select().single();
-    if (completeError || !completed) throw new Error(completeError?.message || "Could not complete operational discovery");
-    return { run: completed, nodes: persistedNodes ?? [], edges: persistedEdges ?? [], summary };
+    const recorded = await worldData.recordDiscovery({
+      workspaceId: params.workspaceId,
+      environmentId: params.environmentId,
+      runId: run.id,
+      startedAt,
+      nodeRows,
+      observationsFor: (nodeIdByKey) => {
+        for (const [key, id] of nodeIdByKey) nodeKeyById.set(id, key);
+        return observationsFor(nodeIdByKey);
+      },
+      edgesFor,
+      edgeObservationsFor,
+      summary,
+    });
+    return { run: recorded.completed, nodes: recorded.nodes, edges: recorded.edges, summary };
   } catch (error) {
-    await db.from("operational_discovery_runs").update({
+    await worldData.failDiscovery(params.workspaceId, run.id, {
       status: "failed",
       completed_at: new Date().toISOString(),
       error_json: { message: error instanceof Error ? error.message : "Operational discovery failed" },
-    }).eq("id", run.id);
+    });
     throw error;
   }
 }
 
 export async function getOperationalWorldModel(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
-  const [nodes, edges, latestDiscovery] = await Promise.all([
-    db.from("operational_world_nodes").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("node_type").order("node_key"),
-    db.from("operational_world_edges").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("relationship"),
-    db.from("operational_discovery_runs").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("started_at", { ascending: false }).limit(1).maybeSingle(),
-  ]);
-  return { nodes: nodes.data ?? [], edges: edges.data ?? [], latestDiscovery: latestDiscovery.data ?? null };
+  if (!UUID.test(environmentId)) return { nodes: [], edges: [], latestDiscovery: null };
+  return worldData.worldModel(workspaceId, environmentId);
 }
 
 export async function buildGeneratedDesiredState(workspaceId: string, environmentId: string): Promise<OperationalDesiredState> {
-  const db = createServiceRoleClient();
-  const [environmentResult, componentsResult, connectionsResult, modelsResult, schemasResult, runtimeResult, websitesResult] = await Promise.all([
-    db.from("workspace_environments").select("id,status,kind").eq("workspace_id", workspaceId).eq("id", environmentId).maybeSingle(),
-    db.from("environment_components").select("component_key,capability_key,required,provider,state").eq("workspace_id", workspaceId).eq("environment_id", environmentId),
-    db.from("workspace_connections").select("id,connector_type,connector_family,status,active").eq("workspace_id", workspaceId).eq("environment_id", environmentId),
-    db.from("content_models").select("id,api_key,current_schema_version,status").eq("workspace_id", workspaceId).eq("status", "active"),
-    db.from("environment_schema_deployments").select("content_model_id,schema_version,schema_hash,deployed_at").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("deployed_at", { ascending: false }),
-    db.from("cms_runtime_state").select("schema_migration,app_version,worker_version").eq("singleton", true).maybeSingle(),
-    db.from("website_connection_bindings").select("id,status").eq("workspace_id", workspaceId).eq("environment_id", environmentId),
-  ]);
-  const environment = environmentResult.data;
+  const inputs = UUID.test(environmentId) ? await worldData.desiredStateInputs(workspaceId, environmentId) : null;
+  const environment = inputs?.environment;
   if (!environment) throw Object.assign(new Error("Environment not found"), { status: 404 });
 
   const components: OperationalDesiredState["capabilities"] = {};
-  for (const component of componentsResult.data ?? []) {
+  for (const component of inputs!.components) {
     if (!component.required && component.state === "unsupported") continue;
     components[component.component_key] = { state: "present", required: Boolean(component.required), provider: component.provider ?? null };
   }
 
   const connections: OperationalDesiredState["connections"] = {};
-  for (const connection of connectionsResult.data ?? []) {
+  for (const connection of inputs!.connections) {
     if (!connection.active || connection.status === "disabled") continue;
     connections[connection.id] = { status: "active", connectorType: connection.connector_type, family: connection.connector_family };
   }
 
   const latestSchemaByModel = new Map<string, any>();
-  for (const row of schemasResult.data ?? []) if (!latestSchemaByModel.has(row.content_model_id)) latestSchemaByModel.set(row.content_model_id, row);
+  for (const row of inputs!.schemas) if (!latestSchemaByModel.has(row.content_model_id)) latestSchemaByModel.set(row.content_model_id, row);
   const schemas: OperationalDesiredState["schemas"] = {};
-  for (const model of modelsResult.data ?? []) {
+  for (const model of inputs!.models) {
     const deployed = latestSchemaByModel.get(model.id);
     schemas[model.id] = { version: model.current_schema_version, hash: deployed?.schema_version === model.current_schema_version ? deployed.schema_hash ?? null : null, apiKey: model.api_key };
   }
 
   const websites: OperationalDesiredState["websites"] = {};
-  for (const website of websitesResult.data ?? []) websites[website.id] = { status: "active" };
+  for (const website of inputs!.websites) websites[website.id] = { status: "active" };
 
   return {
     schemaVersion: 1,
@@ -588,9 +546,9 @@ export async function buildGeneratedDesiredState(workspaceId: string, environmen
     connections,
     schemas,
     runtime: {
-      migration: runtimeResult.data?.schema_migration ?? null,
-      appVersion: runtimeResult.data?.app_version ?? null,
-      workerVersion: runtimeResult.data?.worker_version ?? null,
+      migration: inputs!.runtime?.schema_migration ?? null,
+      appVersion: inputs!.runtime?.app_version ?? null,
+      workerVersion: inputs!.runtime?.worker_version ?? null,
     },
     websites,
     metadata: { generatedAt: new Date().toISOString(), environmentKind: environment.kind, source: "canonical-controller-baseline" },
