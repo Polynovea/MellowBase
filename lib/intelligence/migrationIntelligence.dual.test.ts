@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createModel, getVersion } from "@/lib/schema/modelService";
 import { assessDataAwareSchemaChange, listDataAwareChangeAssessments } from "@/lib/intelligence/migrationIntelligenceService";
 import * as migrationIntelData from "@/lib/intelligence/migrationIntelData";
-
-const recorder = createRecorder();
 const schema = { name: "Page", apiKey: "page", fields: [{ key: "title", label: "Title", type: "text", required: true }] };
 
 async function setup(backend: BackendFixtures) {
@@ -18,7 +15,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, modelId: model.data.model.id, versionId: version.id, schemaHash: version.schema_hash, environmentId: environment.id };
 }
 
-describeBothBackends(["intelligence", "schema"], "data-aware change assessments", (backend) => {
+describeWithDatabase("data-aware change assessments", (backend) => {
   it("reads assessment sources and lists assessments inside the workspace", async () => {
     const s = await setup(backend);
     expect(await migrationIntelData.assessmentSources(s.workspaceId, s.environmentId, s.modelId, s.schemaHash)).toEqual({ targetVersion: { id: s.versionId, version_number: 1, schema_hash: s.schemaHash, schema_json: expect.objectContaining({ apiKey: "page" }) }, sourceDeployment: null });
@@ -54,10 +51,5 @@ describeBothBackends(["intelligence", "schema"], "data-aware change assessments"
     expect(await listDataAwareChangeAssessments(s.workspaceId, s.environmentId, other.modelId)).toEqual([]);
     expect(await listDataAwareChangeAssessments(other.workspaceId, s.environmentId)).toEqual([]);
     expect(await listDataAwareChangeAssessments(s.workspaceId, "nope")).toEqual([]);
-    recorder.record(backend.name, "assessment", { keys: Object.keys(persisted).sort(), source: Object.keys(sources.sourceDeployment ?? {}).sort() });
   });
-});
-
-describe("assessment backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

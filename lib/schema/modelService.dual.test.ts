@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder, ISO_TIMESTAMP, jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
+import { ISO_TIMESTAMP, jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/http";
 import {
   applyChange,
   createModel,
@@ -27,12 +27,11 @@ vi.mock("@/lib/platform/permissions", () => ({
 
 const MODEL_KEYS = ["api_key", "created_at", "created_by", "current_schema_version", "description", "icon", "id", "name", "settings_json", "status", "updated_at", "workspace_id"];
 const VERSION_KEYS = ["change_summary", "content_model_id", "created_at", "created_by", "id", "schema_hash", "schema_json", "version_number"];
-const recorder = createRecorder();
 
 const schemaV1 = { name: "Blog Post", apiKey: "blog_post", fields: [{ key: "title", label: "Title", type: "text", required: true }] };
 const schemaV2 = { ...schemaV1, fields: [...schemaV1.fields, { key: "summary", label: "Summary", type: "text" }] };
 
-describeBothBackends("schema", "schema model service", (backend) => {
+describeWithDatabase("schema model service", (backend) => {
   it("creates, lists, versions, diffs and applies changes with identical shapes", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const created = await createModel({ workspaceId, createdBy: adminUserId, description: "Posts", icon: "pen", proposedSchema: schemaV1 });
@@ -73,8 +72,6 @@ describeBothBackends("schema", "schema model service", (backend) => {
 
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and entity_type = 'content_model' order by action", [workspaceId]);
     expect(events.map((e) => e.action)).toEqual(expect.arrayContaining(["schema.migration.started"]));
-
-    recorder.record(backend.name, "model lifecycle", { model, version, listed, applied: applied.data, diff, versions: await listVersions(model.id) });
   });
 
   it("refuses a duplicate apiKey with a 409 and a safe message", async () => {
@@ -134,8 +131,4 @@ describeBothBackends("schema", "schema model service", (backend) => {
     const badStatus = await readJson(await patchHandler(jsonRequest({ status: "archived", icon: "x".repeat(10) }, "http://cms.test/api/models/x", "PATCH"), routeParams({ id })));
     expect(badStatus.status).toBe(200);
   });
-});
-
-describe("schema backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

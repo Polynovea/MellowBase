@@ -1,10 +1,7 @@
-// Routing area, redirect service: types and the backend dispatcher (the `routing` switch).
+// Routing area, redirect service: types.
 //
-// Each function runs on Supabase (redirectService.supabase.ts) or directly on PostgreSQL
-// (redirectService.postgres.ts). Both keep the same signatures and return shapes.
-import { usesDirectPostgres } from "@/lib/db/backend";
+// The queries run on PostgreSQL in redirectService.postgres.ts.
 import * as postgres from "@/lib/routing/redirectService.postgres";
-import * as supabase from "@/lib/routing/redirectService.supabase";
 
 export interface RedirectRow {
   id: string;
@@ -44,15 +41,12 @@ export interface BulkImportReport {
   imported: RedirectRow[];
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("routing") ? direct : supabase);
 
-export const detectRedirectLoop: typeof supabase.detectRedirectLoop = (...args) => impl().detectRedirectLoop(...args);
-export const validateRedirectTarget: typeof supabase.validateRedirectTarget = (...args) => impl().validateRedirectTarget(...args);
-export const listRedirects: typeof supabase.listRedirects = (...args) => impl().listRedirects(...args);
-export const getRedirect: typeof supabase.getRedirect = (...args) => impl().getRedirect(...args);
-export const createRedirect: typeof supabase.createRedirect = (...args) => impl().createRedirect(...args);
-export const updateRedirect: typeof supabase.updateRedirect = (...args) => impl().updateRedirect(...args);
-export const deleteRedirect: typeof supabase.deleteRedirect = (...args) => impl().deleteRedirect(...args);
-export const importRedirects: typeof supabase.importRedirects = (...args) => impl().importRedirects(...args);
+export const detectRedirectLoop = postgres.detectRedirectLoop;
+export const validateRedirectTarget = postgres.validateRedirectTarget;
+export const listRedirects = postgres.listRedirects;
+export const getRedirect = postgres.getRedirect;
+export const createRedirect = postgres.createRedirect;
+export const updateRedirect = postgres.updateRedirect;
+export const deleteRedirect = postgres.deleteRedirect;
+export const importRedirects = postgres.importRedirects;

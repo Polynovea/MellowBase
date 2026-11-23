@@ -1,12 +1,12 @@
-// Direct PostgreSQL implementation of the release and editorial-calendar primitives (phase 1, wave 3).
+// PostgreSQL implementation of the release and editorial-calendar primitives (phase 1, wave 3).
 //
-// Same signatures and return shapes as releaseData.supabase.ts. The PostgREST embeds of listReleases
-// and getRelease become explicit queries, every one scoped by workspace:
+// The PostgREST embeds of listReleases and getRelease become explicit queries, every one scoped by
+// workspace:
 // - release_items has no workspace_id: items are read through their release (r.workspace_id).
 // - an item's entry is joined only within the workspace, its model on (model id, workspace id), and
-//   its pinned version only when that version belongs to the item's (workspace-scoped) entry.
+// its pinned version only when that version belongs to the item's (workspace-scoped) entry.
 // - every other child table (locale targets, approvals, assignments, history, rollback items) is
-//   filtered by its own workspace_id as well as the release.
+// filtered by its own workspace_id as well as the release.
 // Embedded arrays come back in a fixed order (created_at, then id); PostgREST left it undefined.
 // Other differences: lifecycle functions' own messages pass through with their SQLSTATE, database
 // text never does; a calendar event commits with its audit event; explicit limits.

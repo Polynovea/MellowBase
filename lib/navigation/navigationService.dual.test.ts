@@ -1,6 +1,5 @@
-import { afterAll, describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import type { DataBackend } from "@/lib/db/backend";
+import { expect, it, vi } from "vitest";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import {
   createMenu,
   getMenu,
@@ -27,30 +26,6 @@ vi.mock("@/lib/platform/permissions", () => ({
 const MENU_KEYS = ["created_at", "current_draft_version_id", "description", "id", "key", "name", "published_version_id", "updated_at", "workspace_id"];
 const VERSION_KEYS = ["change_summary", "created_at", "created_by", "id", "items_jsonb", "menu_id", "state", "version_number", "workspace_id"];
 const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?\+00:00$/;
-const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
-
-const sortKeys = (value: unknown): unknown =>
-  Array.isArray(value) ? value.map(sortKeys)
-  : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, sortKeys(v)]))
-  : value;
-
-function normalize(value: unknown): unknown {
-  const ids = new Map<string, string>();
-  return JSON.parse(JSON.stringify(sortKeys(value)), (_key, v) => {
-    if (typeof v !== "string") return v;
-    if (ISO.test(v)) return "<timestamp>";
-    return v.replace(UUID, (id) => {
-      if (!ids.has(id)) ids.set(id, `<id${ids.size + 1}>`);
-      return ids.get(id)!;
-    });
-  });
-}
-
-const recorded: Partial<Record<DataBackend, Record<string, unknown>>> = {};
-const record = (backend: DataBackend, name: string, value: unknown) => {
-  recorded[backend] ??= {};
-  recorded[backend]![name] = normalize(value);
-};
 
 const req = (body?: unknown, url = "http://cms.test/api/navigation") =>
   new Request(url, body === undefined ? {} : { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } });
@@ -88,7 +63,7 @@ function treeItems(t: { entryId: string; otherEntryId: string; plainRouteId: str
   ];
 }
 
-describeBothBackends("navigation", "navigation service", (backend) => {
+describeWithDatabase("navigation service", (backend) => {
   it("creates, drafts, publishes and lists menus with identical shapes", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const targets = await seedTargets(backend, workspaceId);
@@ -118,7 +93,6 @@ describeBothBackends("navigation", "navigation service", (backend) => {
     expect(await listMenuVersions(workspaceId, "not-a-uuid")).toEqual([]);
     expect((await getMenu(workspaceId, menu.id))?.published_version_id).toBe(draft.id);
 
-    record(backend.name, "menu lifecycle", { menu, version, draft, published, versions });
   });
 
   it("keeps dependency edges in step with the menu's items", async () => {
@@ -161,7 +135,6 @@ describeBothBackends("navigation", "navigation service", (backend) => {
     await publishMenu({ workspaceId, actorAdminUserId: adminUserId, menuId: menu.id });
     const french = await getResolvedNavigationTree({ workspaceId, menuKey: menu.id, locale: "fr", audience: "guest" });
     expect(french[0]).toMatchObject({ label: "Accueil", children: [{ id: "about", url: "/a-propos" }] });
-    record(backend.name, "trees", { preview, french });
   });
 
   it("finds the menus that link to an entry at any depth", async () => {
@@ -241,13 +214,5 @@ describeBothBackends("navigation", "navigation service", (backend) => {
     expect(await getMenu(workspaceId, id)).toBeNull();
     const deleted = await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'navigation.menu.deleted'", [workspaceId]);
     expect(deleted).toHaveLength(1);
-  });
-});
-
-describe("navigation backends agree", () => {
-  afterAll(() => vi.restoreAllMocks());
-  it("returns identical shapes and values on supabase and postgres", () => {
-    expect(recorded.supabase).toBeDefined();
-    expect(recorded.postgres).toEqual(recorded.supabase);
   });
 });

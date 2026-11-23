@@ -1,12 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import { configureLocale, getLocalizationStatus, markTranslationsStale, reviewTranslation, setTranslation } from "@/lib/content/localizationService";
 import { getSitemapEntries, getWebQualityPolicy, runSiteDiscoverabilityAudit, saveWebQualityPolicy } from "@/lib/content/webQualityService";
 import { createModel } from "@/lib/schema/modelService";
-
-const recorder = createRecorder();
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -22,7 +19,7 @@ async function setup(backend: BackendFixtures) {
 
 const stable = <T extends Record<string, unknown>>(row: T, drop: string[]) => Object.fromEntries(Object.entries(row).filter(([key]) => !drop.includes(key)));
 
-describeBothBackends(["content", "schema"], "localization writes and web-quality reads", (backend) => {
+describeWithDatabase("localization writes and web-quality reads", (backend) => {
   it("configures locales, links, reviews and marks translations stale, scoped to the workspace", async () => {
     const { workspaceId, adminUserId, make } = await setup(backend);
     await configureLocale({ workspaceId, actorId: adminUserId, locale: "en", isDefault: true });
@@ -59,7 +56,6 @@ describeBothBackends(["content", "schema"], "localization writes and web-quality
 
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and action like 'localization.translation_%' order by action", [workspaceId]);
     expect(events.map((e) => e.action)).toEqual(["localization.translation_linked", "localization.translation_reviewed"]);
-    recorder.record(backend.name, "link", { link: Object.keys(link).sort(), reviewed: Object.keys(reviewed).sort(), hi: Object.keys(hi as object).sort() });
   });
 
   it("saves the web-quality policy and builds the sitemap and site audit from workspace rows only", async () => {
@@ -92,15 +88,5 @@ describeBothBackends(["content", "schema"], "localization writes and web-quality
     const other = await backend.createWorkspace();
     expect((await getSitemapEntries(other.workspaceId)).entries).toEqual([]);
     expect((await runSiteDiscoverabilityAudit(other.workspaceId)).summary.routes).toBe(0);
-
-    recorder.record(backend.name, "web quality", {
-      policy: stable(saved as unknown as Record<string, unknown>, ["id", "workspace_id", "updated_by", "created_at", "updated_at"]),
-      sitemap: sitemap.entries.map((entry) => stable(entry as unknown as Record<string, unknown>, ["routeId", "entryId", "lastModified"])),
-      audit: { status: audit.status, summary: audit.summary, codes: audit.findings.map((f) => f.code).sort() },
-    });
   });
-});
-
-describe("localization and web-quality backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

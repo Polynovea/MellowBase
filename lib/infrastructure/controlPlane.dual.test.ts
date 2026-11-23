@@ -1,16 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 
 const ops = await import("@/lib/infrastructure/operabilityService");
 const { createEnvironment } = await import("@/lib/infrastructure/environmentService");
 const { createConnection } = await import("@/lib/infrastructure/connectionService");
 const { createModel } = await import("@/lib/schema/modelService");
-
-// Schema promotion and backups go through the developer and schema areas, and the website test
-// enqueues a delivery job (operations), so those areas switch with infrastructure.
-const recorder = createRecorder();
 const schemaV1 = { name: "Note", apiKey: "note", fields: [{ key: "title", label: "Title", type: "text", required: true }] };
 
 async function rejection(promise: Promise<unknown>): Promise<{ message: string; status?: number }> {
@@ -34,7 +29,7 @@ async function secondAdmin(backend: BackendFixtures) {
   return admin.id;
 }
 
-describeBothBackends(["infrastructure", "developer", "schema", "operations"], "infrastructure control plane", (backend) => {
+describeWithDatabase("infrastructure control plane", (backend) => {
   it("deploys a schema to an environment and records the deployment", async () => {
     const s = await setup(backend);
     const created = await createModel({ workspaceId: s.workspaceId, createdBy: s.actorId, proposedSchema: schemaV1 });
@@ -51,7 +46,6 @@ describeBothBackends(["infrastructure", "developer", "schema", "operations"], "i
 
     const other = await backend.createWorkspace();
     expect(await rejection(ops.applyEnvironmentSchema({ workspaceId: other.workspaceId, actorId: other.adminUserId, environmentId: s.environmentId, modelId, proposedSchema: proposed, acknowledgeUnsafe: false }))).toEqual({ message: "Model not found", status: 404 });
-    recorder.record(backend.name, "schema", { plan: Object.keys(plan).sort(), applied: Object.keys(applied).sort() });
   });
 
   it("creates backups, plans restores and upgrades, and checks portability inside the workspace", async () => {
@@ -85,7 +79,6 @@ describeBothBackends(["infrastructure", "developer", "schema", "operations"], "i
     expect(await rejection(ops.planUpgrade({ ...s, environmentId: other.environmentId }))).toEqual({ message: "Environment not found", status: 404 });
     expect(await rejection(ops.executeUpgrade({ ...other, upgradeRunId: plan.id }))).toEqual({ message: "Upgrade plan not found", status: 404 });
     expect(await ops.portabilityCheck(s.workspaceId, "nope")).toMatchObject({ portable: true, summary: { connections: 0 } });
-    recorder.record(backend.name, "backups", { backup: Object.keys(backup).sort(), dry: Object.keys(dry).sort(), plan: Object.keys(plan).sort() });
   });
 
   it("requests and reviews approvals, runs component actions and binds website connections", async () => {
@@ -123,10 +116,5 @@ describeBothBackends(["infrastructure", "developer", "schema", "operations"], "i
     expect(await rejection(ops.queueWebsiteTest({ ...foreign, bindingId: bound.id }))).toEqual({ message: "Website binding not found", status: 404 });
     expect(await rejection(ops.reviewInfrastructureApproval({ ...foreign, requestId: request.id, decision: "approved" }))).toMatchObject({ message: "Approval request not found" });
     expect(await rejection(ops.bindWebsiteConnection({ ...foreign, environmentId: s.environmentId, connectionId: connection.connection.id, integrationMethod: "polynovea_rest" }))).toEqual({ message: "Website connection not found in environment", status: 404 });
-    recorder.record(backend.name, "control", { run: Object.keys(checked).sort(), request: Object.keys(request).sort(), binding: Object.keys(bound).sort() });
   });
-});
-
-describe("control plane backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

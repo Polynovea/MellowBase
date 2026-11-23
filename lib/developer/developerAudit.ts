@@ -1,4 +1,4 @@
-import { logPlatformEventFor } from "@/lib/platform/audit";
+import { logPlatformEvent } from "@/lib/platform/audit";
 import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
 import { recordBoundAgentMutation } from "@/lib/developer/agentGovernanceService";
 
@@ -11,7 +11,7 @@ export async function logDeveloperApiMutation(
 ) {
   if (!context.actorAdminUserId) return;
   // Follows the developer area's backend, so the event lands with the change it describes.
-  await logPlatformEventFor("developer", {
+  await logPlatformEvent({
     workspaceId: context.workspaceId,
     actorAdminUserId: context.actorAdminUserId,
     action,

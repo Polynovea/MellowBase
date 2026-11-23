@@ -28,31 +28,9 @@ export async function resolveAdminProfile(store: AdminProfileStore, user: Pick<U
   return store.linkAuthUser(legacy.id, user.id);
 }
 
-type Db = { from(table: "admin_users"): any };
-
-export function supabaseAdminProfileStore(db: Db): AdminProfileStore {
-  return {
-    async findActiveByAuthUserId(authUserId) {
-      const { data, error } = await db.from("admin_users").select("*").eq("auth_user_id", authUserId).eq("is_active", true).maybeSingle();
-      if (error) throw error;
-      return (data as AdminUser | null) ?? null;
-    },
-    async findActiveUnlinkedByEmail(email) {
-      const { data, error } = await db.from("admin_users").select("*").eq("email", email).is("auth_user_id", null).eq("is_active", true).maybeSingle();
-      if (error) throw error;
-      return (data as AdminUser | null) ?? null;
-    },
-    async linkAuthUser(profileId, authUserId) {
-      const { data, error } = await db.from("admin_users").update({ auth_user_id: authUserId }).eq("id", profileId).is("auth_user_id", null).select("*").maybeSingle();
-      if (error) throw error;
-      return (data as AdminUser | null) ?? null;
-    },
-  };
-}
-
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Direct PostgreSQL store with the same rules: strict single rows, compare-and-set link. */
+/** The profile store: strict single rows, compare-and-set link. */
 export function postgresAdminProfileStore(): AdminProfileStore {
   const asProfile = (row: unknown) => (row ?? null) as AdminUser | null;
   return {

@@ -4,6 +4,19 @@ vi.mock("@/lib/admin/serviceRole", () => ({
   createServiceRoleClient: vi.fn(),
 }));
 
+// The Supabase client (above) still verifies Supabase sessions; admin profiles come from the
+// PostgreSQL profile store, faked here with the row each test configures through fakeDb().
+let profileRow: Record<string, unknown> | null = null;
+let profileError: unknown = null;
+vi.mock("@/lib/admin/profileResolution", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/admin/profileResolution")>()),
+  postgresAdminProfileStore: () => ({
+    findActiveByAuthUserId: async () => { if (profileError) throw profileError; return profileRow; },
+    findActiveUnlinkedByEmail: async () => null,
+    linkAuthUser: async () => null,
+  }),
+}));
+
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 
@@ -16,6 +29,8 @@ interface FakeDbOptions {
 }
 
 function fakeDb({ getUser, adminUserRow = null, adminUserError = null }: FakeDbOptions) {
+  profileRow = adminUserRow;
+  profileError = adminUserError;
   const query = {
     eq: vi.fn().mockReturnValue({
       eq: vi.fn().mockReturnValue({
@@ -51,6 +66,8 @@ const editorRow = {
 
 beforeEach(() => {
   mockCreateServiceRoleClient.mockReset();
+  profileRow = null;
+  profileError = null;
 });
 
 describe("requireAdminRequest", () => {

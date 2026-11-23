@@ -36,5 +36,5 @@ export async function GET(req: Request) {
   if (modelId) return NextResponse.json({ success: true, data: documents, error: null });
   const models = await listModels(auth.data!.actor.workspaceId);
   const allowed = new Set((await Promise.all(models.map(async (model) => ({ id: model.id, access: await canActorOperateModel(auth.data!.actor, model, "read") })))).filter(({ access }) => access.allowed).map(({ id }) => id));
-  return NextResponse.json({ success: true, data: documents.filter((document: { content_model_id: string }) => allowed.has(document.content_model_id)), error: null });
+  return NextResponse.json({ success: true, data: documents.filter((document: { content_model_id: string | null }) => document.content_model_id !== null && allowed.has(document.content_model_id)), error: null });
 }

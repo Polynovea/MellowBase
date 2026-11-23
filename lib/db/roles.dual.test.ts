@@ -160,7 +160,8 @@ function catalogChecks(label: string, url: () => string | undefined) {
 }
 
 catalogChecks("plain PostgreSQL", () => process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL);
-catalogChecks("Supabase", () => process.env.POLYNOVEA_TEST_SUPABASE_DB_URL);
+// Supabase's database (setup.mjs --with-supabase): existing Supabase installs take the same migrations.
+if (process.env.POLYNOVEA_TEST_SUPABASE_DB_URL) catalogChecks("Supabase", () => process.env.POLYNOVEA_TEST_SUPABASE_DB_URL);
 
 describe("database roles on plain PostgreSQL, as the roles themselves", () => {
   let owner: pg.Client;

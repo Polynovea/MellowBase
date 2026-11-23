@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import { createModel } from "@/lib/schema/modelService";
 
@@ -17,8 +16,6 @@ vi.mock("@/lib/infrastructure/guardedNetwork", async (importOriginal) => ({
 }));
 
 const { createPublicationTarget, dispatchPublicationJob, listPublicationJobs, listPublicationTargets, queueEntryPublication } = await import("@/lib/content/publicationService");
-
-const recorder = createRecorder();
 const URL_OK = "https://93.184.215.14/publish"; // a public address literal, so no DNS lookup
 
 beforeAll(() => {
@@ -34,7 +31,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, entryId: entry.data.entry.id, versionId: entry.data.version.id };
 }
 
-describeBothBackends(["content", "schema"], "publication targets and jobs", (backend) => {
+describeWithDatabase("publication targets and jobs", (backend) => {
   it("validates and creates targets, queues one job per active target and lists them per workspace", async () => {
     const { workspaceId, adminUserId, entryId, versionId } = await setup(backend);
     const base = { workspaceId, actorId: adminUserId, name: "Site", targetType: "webhook" };
@@ -71,7 +68,6 @@ describeBothBackends(["content", "schema"], "publication targets and jobs", (bac
 
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and action like 'publication.%' order by action", [workspaceId]);
     expect(events.map((e) => e.action)).toEqual(["publication.jobs_queued", "publication.jobs_queued", "publication.target_created", "publication.target_created"]);
-    recorder.record(backend.name, "queue", { target: Object.keys(target).sort(), job: Object.keys(jobs[0]).sort(), listed: Object.keys(listed[0]).sort() });
   });
 
   it("dispatches a job without returning the target's config, and records each attempt", async () => {
@@ -105,10 +101,5 @@ describeBothBackends(["content", "schema"], "publication targets and jobs", (bac
       { attempt_number: 1, status_code: 503, outcome: "retrying", detail: "Destination returned 503" },
       { attempt_number: 2, status_code: 200, outcome: "succeeded", detail: null },
     ]);
-    recorder.record(backend.name, "dispatch", { failed: Object.keys(failed).sort(), ok: Object.keys(ok).sort(), logs });
   });
-});
-
-describe("publication backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

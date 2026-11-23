@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 
 // Environment components belong to infrastructure, which moves in a later wave; here the
 // environment has none, so the world model is derived from its connections and runtime state.
@@ -10,8 +9,6 @@ vi.mock("@/lib/infrastructure/operabilityService", async (importOriginal) => ({
 }));
 
 const { buildGeneratedDesiredState, getOperationalWorldModel, refreshOperationalWorldModel } = await import("@/lib/intelligence/worldModelService");
-
-const recorder = createRecorder();
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -29,7 +26,7 @@ async function setup(backend: BackendFixtures) {
 
 const keys = (rows: Array<{ node_key: string; is_stale: boolean }>) => rows.map((n) => `${n.node_key.replace(/[0-9a-f-]{36}/g, "*")}${n.is_stale ? ":stale" : ""}`).sort();
 
-describeBothBackends(["intelligence"], "operational world model", (backend) => {
+describeWithDatabase("operational world model", (backend) => {
   it("discovers the environment, keeps node identities across runs and marks what disappeared stale", async () => {
     const s = await setup(backend);
     const first = await refreshOperationalWorldModel({ workspaceId: s.workspaceId, environmentId: s.environmentId, actorId: s.adminUserId, source: "manual" });
@@ -54,7 +51,6 @@ describeBothBackends(["intelligence"], "operational world model", (backend) => {
     await expect(refreshOperationalWorldModel({ workspaceId: other.workspaceId, environmentId: s.environmentId })).rejects.toThrow("Environment not found");
     await expect(refreshOperationalWorldModel({ workspaceId: s.workspaceId, environmentId: "nope" })).rejects.toThrow("Environment not found");
     expect(await getOperationalWorldModel(other.workspaceId, s.environmentId)).toEqual({ nodes: [], edges: [], latestDiscovery: null });
-    recorder.record(backend.name, "world", { nodes: keys(after.nodes), runKeys: Object.keys(second.run).sort(), edgeKeys: Object.keys(after.edges[0] ?? {}).sort() });
   });
 
   it("builds the generated desired state from the workspace's environment only", async () => {
@@ -64,10 +60,5 @@ describeBothBackends(["intelligence"], "operational world model", (backend) => {
     expect(Object.keys(desired.connections).sort()).toEqual([s.analyticsId, s.webhookId].sort());
     const other = await backend.createWorkspace();
     await expect(buildGeneratedDesiredState(other.workspaceId, s.environmentId)).rejects.toThrow("Environment not found");
-    recorder.record(backend.name, "desired", { keys: Object.keys(desired).sort(), connections: Object.values(desired.connections).map((c) => `${c.family}:${c.connectorType}:${c.status}`).sort() });
   });
-});
-
-describe("world model backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

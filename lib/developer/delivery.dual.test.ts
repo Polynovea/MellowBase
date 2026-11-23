@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { getPublishedContent, listPublishedContent } from "@/lib/developer/publishedContentService";
 import { listDeveloperEntries } from "@/lib/developer/resourceService";
 import { createDeveloperApiToken } from "@/lib/developer/apiTokenService";
 import { exportWorkspaceData } from "@/lib/developer/exportService";
 import { GET as listRoute } from "@/app/api/v1/content/[model]/route";
 import { GET as getRoute } from "@/app/api/v1/content/[model]/[id]/route";
-
-const recorder = createRecorder();
 
 /** A published entry whose published version has `data` and `locale`, updated at `updatedAt`. */
 async function published(backend: BackendFixtures, workspaceId: string, modelId: string, data: Record<string, unknown>, locale: string, updatedAt: string) {
@@ -32,7 +29,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, modelId: model.id, first, second, french, draftId: draft.id };
 }
 
-describeBothBackends("developer", "developer content delivery (published content, entry list)", (backend) => {
+describeWithDatabase("developer content delivery (published content, entry list)", (backend) => {
   it("serves published content newest first, with canonical routes and locale filters", async () => {
     const { workspaceId, first, second, french } = await setup(backend);
     const all = await listPublishedContent({ workspaceId, modelApiKey: "article" });
@@ -47,7 +44,6 @@ describeBothBackends("developer", "developer content delivery (published content
     expect(one.record).toEqual(all.records[2]);
     expect((await getPublishedContent({ workspaceId, modelApiKey: "article", entryId: first.entryId, locale: "fr" })).record).toBeNull();
     expect((await getPublishedContent({ workspaceId, modelApiKey: "article", entryId: "not-a-uuid" })).record).toBeNull();
-    recorder.record(backend.name, "published", { all: all.records, model: all.model });
   });
 
   it("lists developer entries with their current version", async () => {
@@ -59,7 +55,6 @@ describeBothBackends("developer", "developer content delivery (published content
     expect(listed.rows.find((row: { id: string }) => row.id === first.entryId)?.currentVersion).toMatchObject({ id: first.versionId, locale: "en" });
     expect((await listDeveloperEntries({ workspaceId, status: "published", locale: "fr" })).rows).toHaveLength(1);
     expect(await listDeveloperEntries({ workspaceId, modelApiKey: "missing" })).toMatchObject({ rows: [], model: null });
-    recorder.record(backend.name, "entries", { ids: listed.rows.map((row: { id: string }) => row.id), keys: Object.keys(listed.rows[0]).sort() });
   });
 
   it("exports a workspace's portable state, scoped to that workspace", async () => {
@@ -74,7 +69,6 @@ describeBothBackends("developer", "developer content delivery (published content
     const everything = JSON.stringify(exported);
     expect(everything).not.toContain(b.workspaceId);
     expect(everything).not.toContain("token_hash");
-    recorder.record(backend.name, "export sizes", Object.fromEntries(Object.entries(exported).filter(([, v]) => v && typeof v === "object" && !Array.isArray(v)).map(([k, v]) => [k, Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([kk, vv]) => [kk, Array.isArray(vv) ? vv.length : typeof vv]))])));
   });
 
   it("exports every row of a large table (the Supabase path stops at 1000)", async () => {
@@ -84,8 +78,8 @@ describeBothBackends("developer", "developer content delivery (published content
       [workspaceId, adminUserId],
     );
     const exported = await exportWorkspaceData(workspaceId);
-    // Known Supabase limit, fixed on the direct path: PostgREST returns at most 1000 rows per read.
-    expect(exported.platform.auditEvents).toHaveLength(backend.name === "postgres" ? 1001 : 1000);
+    // Every audit event is exported (PostgREST used to stop at 1000 rows).
+    expect(exported.platform.auditEvents).toHaveLength(1001);
   });
 
   it("keeps workspaces isolated, and the v1 routes serve only the token's workspace", async () => {
@@ -104,8 +98,4 @@ describeBothBackends("developer", "developer content delivery (published content
     expect((await single.json()).data).toMatchObject({ id: a.first.entryId, route: { path: "/first" } });
     expect((await listRoute(request("/api/v1/content/missing"), { params: Promise.resolve({ model: "missing" }) })).status).toBe(404);
   });
-});
-
-describe("developer delivery backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

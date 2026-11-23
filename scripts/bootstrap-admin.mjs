@@ -4,7 +4,7 @@ import process from "node:process";
 import { createClient } from "@supabase/supabase-js";
 import pg from "pg";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
-import { adminBackend, postgresAdminStore, supabaseAdminStore } from "./lib/bootstrapAdminStore.mjs";
+import { postgresAdminStore } from "./lib/bootstrapAdminStore.mjs";
 import { bootstrapBuiltinOwner } from "../lib/auth/bootstrapOwner.mjs";
 
 function loadLocalEnv() {
@@ -178,19 +178,15 @@ try {
     authUser = data.user;
   }
 
-  // The admin, membership and owner-role writes follow the `admin` area of POLYNOVEA_DATA_BACKEND.
-  if (adminBackend(process.env.POLYNOVEA_DATA_BACKEND) === "postgres") {
-    const connectionString = process.env.POLYNOVEA_DATABASE_URL || process.env.DATABASE_URL;
-    if (!connectionString) throw new Error("POLYNOVEA_DATABASE_URL (or DATABASE_URL) is required when the admin area uses PostgreSQL.");
-    const db = new pg.Client(postgresConnectionConfig(connectionString));
-    await db.connect();
-    try {
-      await postgresAdminStore(db).grantOwner({ authUserId: authUser.id, email, username, displayName, workspaceSlug });
-    } finally {
-      await db.end();
-    }
-  } else {
-    await supabaseAdminStore(client).grantOwner({ authUserId: authUser.id, email, username, displayName, workspaceSlug });
+  // The admin, membership and owner-role rows live in the CMS's PostgreSQL database.
+  const connectionString = process.env.POLYNOVEA_DATABASE_URL || process.env.DATABASE_URL;
+  if (!connectionString) throw new Error("POLYNOVEA_DATABASE_URL (or DATABASE_URL) is required.");
+  const db = new pg.Client(postgresConnectionConfig(connectionString));
+  await db.connect();
+  try {
+    await postgresAdminStore(db).grantOwner({ authUserId: authUser.id, email, username, displayName, workspaceSlug });
+  } finally {
+    await db.end();
   }
 
   console.log(`Bootstrap complete: ${email} is the active master/owner for workspace '${workspaceSlug}'.`);

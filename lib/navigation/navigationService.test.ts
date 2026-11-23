@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { syncMenuRelations } from "./navigationService";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { callFunction } from "@/lib/db/index";
 
-vi.mock("@/lib/admin/serviceRole", () => ({
-  createServiceRoleClient: vi.fn(),
+// The relation write is one call to cms_replace_source_relations; the database itself is faked here.
+vi.mock("@/lib/db/index", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/db/index")>()),
+  callFunction: vi.fn(),
+  getDb: vi.fn(() => ({})),
 }));
 
 describe("Navigation Service Contracts", () => {
@@ -11,11 +14,8 @@ describe("Navigation Service Contracts", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRpc = vi.fn().mockResolvedValue({ error: null });
-
-    vi.mocked(createServiceRoleClient).mockReturnValue({
-      rpc: mockRpc,
-    } as any);
+    mockRpc = vi.mocked(callFunction);
+    mockRpc.mockResolvedValue(null);
   });
 
   it("enforces audience rule types", () => {
@@ -51,9 +51,9 @@ describe("Navigation Service Contracts", () => {
       p_workspace_id: "ws-1",
       p_source_type: "menu",
       p_source_id: "menu-root",
-    }));
+    }), expect.anything());
 
-    const relationsArg = mockRpc.mock.calls[0][1].p_relations;
+    const relationsArg = JSON.parse(mockRpc.mock.calls[0][1].p_relations);
     expect(relationsArg).toHaveLength(6);
     expect(relationsArg).toEqual(
       expect.arrayContaining([
@@ -98,25 +98,23 @@ describe("Navigation Service Contracts", () => {
   });
 
   it("syncMenuRelations throws an error when cms_replace_source_relations fails", async () => {
-    mockRpc.mockResolvedValue({ error: { message: "foreign key violation" } });
+    mockRpc.mockRejectedValue(new Error("foreign key violation"));
 
     await expect(
       syncMenuRelations("ws-1", "menu-root", [
         { id: "item-1", label: "Link", targetRouteId: "route-1" } as any,
       ])
-    ).rejects.toThrow("Failed to replace navigation menu relations: foreign key violation");
+    ).rejects.toThrow("foreign key violation");
   });
 
   it("preserves atomic boundary and aborts without non-atomic fallback when cms_replace_source_relations rejects", async () => {
-    mockRpc.mockResolvedValue({
-      error: { message: "check constraint violation: content_relations_target_check" },
-    });
+    mockRpc.mockRejectedValue(new Error("check constraint violation: content_relations_target_check"));
 
     await expect(
       syncMenuRelations("ws-atomic", "menu-rollback-node", [
         { id: "item-1", label: "Bad Edge", targetRouteId: "route-fail" } as any,
       ])
-    ).rejects.toThrow("Failed to replace navigation menu relations: check constraint violation: content_relations_target_check");
+    ).rejects.toThrow("check constraint violation: content_relations_target_check");
 
     // Proves only the atomic RPC is called, exactly once, with no unconstrained manual delete/insert fallback
     expect(mockRpc).toHaveBeenCalledTimes(1);
@@ -124,6 +122,6 @@ describe("Navigation Service Contracts", () => {
       p_workspace_id: "ws-atomic",
       p_source_type: "menu",
       p_source_id: "menu-rollback-node",
-    }));
+    }), expect.anything());
   });
 });

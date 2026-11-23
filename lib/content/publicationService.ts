@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { decryptConfig, encryptConfig } from "@/lib/content/secureConfig";
 import * as publicationData from "@/lib/content/publicationData";
-import { logPlatformEventFor } from "@/lib/platform/audit";
+import { logPlatformEvent } from "@/lib/platform/audit";
 import { assertSafeOutboundUrl } from "@/lib/infrastructure/networkSafety";
 import { guardedFetch } from "@/lib/infrastructure/guardedNetwork";
 
@@ -76,7 +76,7 @@ export async function queueEntryPublication(params: {
   const correlationId = randomUUID();
   const jobs = await publicationData.queueJobs(params, correlationId);
 
-  await logPlatformEventFor("content", {
+  await logPlatformEvent({
     workspaceId: params.workspaceId,
     actorAdminUserId: params.actorId,
     action: "publication.jobs_queued",

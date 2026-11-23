@@ -1,7 +1,5 @@
-// Content area, saved entry views: types, filter normalization and the backend dispatcher.
-import { usesDirectPostgres } from "@/lib/db/backend";
+// Content area, saved entry views: types, filter normalization.
 import * as postgres from "@/lib/content/savedViewService.postgres";
-import * as supabase from "@/lib/content/savedViewService.supabase";
 
 export interface SavedEntryViewFilters {
   modelId?: string;
@@ -31,10 +29,7 @@ export function normalizeFilters(value: unknown): SavedEntryViewFilters {
   return result;
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("content") ? direct : supabase);
 
-export const listSavedEntryViews: typeof supabase.listSavedEntryViews = (...args) => impl().listSavedEntryViews(...args);
-export const createSavedEntryView: typeof supabase.createSavedEntryView = (...args) => impl().createSavedEntryView(...args);
-export const deleteSavedEntryView: typeof supabase.deleteSavedEntryView = (...args) => impl().deleteSavedEntryView(...args);
+export const listSavedEntryViews = postgres.listSavedEntryViews;
+export const createSavedEntryView = postgres.createSavedEntryView;
+export const deleteSavedEntryView = postgres.deleteSavedEntryView;

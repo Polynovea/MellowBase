@@ -1,12 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createModel, getVersion } from "@/lib/schema/modelService";
 import { deployAssessedCanonicalSchema, getDataAwareChangeAssessment } from "@/lib/intelligence/schemaDeploymentService";
 import { discoverPostgresOperationalState } from "@/lib/intelligence/deepDiscoveryService";
 import * as discoveryData from "@/lib/intelligence/discoveryData";
-
-const recorder = createRecorder();
 
 async function setup(backend: BackendFixtures, kind = "staging") {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -27,7 +24,7 @@ async function setup(backend: BackendFixtures, kind = "staging") {
   return { workspaceId, adminUserId, modelId: model.data.model.id, apiKey: model.data.model.api_key, schemaHash: version.schema_hash, environmentId: environment.id, assess };
 }
 
-describeBothBackends(["intelligence", "schema"], "intelligence discovery and canonical schema deployment", (backend) => {
+describeWithDatabase("intelligence discovery and canonical schema deployment", (backend) => {
   it("deploys an assessed schema to the workspace's environment and refuses other workspaces and unsafe assessments", async () => {
     const s = await setup(backend);
     const assessmentId = await s.assess();
@@ -50,7 +47,6 @@ describeBothBackends(["intelligence", "schema"], "intelligence discovery and can
     expect(environment).toEqual({ deployed_schema_hash: s.schemaHash, deployed_schema_revision: `${s.apiKey}:v1` });
     const events = await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'operational.schema_change.deployed'", [s.workspaceId]);
     expect(events).toHaveLength(2);
-    recorder.record(backend.name, "deployment", { keys: Object.keys(first.deployment).sort(), result: Object.keys(first).sort() });
   });
 
   it("reads connections, capability rows and overview runs for the workspace's environment only", async () => {
@@ -80,10 +76,5 @@ describeBothBackends(["intelligence", "schema"], "intelligence discovery and can
     expect(await discoveryData.capabilityRows(other.workspaceId, s.environmentId)).toEqual({ environment: null, connections: [], components: [], bindings: [] });
     expect((await discoveryData.overviewRuns(other.workspaceId, s.environmentId)).discoveryRuns).toEqual([]);
     expect(await discoveryData.capabilityRows(s.workspaceId, "nope")).toEqual({ environment: null, connections: [], components: [], bindings: [] });
-    recorder.record(backend.name, "reads", { connection: Object.keys(capability.connections[0]).sort(), run: Object.keys(runs.discoveryRuns[0]).sort() });
   });
-});
-
-describe("intelligence discovery backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

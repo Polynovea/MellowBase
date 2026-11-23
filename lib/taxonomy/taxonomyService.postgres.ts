@@ -1,10 +1,9 @@
-// Direct PostgreSQL implementation of the taxonomy area (phase 0 spike of the self-hosted upgrade).
+// PostgreSQL implementation of the taxonomy area (phase 0 spike of the self-hosted upgrade).
 //
-// Same signatures and return shapes as taxonomyService.supabase.ts; the dispatcher in
-// taxonomyService.ts picks one per POLYNOVEA_DATA_BACKEND. Differences that are deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Every list query has an explicit limit (PostgREST capped at 1000 rows; plain SQL does not).
 // - Multi-step writes (term + localizations + aliases, version term reassignment) run in one
-//   transaction, so a failure part-way no longer leaves half-written rows.
+// transaction, so a failure part-way no longer leaves half-written rows.
 // - Localizations and aliases are loaded for the listed taxonomy's terms only, not the whole workspace.
 // - Every statement is scoped by workspace_id, including the child-row deletes.
 // - The audit row and its webhook deliveries are written in the same transaction as the change.
@@ -355,7 +354,7 @@ export async function updateTerm(params: {
   return (await getTerm(params.workspaceId, term.id))!;
 }
 
-/** Atomic term merge through cms_merge_taxonomy_terms; see taxonomyService.supabase.ts for the steps. */
+/** Atomic term merge through cms_merge_taxonomy_terms (the SQL function does every step in one transaction). */
 export async function mergeTerms(params: {
   workspaceId: string;
   actorAdminUserId: string;

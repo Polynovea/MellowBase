@@ -1,14 +1,14 @@
-// Direct PostgreSQL implementation of the developer API tokens (phase 1, wave 2).
+// PostgreSQL implementation of the developer API tokens (phase 1, wave 2).
 //
-// Same signatures and return shapes as apiTokenService.supabase.ts; token generation, scopes and
-// validation are shared in apiTokenService.ts. Differences that are deliberate:
+// token generation, scopes and validation are shared in apiTokenService.ts. Deliberate differences
+// from the Supabase path it replaced in phase 1:
 // - Creating a token writes the row and its audit event in one transaction; revoking locks the row,
-//   so two concurrent revokes audit once, and the update and audit commit together.
+// so two concurrent revokes audit once, and the update and audit commit together.
 // - The per-minute rate limit is still cms_consume_developer_api_rate_limit (atomic in SQL).
 // - Recording last use is best effort, as before, but its failure is logged instead of becoming an
-//   unhandled rejection.
+// unhandled rejection.
 // - Malformed IDs are "not found"; the list has an explicit limit; every statement is scoped by
-//   workspace_id except the lookup by token hash, which is how a request finds its workspace.
+// workspace_id except the lookup by token hash, which is how a request finds its workspace.
 import { callFunction, DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne, withTransaction } from "@/lib/db/index";
 import { recordPlatformEvent } from "@/lib/platform/audit.postgres";
 import type { PreparedDeveloperApiToken, RateLimitResult } from "@/lib/developer/apiTokenService";

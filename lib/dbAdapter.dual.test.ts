@@ -1,15 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
 
 const db = await import("@/lib/dbAdapter");
 
-// The legacy marketing tables are global (no workspace), so each test uses unique slugs and labels
-// and only asserts on its own rows.
-const recorder = createRecorder();
-
-describeBothBackends(["routes"], "legacy marketing tables adapter", (backend) => {
+describeWithDatabase("legacy marketing tables adapter", (backend) => {
   it("creates, reads, updates and deletes blog posts", async () => {
     const slug = `post-${randomUUID().slice(0, 8)}`;
     const created = await db.insertDbItem("blog_posts", { title: "Hello", slug, status: "draft" });
@@ -28,7 +23,6 @@ describeBothBackends(["routes"], "legacy marketing tables adapter", (backend) =>
 
     expect(await db.deleteDbItem("blog_posts", id)).toEqual({ success: true, error: null });
     expect((await db.getDbItem("blog_posts", id)).data).toBeNull();
-    recorder.record(backend.name, "blog", { keys: Object.keys(created.data).sort() });
   });
 
   it("replaces the live metrics, keeping edited ids", async () => {
@@ -43,7 +37,6 @@ describeBothBackends(["routes"], "legacy marketing tables adapter", (backend) =>
     expect(saved.data?.[0].id).toBe(first.data.id);
     const after = await db.getDbItems("live_metrics");
     expect(after.data.map((m: { label: string }) => m.label).sort()).toEqual(["Signups", "Visitors"]);
-    recorder.record(backend.name, "metrics", { keys: Object.keys(first.data).sort() });
   });
 
   it("stores social posts and ad campaigns with numbers and arrays intact", async () => {
@@ -54,10 +47,5 @@ describeBothBackends(["routes"], "legacy marketing tables adapter", (backend) =>
     expect(campaign).toMatchObject({ data: { campaign: title, budget: 100.5, spend: 0, ctr: 1.25, conversions: 3, status: "ACTIVE" }, error: null });
     await db.deleteDbItem("social_posts", post.data.id);
     await db.deleteDbItem("ad_campaigns", campaign.data.id);
-    recorder.record(backend.name, "social", { post: Object.keys(post.data).sort(), campaign: Object.keys(campaign.data).sort() });
   });
-});
-
-describe("legacy adapter backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

@@ -1,5 +1,5 @@
 // Content area, releases: the readiness and lifecycle rules live here and are shared by both data
-// paths; queries and SQL function calls are primitives in releaseData.ts (the `content` switch).
+// paths; queries and SQL function calls are primitives in releaseData.ts.
 import * as releaseData from "@/lib/content/releaseData";
 import { runVersionPreflight, type PreflightReport } from "@/lib/content/preflightService";
 

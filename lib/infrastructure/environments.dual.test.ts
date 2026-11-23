@@ -1,13 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 
 const { createEnvironment, getEnvironment, listEnvironments, updateEnvironment } = await import("@/lib/infrastructure/environmentService");
 const { resolveConnectionCredentials, resolveCredentialRef } = await import("@/lib/infrastructure/credentialProvider");
 const environmentData = await import("@/lib/infrastructure/environmentData");
-
-const recorder = createRecorder();
 const SECRET = "dual-test-credential-value";
 
 beforeAll(() => vi.stubEnv("DUAL_TEST_INFRA_SECRET", SECRET));
@@ -29,7 +26,7 @@ async function connectionWithSecret(backend: BackendFixtures, workspaceId: strin
   return { refId: ref.id, connectionId: connection.id };
 }
 
-describeBothBackends(["infrastructure"], "environments, credentials and connection lookups", (backend) => {
+describeWithDatabase("environments, credentials and connection lookups", (backend) => {
   it("creates, lists and updates environments inside the workspace", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const created = await createEnvironment({ workspaceId, actorId: adminUserId, key: " Staging ", name: " Staging ", kind: "staging", isDefault: true, cmsBaseUrl: "https://cms.example.test/", publicSiteUrls: ["https://www.example.test/", "https://www.example.test"], secretProviderKind: "environment" });
@@ -54,7 +51,6 @@ describeBothBackends(["infrastructure"], "environments, credentials and connecti
     expect(await listEnvironments(other.workspaceId)).toEqual([]);
     expect(await getEnvironment(other.workspaceId, second.environment.id)).toBeNull();
     expect(await backend.query("select action from platform_audit_events where workspace_id = $1 order by created_at", [workspaceId])).toEqual([{ action: "environment.created" }, { action: "environment.created" }, { action: "environment.updated" }]);
-    recorder.record(backend.name, "environments", { created: Object.keys(created.environment).sort(), listed: Object.keys(listed[0]).sort(), updated: Object.keys(updated).sort() });
   });
 
   it("resolves credentials and finds connections only inside the workspace", async () => {
@@ -78,10 +74,5 @@ describeBothBackends(["infrastructure"], "environments, credentials and connecti
 
     await backend.query("update workspace_secret_providers set status = 'disabled' where id = $1", [secretProvider.id]);
     await expect(resolveCredentialRef(postgresConn.refId, workspaceId)).rejects.toThrow("Credential provider is unavailable");
-    recorder.record(backend.name, "credentials", { connection: Object.keys((await environmentData.databaseConnections(workspaceId, environment.id))[0]).sort() });
   });
-});
-
-describe("environment backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

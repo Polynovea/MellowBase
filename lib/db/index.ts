@@ -3,7 +3,7 @@ import type { DB } from "@/lib/db/generated/database";
 import { closePool, getPool } from "@/lib/db/pool";
 
 /**
- * Direct PostgreSQL data layer (replaces supabase-js area by area; see lib/db/backend.ts).
+ * The PostgreSQL data layer: every CMS area reads and writes through it.
  *
  * Server-only: never import this from a client component. Every query runs as the runtime role
  * from POLYNOVEA_DATABASE_URL, which can read and write rows and execute functions but not run DDL.

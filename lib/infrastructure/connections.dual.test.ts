@@ -1,11 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
 
 const { createConnection, getConnection, listConnections, rotateConnectionCredential, verifyConnection } = await import("@/lib/infrastructure/connectionService");
 const { createEnvironment } = await import("@/lib/infrastructure/environmentService");
-
-const recorder = createRecorder();
 
 beforeAll(() => {
   vi.stubEnv("DUAL_TEST_OPENAI", "sk-dual-test");
@@ -22,7 +19,7 @@ async function rejection(promise: Promise<unknown>): Promise<{ message: string; 
   throw new Error("expected a rejection");
 }
 
-describeBothBackends(["infrastructure"], "workspace connections", (backend) => {
+describeWithDatabase("workspace connections", (backend) => {
   it("creates, lists, verifies and rotates connections inside the workspace", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const { environment } = await createEnvironment({ workspaceId, actorId: adminUserId, key: "dev", name: "Dev", kind: "development", secretProviderKind: "environment" });
@@ -53,7 +50,6 @@ describeBothBackends(["infrastructure"], "workspace connections", (backend) => {
     expect(await rejection(rotateConnectionCredential({ ...foreign, connectionId, purpose: "api_key", locator: "X" }))).toEqual({ message: "Connection not found", status: 404 });
     expect(await listConnections(other.workspaceId)).toEqual([]);
     expect(await getConnection(other.workspaceId, connectionId)).toBeNull();
-    recorder.record(backend.name, "connections", { created: Object.keys(created.connection).sort(), listed: Object.keys(listed[0]).sort(), verification: Object.keys(verification).sort(), rotated: Object.keys(rotated).sort() });
   });
 
   it("requires approval for production rotation and links GA4 connections to analytics", async () => {
@@ -69,10 +65,5 @@ describeBothBackends(["infrastructure"], "workspace connections", (backend) => {
     const [linked] = await backend.query<{ legacy_resource_type: string; legacy_resource_id: string }>("select legacy_resource_type, legacy_resource_id from workspace_connections where id = $1", [ga4.connection.id]);
     expect(linked.legacy_resource_type).toBe("analytics_connector");
     expect(await backend.query("select 1 from analytics_connectors where id = $1 and workspace_id = $2 and connection_id = $3", [linked.legacy_resource_id, workspaceId, ga4.connection.id])).toHaveLength(1);
-    recorder.record(backend.name, "ga4", { keys: Object.keys(ga4).sort() });
   });
-});
-
-describe("connection backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

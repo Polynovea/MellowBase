@@ -1,10 +1,10 @@
 /**
  * Vitest global setup for `npm run test:dual`, run once before any test file.
  *
- * Refuses to start unless both test databases are on the newest migration and PostgREST serves it.
- * Without this, a run started while the stack was still migrating, or while PostgREST was reloading
- * its schema, failed in confusing ways (a half-migrated database, an empty read on the Supabase
- * side). The message says what to do instead.
+ * Refuses to start unless the test database is on the newest migration (and, when the Supabase
+ * compatibility services are running, that Supabase's database is too and PostgREST serves it).
+ * Without this, a run started while the stack was still migrating failed in confusing ways. The
+ * message says what to do instead.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -43,7 +43,10 @@ export default async function setup(): Promise<void> {
   const newest = readdirSync(path.join(root, "supabase", "migrations")).filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort().at(-1);
   const hint = "Run node scripts/dev-db/setup.mjs (wait for it to finish) before npm run test:dual.";
 
-  for (const [label, url] of [["plain PostgreSQL", env.POLYNOVEA_TEST_POSTGRES_OWNER_URL], ["Supabase PostgreSQL", env.POLYNOVEA_TEST_SUPABASE_DB_URL]] as const) {
+  const supabase = Boolean(env.POLYNOVEA_TEST_SUPABASE_DB_URL);
+  const databases: Array<[string, string]> = [["PostgreSQL", env.POLYNOVEA_TEST_POSTGRES_OWNER_URL]];
+  if (supabase) databases.push(["Supabase PostgreSQL", env.POLYNOVEA_TEST_SUPABASE_DB_URL]);
+  for (const [label, url] of databases) {
     let applied: string | null;
     try {
       applied = await latestApplied(url);
@@ -53,6 +56,7 @@ export default async function setup(): Promise<void> {
     if (applied !== newest) throw new Error(`The ${label} test database is at ${applied ?? "no migration"}, not ${newest}. ${hint}`);
   }
 
+  if (!supabase) return;
   const key = env.POLYNOVEA_TEST_SUPABASE_SERVICE_ROLE_KEY;
   const response = await fetch(`${env.POLYNOVEA_TEST_SUPABASE_URL}/rest/v1/polynovea_migration_ledger?select=filename&order=filename.desc&limit=1`, {
     headers: { apikey: key, Authorization: `Bearer ${key}` },

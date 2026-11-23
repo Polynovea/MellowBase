@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 
 // The observed world belongs to the world model, which moves in a later wave 4 PR: here it is empty,
 // so every desired connection is drift and the reconciliation writes are what is compared.
@@ -11,8 +10,6 @@ vi.mock("@/lib/intelligence/worldModelService", async (importOriginal) => ({
 }));
 
 const { activateDesiredStateRevision, createDesiredStateRevision, getActiveDesiredState, listDesiredStateRevisions, listOperationalDrift, reconcileOperationalState } = await import("@/lib/intelligence/reconciliationService");
-
-const recorder = createRecorder();
 const desired = (connections: string[]) => ({
   schemaVersion: 1 as const,
   environment: {},
@@ -29,7 +26,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, environmentId: environment.id };
 }
 
-describeBothBackends(["intelligence"], "desired state and reconciliation", (backend) => {
+describeWithDatabase("desired state and reconciliation", (backend) => {
   it("numbers, deduplicates and activates desired-state revisions inside the workspace", async () => {
     const s = await setup(backend);
     const base = { workspaceId: s.workspaceId, environmentId: s.environmentId, actorId: s.adminUserId };
@@ -51,7 +48,6 @@ describeBothBackends(["intelligence"], "desired state and reconciliation", (back
     await expect(activateDesiredStateRevision({ ...base, revisionId: "nope" })).rejects.toThrow("Desired-state revision not found");
     expect(await listDesiredStateRevisions(other.workspaceId, s.environmentId)).toEqual([]);
     expect(await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'operational.desired_state.created'", [s.workspaceId])).toHaveLength(2);
-    recorder.record(backend.name, "revision", { keys: Object.keys(first).sort() });
   });
 
   it("records drift, resolves drift that went away and completes the run", async () => {
@@ -76,10 +72,5 @@ describeBothBackends(["intelligence"], "desired state and reconciliation", (back
     await expect(reconcileOperationalState({ ...base, refreshWorld: false, desiredStateRevisionId: "nope" })).rejects.toThrow("No active desired state");
     expect(await listOperationalDrift(other.workspaceId, s.environmentId)).toEqual([]);
     expect(await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'operational.reconciliation.completed'", [s.workspaceId])).toHaveLength(2);
-    recorder.record(backend.name, "reconcile", { first: first.run.summary_json, second: second.run.summary_json, drift: Object.keys(drift[0]).sort() });
   });
-});
-
-describe("reconciliation backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

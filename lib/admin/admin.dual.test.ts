@@ -1,18 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { getCommandCenterSnapshot } from "@/lib/admin/commandCenterService";
-import { postgresAdminProfileStore, resolveAdminProfile, supabaseAdminProfileStore } from "@/lib/admin/profileResolution";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { postgresAdminProfileStore, resolveAdminProfile } from "@/lib/admin/profileResolution";
 import type { AdminUser } from "@/lib/admin/types";
 
-const recorder = createRecorder();
+const store = (_backend: BackendFixtures) => postgresAdminProfileStore();
 
-const store = (backend: BackendFixtures) =>
-  backend.name === "postgres" ? postgresAdminProfileStore() : supabaseAdminProfileStore(createServiceRoleClient());
-
-describeBothBackends("admin", "admin area (activity log, profile resolution, command center)", (backend) => {
+describeWithDatabase("admin area (activity log, profile resolution, command center)", (backend) => {
   it("records admin activity, and logs instead of throwing when it cannot", async () => {
     const suffix = Math.random().toString(36).slice(2, 10);
     const actor = { email: `actor-${suffix}@example.test`, username: `actor-${suffix}`, role: "admin" } as AdminUser;
@@ -22,7 +17,7 @@ describeBothBackends("admin", "admin area (activity log, profile resolution, com
 
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      // actor_email is NOT NULL: the insert fails on both paths.
+      // actor_email is NOT NULL: the insert fails.
       await expect(logAdminActivity({ actor: { ...actor, email: null as never }, action: "probe", targetType: "probe" })).resolves.toBeUndefined();
       expect(error).toHaveBeenCalledWith("admin activity was not recorded", expect.objectContaining({ action: "probe" }));
     } finally {
@@ -51,8 +46,7 @@ describeBothBackends("admin", "admin area (activity log, profile resolution, com
     // Inactive profiles never resolve.
     await backend.query("update admin_users set is_active = false where id = $1", [bound.id]);
     expect(await resolveAdminProfile(s, { id: authId, email: null, emailConfirmedAt: null })).toBeNull();
-    expect(await s.linkAuthUser(legacy.id, crypto.randomUUID())).toBeNull(); // compare-and-set
-    recorder.record(backend.name, "linked profile keys", Object.keys(linked ?? {}).sort());
+    expect(await s.linkAuthUser(legacy.id, crypto.randomUUID())).toBeNull();
   });
 
   it("builds the same Command Center snapshot from the same rows", async () => {
@@ -75,7 +69,7 @@ describeBothBackends("admin", "admin area (activity log, profile resolution, com
     expect(snapshot.infrastructure.defaultEnvironment).toMatchObject({ key: "prod", is_default: true });
     expect(snapshot.delivery.recent.map((job: { status: string }) => job.status)).toEqual(["queued", "dead_letter"]);
 
-    // Rows with identical timestamps come back in id order on both paths, not in scan order.
+    // Rows with identical timestamps come back in id order, not in scan order.
     await backend.query(
       "insert into delivery_jobs (workspace_id, kind, idempotency_key, status, queue_name, updated_at) select $1, 'webhook', 'tie-' || g, 'queued', 'default', '2030-01-01T00:00:00Z' from generate_series(1, 4) g",
       [workspaceId],
@@ -89,10 +83,5 @@ describeBothBackends("admin", "admin area (activity log, profile resolution, com
     expect(empty.attention.map((item) => item.key)).toEqual(["environment-missing"]);
 
     const { generatedAt: _generatedAt, ...comparable } = snapshot;
-    recorder.record(backend.name, "snapshot", comparable);
   });
-});
-
-describe("admin backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

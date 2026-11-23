@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import { createPreviewToken, createReleasePreviewToken, getReleasePreview, resolvePreviewToken } from "@/lib/content/previewService";
 import { createSavedEntryView, deleteSavedEntryView, listSavedEntryViews } from "@/lib/content/savedViewService";
 import { createRelease } from "@/lib/content/releaseService";
 import { createModel } from "@/lib/schema/modelService";
-
-const recorder = createRecorder();
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -18,7 +15,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, modelId: model.data.model.id, entryId: entry.data.entry.id, versionId: entry.data.version.id };
 }
 
-describeBothBackends(["content", "schema"], "preview tokens, release previews and saved entry views", (backend) => {
+describeWithDatabase("preview tokens, release previews and saved entry views", (backend) => {
   it("issues and resolves entry preview tokens, storing only the hash", async () => {
     const { workspaceId, adminUserId, entryId, versionId } = await setup(backend);
     const { token, expiresAt } = await createPreviewToken({ workspaceId, entryId, actorId: adminUserId, expiresInHours: 1000 });
@@ -37,7 +34,6 @@ describeBothBackends(["content", "schema"], "preview tokens, release previews an
 
     const other = await backend.createWorkspace();
     await expect(createPreviewToken({ workspaceId: other.workspaceId, entryId, actorId: other.adminUserId })).rejects.toThrow("Entry draft not found");
-    recorder.record(backend.name, "token", { keys: Object.keys(resolved).sort(), versionKeys: Object.keys(resolved.content_entry_versions).sort() });
   });
 
   it("previews a release with its pinned versions and models (empty on Supabase before this fix)", async () => {
@@ -52,7 +48,6 @@ describeBothBackends(["content", "schema"], "preview tokens, release previews an
     const other = await backend.createWorkspace();
     expect(await getReleasePreview(other.workspaceId, releaseId)).toBeNull();
     await expect(createReleasePreviewToken({ workspaceId: other.workspaceId, releaseId, actorId: other.adminUserId })).rejects.toThrow("Release not found");
-    recorder.record(backend.name, "release preview", preview);
   });
 
   it("saves, lists and deletes saved entry views per user", async () => {
@@ -65,13 +60,12 @@ describeBothBackends(["content", "schema"], "preview tokens, release previews an
     const other = await backend.createWorkspace();
     expect(await listSavedEntryViews(other.workspaceId, adminUserId)).toEqual([]);
     expect(await deleteSavedEntryView({ workspaceId: other.workspaceId, actorAdminUserId: other.adminUserId, viewId: created.data.id })).toMatchObject({ ok: false, status: 404 });
+    // Another user in the same workspace cannot delete it either.
+    const [colleague] = await backend.query<{ id: string }>("insert into admin_users (username, email) values ($1, $2) returning id", [`colleague-${created.data.id.slice(0, 8)}`, `colleague-${created.data.id.slice(0, 8)}@example.test`]);
+    expect(await deleteSavedEntryView({ workspaceId, actorAdminUserId: colleague.id, viewId: created.data.id })).toMatchObject({ ok: false, status: 404 });
     expect(await deleteSavedEntryView({ workspaceId, actorAdminUserId: adminUserId, viewId: created.data.id })).toEqual({ ok: true });
     expect(await listSavedEntryViews(workspaceId, adminUserId)).toEqual([]);
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and entity_type = 'content_entry_saved_view' order by action", [workspaceId]);
     expect(events.map((e) => e.action)).toEqual(["content.entry_view.created", "content.entry_view.deleted"]);
   });
-});
-
-describe("preview and saved view backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

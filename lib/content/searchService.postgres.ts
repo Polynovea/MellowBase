@@ -1,11 +1,11 @@
-// Direct PostgreSQL implementation of content search (phase 1, wave 3).
+// PostgreSQL implementation of content search (phase 1, wave 3).
 //
-// Same signatures and return shapes as searchService.supabase.ts. Ranking and filtering stay in
-// cms_search_content_ranked (pg_trgm + full text, unchanged). Differences that are deliberate:
+// Ranking and filtering stay in cms_search_content_ranked (pg_trgm + full text, unchanged).
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - The saved-search list's "mine or shared" filter is bound parameters; the Supabase path built a
-//   PostgREST `or(owner_id.eq.<id>,is_shared.eq.true)` string from the owner ID.
+// PostgREST `or(owner_id.eq.<id>,is_shared.eq.true)` string from the owner ID.
 // - Malformed IDs in search filters return no rows instead of a database error; a malformed saved
-//   search ID is "not found". Lists have explicit limits and tie-breaks.
+// search ID is "not found". Lists have explicit limits and tie-breaks.
 import { callFunction, DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne } from "@/lib/db/index";
 import type { ContentEntryRow, ContentEntryVersionRow } from "@/lib/content/entryService";
 import { searchableText, type ContentSearchParams } from "@/lib/content/searchService";

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder, ISO_TIMESTAMP, jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
+import { ISO_TIMESTAMP, jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/http";
 import {
   checkPathCollision,
   deleteRoute,
@@ -23,9 +23,8 @@ vi.mock("@/lib/platform/permissions", () => ({
 }));
 
 const ROUTE_KEYS = ["created_at", "entry_id", "id", "indexing_policy", "is_canonical", "locale", "metadata_json", "node_type", "order_index", "parent_route_id", "path", "sitemap_changefreq", "sitemap_included", "sitemap_priority", "status", "title", "updated_at", "workspace_id"];
-const recorder = createRecorder();
 
-describeBothBackends("routing", "route service", (backend) => {
+describeWithDatabase("route service", (backend) => {
   it("registers, lists, nests, re-paths and deletes routes with identical shapes", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const { entryId } = await backend.createEntry(workspaceId);
@@ -61,8 +60,6 @@ describeBothBackends("routing", "route service", (backend) => {
 
     expect(await deleteRoute({ workspaceId, actorAdminUserId: adminUserId, routeId: other.id })).toEqual({ ok: true });
     expect(await getRoute(workspaceId, other.id)).toBeNull();
-
-    recorder.record(backend.name, "route lifecycle", { parent, child, other, tree, moved, discoverable });
   });
 
   it("detects collisions on the normalized path and keeps one canonical route per entry and locale", async () => {
@@ -82,7 +79,6 @@ describeBothBackends("routing", "route service", (backend) => {
     await expect(registerRoute({ workspaceId, actorAdminUserId: adminUserId, locale: "en", path: "/A", entryId })).rejects.toThrow("Route collision");
     // The failed registration must not have taken the canonical flag from the existing route.
     expect((await getRoute(workspaceId, second.id))?.is_canonical).toBe(true);
-    recorder.record(backend.name, "collisions", { collision });
   });
 
   it("keeps dependency edges and audit events in step", async () => {
@@ -143,8 +139,4 @@ describeBothBackends("routing", "route service", (backend) => {
     }
     expect(await readJson(await deleteRouteHandler(jsonRequest(), routeParams({ id })))).toMatchObject({ status: 200, body: { data: { ok: true } } });
   });
-});
-
-describe("route service backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

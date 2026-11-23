@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder, jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
+import { jsonRequest, LEAKED_DB_ERROR, readJson, routeParams } from "@/lib/db/testing/http";
 import {
   cancelDeliveryJob,
   enqueueDeliveryJob,
@@ -20,9 +20,7 @@ vi.mock("@/lib/platform/permissions", () => ({
   requirePlatformAccess: vi.fn(async () => ({ data: { actor: { ...actor }, adminUser: { id: actor.adminUserId } } })),
 }));
 
-const recorder = createRecorder();
-
-describeBothBackends("operations", "delivery job service", (backend) => {
+describeWithDatabase("delivery job service", (backend) => {
   it("enqueues idempotently, lists with filters, cancels and replays with identical shapes", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const job = await enqueueDeliveryJob({ workspaceId, actorId: adminUserId, kind: "webhook", idempotencyKey: "k-1", payload: { a: [1, 2] }, safeMetadata: { note: "x" } }) as Record<string, any>;
@@ -47,13 +45,6 @@ describeBothBackends("operations", "delivery job service", (backend) => {
     expect(Array.isArray(detail?.attempts)).toBe(true);
     expect(detail?.audit.map((event) => event.action)).toEqual(expect.arrayContaining([expect.stringContaining("cancel")]));
     expect(await getDeliveryJob(workspaceId, "not-a-uuid")).toBeNull();
-
-    recorder.record(backend.name, "jobs", {
-      job: { ...job, idempotency_key: job.idempotency_key, run_after: "<time>" },
-      cancelled: { ...cancelled, run_after: "<time>" },
-      keys: Object.keys(detail ?? {}).sort(),
-      jobKeys: Object.keys(detail?.job ?? {}).sort(),
-    });
   });
 
   it("reports the SQL functions' own messages and refuses to replay a live job", async () => {
@@ -71,7 +62,6 @@ describeBothBackends("operations", "delivery job service", (backend) => {
     );
     const health = await listDestinationHealth(workspaceId);
     expect(health).toEqual([expect.objectContaining({ workspace_id: workspaceId, health_state: "healthy", consecutive_failures: 0 })]);
-    recorder.record(backend.name, "health", health.map((row) => ({ ...row, destination_id: "<id>" })));
   });
 
   it("keeps workspaces isolated", async () => {
@@ -105,8 +95,4 @@ describeBothBackends("operations", "delivery job service", (backend) => {
       expect(body.error).not.toMatch(LEAKED_DB_ERROR);
     }
   });
-});
-
-describe("operations backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

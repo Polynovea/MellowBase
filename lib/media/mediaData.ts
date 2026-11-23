@@ -1,11 +1,8 @@
-// Media area: database primitives for assets, replacement, the upload quota and storage resolution,
-// with the backend dispatcher (the `media` switch in POLYNOVEA_DATA_BACKEND). The services
-// (assetService, replacementService, uploadLimits, storageProvider) keep their validation, upload
-// and storage logic and call these, so both paths apply the same rules.
-import { usesDirectPostgres } from "@/lib/db/backend";
+// Media area: database primitives for assets, replacement, the upload quota and storage resolution.
+// The services (assetService, replacementService, uploadLimits, storageProvider) keep their
+// validation, upload and storage logic and call these.
 import type { EnvironmentKind } from "@/lib/infrastructure/types";
 import * as postgres from "@/lib/media/mediaData.postgres";
-import * as supabase from "@/lib/media/mediaData.supabase";
 
 export interface StorageConnectionRow {
   id: string;
@@ -57,19 +54,16 @@ export interface ReplaceAssetFileArgs {
   reason: string;
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("media") ? direct : supabase);
 
-export const listActiveAssets: typeof supabase.listActiveAssets = (...args) => impl().listActiveAssets(...args);
-export const findActiveAssetByChecksum: typeof supabase.findActiveAssetByChecksum = (...args) => impl().findActiveAssetByChecksum(...args);
-export const insertAsset: typeof supabase.insertAsset = (...args) => impl().insertAsset(...args);
-export const findAsset: typeof supabase.findAsset = (...args) => impl().findAsset(...args);
-export const replaceAssetFile: typeof supabase.replaceAssetFile = (...args) => impl().replaceAssetFile(...args);
-export const listAssetReplacements: typeof supabase.listAssetReplacements = (...args) => impl().listAssetReplacements(...args);
-export const activeAssetBytes: typeof supabase.activeAssetBytes = (...args) => impl().activeAssetBytes(...args);
-export const environmentKind: typeof supabase.environmentKind = (...args) => impl().environmentKind(...args);
-export const exactStorageConnection: typeof supabase.exactStorageConnection = (...args) => impl().exactStorageConnection(...args);
-export const findEnvironment: typeof supabase.findEnvironment = (...args) => impl().findEnvironment(...args);
-export const defaultEnvironment: typeof supabase.defaultEnvironment = (...args) => impl().defaultEnvironment(...args);
-export const activeStorageConnections: typeof supabase.activeStorageConnections = (...args) => impl().activeStorageConnections(...args);
+export const listActiveAssets = postgres.listActiveAssets;
+export const findActiveAssetByChecksum = postgres.findActiveAssetByChecksum;
+export const insertAsset = postgres.insertAsset;
+export const findAsset = postgres.findAsset;
+export const replaceAssetFile = postgres.replaceAssetFile;
+export const listAssetReplacements = postgres.listAssetReplacements;
+export const activeAssetBytes = postgres.activeAssetBytes;
+export const environmentKind = postgres.environmentKind;
+export const exactStorageConnection = postgres.exactStorageConnection;
+export const findEnvironment = postgres.findEnvironment;
+export const defaultEnvironment = postgres.defaultEnvironment;
+export const activeStorageConnections = postgres.activeStorageConnections;
