@@ -17,4 +17,5 @@ export function hardenPublicSchema(ownerClient: ClientBase): Promise<void>;
 export function appRoleProblems(client: ClientBase): Promise<string[]>;
 export function tablesMissingAppPolicy(client: ClientBase): Promise<string[]>;
 export const SEEDED_WORKSPACE_SLUG: "polynovea";
+export const INSTALL_PROBES: readonly { table: string; sql: string }[];
 export function rolesInUseElsewhere(client: ClientBase): Promise<{ role: string; database: string }[]>;

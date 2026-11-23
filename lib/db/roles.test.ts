@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ClientBase } from "pg";
 import { createHash, createHmac, pbkdf2Sync } from "node:crypto";
-import { appRoleProblems, bootstrapInstallRoles, ensureCompatibilityRoles, installationState, rolesInUseElsewhere, scramSha256Verifier, tablesMissingAppPolicy, withOwnerRole } from "@/lib/db/roles.mjs";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { appRoleProblems, bootstrapInstallRoles, ensureCompatibilityRoles, INSTALL_PROBES, installationState, rolesInUseElsewhere, scramSha256Verifier, tablesMissingAppPolicy, withOwnerRole } from "@/lib/db/roles.mjs";
 import { adminRoutes, fakeClient as routedClient } from "@/lib/setup/database/testFakes";
 
 function fakeClient(missing: string[], canCreate: boolean, opts: { superuser?: boolean; bypassRoles?: string[]; version?: number } = {}) {
@@ -125,13 +127,12 @@ describe("installationState", () => {
     await expect(installationState(fake.client)).resolves.toBe(expected);
   });
 
-  it("checks for admins and any workspace but the seeded one, as the tables' owner", async () => {
-    const fake = routedClient(adminRoutes({ ledger: true, core: true, admins: true, installation: true }));
+  it("runs the installation row and all four INSTALL_PROBES as the tables' owner", async () => {
+    const fake = routedClient(adminRoutes({ ledger: true, core: true, admins: true, members: true, content: true, installation: true }));
     await installationState(fake.client);
     const check = fake.statements.find((sql) => sql.endsWith("as in_use"))!;
     expect(check).toContain("exists (select 1 from public.installation)");
-    expect(check).toContain("exists (select 1 from public.admin_users)");
-    expect(check).toContain("exists (select 1 from public.workspaces where slug is distinct from 'polynovea')");
+    for (const probe of INSTALL_PROBES) expect(check).toContain(probe.sql);
     const index = fake.statements.indexOf(check);
     expect(fake.statements[index - 1]).toBe('set role "polynovea_owner"');
     expect(fake.statements[index + 1]).toBe("reset role");
@@ -141,7 +142,31 @@ describe("installationState", () => {
     const fake = routedClient(adminRoutes({ ledger: true, core: true }));
     await expect(installationState(fake.client)).resolves.toBe("resumable");
     const check = fake.statements.find((sql) => sql.endsWith("as in_use"))!;
-    expect(check).not.toMatch(/installation|admin_users/);
+    expect(check).not.toMatch(/installation|admin_users|workspace_members|content_entries/);
+    expect(check).toContain("public.workspaces");
+  });
+});
+
+describe("INSTALL_PROBES: the shared 'database holds an install' rule", () => {
+  it("is exactly admin users, workspace members, content entries, or a workspace other than the seeded one", () => {
+    expect(INSTALL_PROBES.map((probe) => probe.sql)).toEqual([
+      "exists (select 1 from public.admin_users)",
+      "exists (select 1 from public.workspace_members)",
+      "exists (select 1 from public.content_entries)",
+      "exists (select 1 from public.workspaces w where w.slug <> 'polynovea')",
+    ]);
+  });
+
+  it("matches migration 0072's backfill rule (gate-config's copy), so the two cannot drift", () => {
+    const migration = readFileSync(path.join(process.cwd(), "supabase", "migrations", "0072_installation.sql"), "utf8").replace(/\r\n/g, "\n");
+    const marked = /-- backfill:start\n([\s\S]*?)-- backfill:end/.exec(migration);
+    // Until gate-config's marked rule (fd9025e) is on this branch, 0072 has no markers.
+    if (!marked) {
+      expect(migration).not.toContain("backfill:start");
+      return;
+    }
+    const probes = [...marked[1].matchAll(/exists \(select 1 from public\.[a-z_]+(?: [a-z]+ where [^)]*)?\)/g)].map((match) => match[0]);
+    expect(probes).toEqual(INSTALL_PROBES.map((probe) => probe.sql));
   });
 
   it("treats a database whose roles another admin created as foreign", async () => {

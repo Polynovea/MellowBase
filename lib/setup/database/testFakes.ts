@@ -48,10 +48,13 @@ export function fakeClient(routes: Route[] = [], config?: pg.ClientConfig): Fake
 /** Routes that make a fake admin client look like a managed-database admin on PostgreSQL 16. */
 export interface FakeDatabaseState {
   ledger?: boolean;
+  /** The workspaces table (core tables) exists. */
   core?: boolean;
   installation?: boolean;
   admins?: boolean;
-  /** Result of the "installation row, admin user or real workspace" check, read as the owner. */
+  members?: boolean;
+  content?: boolean;
+  /** Result of the "installation row or any install probe" check, read as the owner. */
   inUse?: boolean;
   /** Owners of the Polynovea tables that exist (default polynovea_owner). */
   owners?: readonly string[];
@@ -60,15 +63,16 @@ export interface FakeDatabaseState {
 }
 
 export function adminRoutes(state: FakeDatabaseState = {}): Route[] {
-  const anyTable = state.ledger || state.installation || state.admins || state.core;
+  const present = [
+    state.ledger && "polynovea_migration_ledger",
+    state.installation && "installation",
+    state.admins && "admin_users",
+    state.members && "workspace_members",
+    state.content && "content_entries",
+    state.core && "workspaces",
+  ].filter(Boolean);
   return [
-    [/to_regclass\('public\.polynovea_migration_ledger'\) is not null as has_ledger/, () => ({ rows: [{
-      has_ledger: state.ledger ?? false,
-      has_installation: state.installation ?? false,
-      has_admins: state.admins ?? false,
-      has_core: state.core ?? false,
-      owners: state.owners ?? (anyTable ? ["polynovea_owner"] : []),
-    }] })],
+    [/as present,/, () => ({ rows: [{ present, owners: state.owners ?? (present.length ? ["polynovea_owner"] : []) }] })],
     [/as in_use$/, () => ({ rows: [{ in_use: state.inUse ?? false }] })],
     [/with roles as/, () => ({ rows: state.rolesElsewhere ?? [] })],
     [/as superuser, current_setting/, () => ({ rows: [{ superuser: false, member: false, version: 160000 }] })],

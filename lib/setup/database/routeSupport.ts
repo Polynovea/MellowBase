@@ -79,15 +79,19 @@ export async function saveDatabaseConfig(result: ProvisionedDatabase, session: S
   } catch {
     authSecret = null; // an unreadable earlier file is replaced
   }
+  const savedAuthSecret = authSecret ?? generateSecret(32);
   await writeConfig({
     v: 1,
     databaseMode: result.databaseMode,
     database: result.database,
     roles: result.roles,
-    authSecret: authSecret ?? generateSecret(32),
+    authSecret: savedAuthSecret,
     backupRepoPassword: result.backupRepoPassword ?? null,
   });
   reloadInstallConfig();
+  // Boot copies config.enc's auth secret into the environment (bootTasks.ts); this covers the same
+  // process before a restart, so the owner step can sign sessions straight away. Never logged.
+  if (!process.env.POLYNOVEA_AUTH_SECRET?.trim()) process.env.POLYNOVEA_AUTH_SECRET = savedAuthSecret;
   try {
     setSetupState(session, "database", { databaseMode: result.databaseMode, completedAt: new Date().toISOString() });
   } catch {

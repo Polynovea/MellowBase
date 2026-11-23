@@ -36,7 +36,7 @@ The address field could otherwise be used to probe this server's network, so:
 - The name is resolved **once**, and every connection goes to that exact address. A second DNS answer is never used.
 - These are **always refused**, whatever the name: loopback (`127.0.0.0/8`, `::1`), `localhost` and `*.localhost`, link-local (`169.254.0.0/16`, `fe80::/10`), `0.0.0.0/8`, multicast, reserved and documentation ranges, NAT64, the cloud metadata and platform addresses (`169.254.169.254`, `fd00:ec2::254`, Azure's `168.63.129.16`), and the same addresses written inside IPv6 (`::ffff:127.0.0.1` and similar). If any address a name resolves to is in this list, the whole name is refused.
 - **Private addresses** (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `fc00::/7`) are accepted only for Amazon RDS endpoints (`….rds.amazonaws.com`) and Azure Database for PostgreSQL endpoints (`….postgres.database.azure.com`), or for hosts the operator allows (below).
-- An IP address typed directly is accepted only if it is public.
+- IP addresses are not accepted, public ones included: the database's TLS identity is checked against its name, and a managed database's address can change. Enter the endpoint name.
 
 ### Allowing another private database (operators)
 
@@ -70,9 +70,19 @@ The admin password is used for one request. It is never written to `config.enc`,
 
 ### Starting again
 
-If a run stops part-way (for example, the network drops during migrations), run the step again: a database that has the CMS's migration ledger but no `installation` row picks up where it stopped. A database whose `installation` row exists already belongs to an install and is refused. A database with CMS tables but no migration ledger is also refused.
+If a run stops part-way (for example, the network drops during migrations), run the step again: a database that has the CMS's migration ledger, and nothing an install would have made, picks up where it stopped.
 
-Two runs never interleave: one server runs one database step per setup session (two at most in total), each setup session may start ten runs every ten minutes, and migrations hold a database lock that a second run (or `npm run db:migrate` by hand) waits for or is refused by.
+The wizard never takes over an existing install. It refuses, before changing anything:
+
+- a database that already belongs to an install: it has an `installation` row, any admin user (this covers installs made before the wizard existed), or any workspace other than the one the migrations create;
+- a database with CMS tables but no migration ledger, or whose tables are not owned by `polynovea_owner`;
+- a database server where `polynovea_owner` or `polynovea_app` already serve **another** database (they own it, hold rights on it, or own objects in it). These two users are shared by every database on a server, so setting up a second install there would change their passwords and lock the first one out. Use a separate database server for each install.
+
+Only one database step runs at a time on a server, whichever browser started it: a second attempt is told that setup is already running. Each setup session may start ten runs every ten minutes, and migrations hold a database lock that a second run (or `npm run db:migrate` by hand) waits for or is refused by.
+
+### Running migrations by hand
+
+`npm run db:migrate` uses the settings the wizard saved (`config.enc`): it signs in as `polynovea_owner` and verifies the database with the same certificate roots. It prints which file it used. If `config.enc` exists but can't be read (for example, the master key is missing), it stops rather than guess. It uses `DATABASE_URL` only when there is no `config.enc`, as on development machines and installs made before the wizard.
 
 ## Created for you
 

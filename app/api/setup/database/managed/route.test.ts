@@ -116,6 +116,34 @@ describe("POST /api/setup/database/managed", () => {
     expect(input).toMatchObject({ hostname: FORM.hostname, port: 5432, database: "postgres", user: "dbadmin" });
   });
 
+  it("puts the saved auth secret into this process's environment when it is empty, never into an event", async () => {
+    const before = process.env.POLYNOVEA_AUTH_SECRET;
+    try {
+      delete process.env.POLYNOVEA_AUTH_SECRET;
+      const text = await (await POST(request(FORM, { token }))).text();
+      const saved = ((mocks.writeConfig.mock.calls[0] as unknown[])[0] as { authSecret: string }).authSecret;
+      expect(process.env.POLYNOVEA_AUTH_SECRET).toBe(saved);
+      expect(text).not.toContain(saved);
+      const logged = JSON.stringify([...vi.mocked(console.warn).mock.calls, ...vi.mocked(console.error).mock.calls]);
+      expect(logged).not.toContain(saved);
+    } finally {
+      if (before === undefined) delete process.env.POLYNOVEA_AUTH_SECRET;
+      else process.env.POLYNOVEA_AUTH_SECRET = before;
+    }
+  });
+
+  it("leaves an auth secret the operator already set alone", async () => {
+    const before = process.env.POLYNOVEA_AUTH_SECRET;
+    try {
+      process.env.POLYNOVEA_AUTH_SECRET = "operator-set-secret-".padEnd(40, "x");
+      await (await POST(request(FORM, { token }))).text();
+      expect(process.env.POLYNOVEA_AUTH_SECRET).toBe("operator-set-secret-".padEnd(40, "x"));
+    } finally {
+      if (before === undefined) delete process.env.POLYNOVEA_AUTH_SECRET;
+      else process.env.POLYNOVEA_AUTH_SECRET = before;
+    }
+  });
+
   it("keeps the auth secret an earlier run saved", async () => {
     mocks.readInstallConfigSync.mockImplementation(() => ({ authSecret: "k".repeat(43) }));
     await (await POST(request(FORM, { token }))).text();
