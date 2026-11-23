@@ -1,9 +1,12 @@
 /**
  * The process-wide built-in auth instance, configured from the environment:
- * POLYNOVEA_AUTH_SECRET (32+ characters, never stored in the database) and POLYNOVEA_PUBLIC_URL.
+ * POLYNOVEA_AUTH_SECRET (32+ characters, never stored in the database), POLYNOVEA_PUBLIC_URL and
+ * POLYNOVEA_TRUSTED_PROXIES (comma-separated addresses or CIDR ranges of the reverse proxies).
  * Kept on globalThis, like the database pool, so Next.js reloads do not build a second one.
  */
 import { getDb } from "@/lib/db/index";
+import { provisionManagedIdentity } from "@/lib/admin/managedProvisioning";
+import { parseTrustedProxies } from "@/lib/auth/settings";
 import { createPolynoveaAuth, type PolynoveaAuth } from "@/lib/auth/betterAuth/server";
 import { getBetterAuthServerIdentityProvider } from "@/lib/auth/betterAuth/provider";
 import type { ServerIdentityProvider } from "@/lib/auth/provider";
@@ -17,7 +20,15 @@ export function getBuiltinAuth(): PolynoveaAuth {
     const secret = process.env.POLYNOVEA_AUTH_SECRET ?? "";
     const baseURL = process.env.POLYNOVEA_PUBLIC_URL ?? "";
     if (!baseURL) throw new Error("POLYNOVEA_PUBLIC_URL is required for the built-in auth");
-    holder[KEY] = createPolynoveaAuth({ db: getDb(), secret, baseURL });
+    holder[KEY] = createPolynoveaAuth({
+      db: getDb(),
+      secret,
+      baseURL,
+      trustedProxies: parseTrustedProxies(process.env.POLYNOVEA_TRUSTED_PROXIES),
+      onUserCreated: async (user) => {
+        await provisionManagedIdentity(user);
+      },
+    });
   }
   return holder[KEY]!;
 }

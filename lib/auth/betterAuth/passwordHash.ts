@@ -1,12 +1,16 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as nodeCrypto from "node:crypto";
+import bcrypt from "bcryptjs";
 
 /**
- * Argon2id password hashing for the built-in auth (OWASP minimum: 19 MiB, 2 iterations, 1 lane).
+ * Password hashing for the built-in auth.
  *
- * Uses Node's own crypto.argon2 (Node 24.7+), so there is no native add-on to build. Hashes are
- * stored as standard PHC strings, so other Argon2 libraries can verify them.
- * TODO(phase 1): also verify the bcrypt hashes GoTrue stored, and rehash them on the next sign-in.
+ * New hashes are Argon2id (OWASP minimum: 19 MiB, 2 iterations, 1 lane) through Node's own
+ * crypto.argon2 (Node 24.7+), stored as standard PHC strings so other Argon2 libraries can verify them.
+ *
+ * Users moved from Supabase GoTrue keep their bcrypt hash (`$2a$`/`$2b$`/`$2y$`). verifyPassword
+ * accepts it, and the sign-in hook in server.ts replaces it with Argon2id at the next successful
+ * sign-in (needsRehash tells it when).
  */
 
 const PARAMS = { memory: 19 * 1024, passes: 2, parallelism: 1, tagLength: 32 } as const;
@@ -38,8 +42,26 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 const PHC = /^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9+/]+)\$([A-Za-z0-9+/]+)$/;
+// GoTrue writes bcrypt with cost 10; accept the usual cost range and nothing that could pin the CPU.
+const BCRYPT = /^\$2[aby]\$(0[4-9]|1[0-4])\$[./A-Za-z0-9]{53}$/;
+
+export function isBcryptHash(hash: string): boolean {
+  return BCRYPT.test(hash);
+}
+
+/** True when a stored hash should be replaced with a fresh Argon2id hash after a successful sign-in. */
+export function needsRehash(hash: string): boolean {
+  const match = PHC.exec(hash);
+  if (!match) return true;
+  return Number(match[1]) < PARAMS.memory || Number(match[2]) < PARAMS.passes;
+}
 
 export async function verifyPassword({ hash, password }: { hash: string; password: string }): Promise<boolean> {
+  if (typeof hash !== "string" || typeof password !== "string") return false;
+  if (isBcryptHash(hash)) {
+    // GoTrue hashed the raw password (no normalisation); bcrypt reads at most 72 bytes, as GoTrue did.
+    return bcrypt.compare(password, hash);
+  }
   const match = PHC.exec(hash);
   if (!match) return false;
   const [, m, t, p, salt, expected] = match;

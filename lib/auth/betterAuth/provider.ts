@@ -8,7 +8,8 @@
  */
 import type { RequestIdentity, ServerIdentityProvider, User } from "@/lib/auth/provider";
 import { hashPassword } from "@/lib/auth/betterAuth/passwordHash";
-import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, type PolynoveaAuth } from "@/lib/auth/betterAuth/server";
+import { ABSOLUTE_TIMEOUT_SECONDS, type PolynoveaAuth } from "@/lib/auth/betterAuth/server";
+import { assertAcceptablePassword, PasswordPolicyError, type PwnedRangeFetch } from "@/lib/auth/passwordPolicy";
 
 type BetterAuthUser = { id: string; email: string; emailVerified: boolean; updatedAt: Date | string; metadata?: unknown };
 
@@ -35,7 +36,24 @@ const genericError = (message: string) => new Error(message);
 
 type BetterAuthSession = { id: string; createdAt: Date | string };
 
-export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth): ServerIdentityProvider {
+/** The password rules, as a provider error (the policy message is safe to show the user). */
+async function passwordProblem(input: { password: string; hasMfa: boolean; email: string | null; lookup?: PwnedRangeFetch }): Promise<Error | null> {
+  try {
+    await assertAcceptablePassword(input);
+    return null;
+  } catch (error) {
+    return error instanceof PasswordPolicyError ? genericError(error.message) : genericError("Could not check the password");
+  }
+}
+
+export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth, options: { pwnedLookup?: PwnedRangeFetch } = {}): ServerIdentityProvider {
+  const hasMfa = async (userId: string): Promise<boolean> => {
+    const ctx = await auth.$context;
+    const user = (await ctx.internalAdapter.findUserById(userId)) as { twoFactorEnabled?: boolean | null } | null;
+    if (user?.twoFactorEnabled) return true;
+    return (await ctx.adapter.count({ model: "passkey", where: [{ field: "userId", value: userId }] })) > 0;
+  };
+
   return {
     async verifyRequest(request) {
       const cookie = request.headers.get("cookie");
@@ -45,6 +63,11 @@ export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth): Server
         const result = await auth.api.getSession({ headers: new Headers({ cookie }), query: { disableCookieCache: true } });
         if (!result) return { identity: null, error: genericError("Invalid session") };
         const session = result.session as BetterAuthSession;
+        // The update hook already caps expiry at 7 days from sign-in; this check holds even if it did not run.
+        if (Date.now() - new Date(session.createdAt).getTime() > ABSOLUTE_TIMEOUT_SECONDS * 1000) {
+          await (await auth.$context).internalAdapter.deleteSession((result.session as { token: string }).token);
+          return { identity: null, error: genericError("Invalid session") };
+        }
         const identity: RequestIdentity = {
           user: toIdentityUser(result.user as BetterAuthUser),
           sessionId: session.id,
@@ -60,9 +83,9 @@ export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth): Server
     },
 
     async createUser(input) {
-      if (input.password.length < MIN_PASSWORD_LENGTH || input.password.length > MAX_PASSWORD_LENGTH) {
-        return { user: null, error: genericError(`Password must be ${MIN_PASSWORD_LENGTH} to ${MAX_PASSWORD_LENGTH} characters`) };
-      }
+      // A new account has no second factor yet, so the single-factor rule (15 characters) applies.
+      const problem = await passwordProblem({ password: input.password, hasMfa: false, email: input.email, lookup: options.pwnedLookup });
+      if (problem) return { user: null, error: problem };
       let createdUserId: string | null = null;
       try {
         const ctx = await auth.$context;
@@ -96,8 +119,17 @@ export function getBetterAuthServerIdentityProvider(auth: PolynoveaAuth): Server
     },
 
     async updateUser(id, input) {
-      if (input.password !== undefined && (input.password.length < MIN_PASSWORD_LENGTH || input.password.length > MAX_PASSWORD_LENGTH)) {
-        return { error: genericError(`Password must be ${MIN_PASSWORD_LENGTH} to ${MAX_PASSWORD_LENGTH} characters`) };
+      if (input.password !== undefined) {
+        let mfa = false;
+        let email: string | null = null;
+        try {
+          mfa = await hasMfa(id);
+          email = ((await (await auth.$context).internalAdapter.findUserById(id)) as { email?: string } | null)?.email ?? null;
+        } catch {
+          return { error: genericError("Could not update user") };
+        }
+        const problem = await passwordProblem({ password: input.password, hasMfa: mfa, email, lookup: options.pwnedLookup });
+        if (problem) return { error: problem };
       }
       try {
         const ctx = await auth.$context;
