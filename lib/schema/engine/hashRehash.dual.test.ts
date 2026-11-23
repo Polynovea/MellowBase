@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import pg from "pg";
 import { expect, it } from "vitest";
 import { describeWithDatabase } from "@/lib/db/testing/database";
 import { canonicalJson, hashModelSchema } from "@/lib/schema/engine/hash";
@@ -86,5 +87,31 @@ describeWithDatabase("schema hash re-hash (migration 0075)", (backend) => {
     } finally {
       await backend.query("rollback");
     }
+  });
+  it("names the versions that keep their old hash by ids only, then the count", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Odd", apiKey: "odd", fields: [{ key: "n", label: "N", type: "number", required: false }] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    await backend.query("update content_model_versions set schema_json = jsonb_set(schema_json, '{fields,0,defaultValue}', '1e309'::jsonb) where content_model_id = $1", [modelId]);
+
+    const migration = readFileSync(path.join(process.cwd(), "supabase", "migrations", "0075_schema_hash_rehash.sql"), "utf8").replace(/\r\n/g, "\n");
+    const block = migration.match(/-- rehash:start\n([\s\S]*?)-- rehash:end/)![1];
+    const client = new pg.Client({ connectionString: process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL, ssl: false });
+    const notices: string[] = [];
+    client.on("notice", (notice) => notices.push(notice.message ?? ""));
+    await client.connect();
+    try {
+      await client.query("begin");
+      await client.query(block);
+      await client.query("rollback");
+    } finally {
+      await client.end();
+    }
+    const ours = notices.filter((line) => line.includes(modelId));
+    expect(ours).toEqual([`schema hash re-hash: model ${modelId} version 1 keeps its previous hash`]);
+    expect(notices.filter((line) => /keeps its previous hash$/.test(line)).length).toBeLessThanOrEqual(50);
+    expect(notices.at(-1)).toMatch(/^schema hash re-hash: \d+ schema version\(s\) keep their previous hash$/);
+    expect(notices.join("\n")).not.toMatch(/1e309|"fields"|Odd/);
   });
 });
