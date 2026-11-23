@@ -183,7 +183,7 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
 
   it("the worker process survives losing its database session: the next poll reconnects and runs the stage", async () => {
     const m = await model([field("title")]);
-    const child = spawn(process.execPath, ["--no-warnings", "--loader", "./scripts/phase12_75-node-loader.mjs", "scripts/schema-migration-worker.mjs", `--model=${m.modelId}`], {
+    const child = spawn(process.execPath, ["--no-warnings", "--loader", "./scripts/phase12_75-node-loader.mjs", "scripts/schema-migration-worker.mjs", "--model", m.modelId], {
       cwd: process.cwd(),
       env: {
         ...process.env, NEXT_RUNTIME: "", POLYNOVEA_MIGRATION_DATABASE_URL: process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL, DATABASE_URL: "",

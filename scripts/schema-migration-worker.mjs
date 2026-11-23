@@ -8,7 +8,8 @@
  *
  *   npm run worker:schema            # poll every 1.5 s
  *   npm run worker:schema -- --once  # run what is waiting, then exit
- *   npm run worker:schema -- --model=<uuid>  # only that model's stages (and no contracts)
+ *   npm run worker:schema -- --model <uuid>  # only that model's stages (also --model=<uuid>);
+ *                                    # contracts then run only with --contracts
  *   npm run worker:schema -- --rollback-task=<uuid>
  *                                    # undo a failed expand (trigger, guard index, new column), then exit
  *
@@ -52,7 +53,11 @@ const { rollbackExpandTask } = await import("../lib/schema/runner/expandContract
 const { tryLockModel, unlockModel } = await import("../lib/schema/runner/ledger.ts");
 
 const once = process.argv.includes("--once");
-const modelArg = process.argv.find((arg) => arg.startsWith("--model="))?.slice("--model=".length);
+// --model <id> or --model=<id>: only that model's stages; contracts then only with --contracts.
+const modelFlag = process.argv.indexOf("--model");
+const modelValue = modelFlag > 0 ? process.argv[modelFlag + 1] : process.argv.find((arg) => arg.startsWith("--model="))?.slice("--model=".length);
+const modelArg = /^[0-9a-f-]{36}$/i.test(modelValue ?? "") ? modelValue : undefined;
+const contracts = !modelArg || process.argv.includes("--contracts");
 const rollbackArg = process.argv.find((arg) => arg.startsWith("--rollback-task="))?.slice("--rollback-task=".length);
 const pollMs = Math.max(250, Number(process.env.SCHEMA_WORKER_POLL_MS || 1500));
 const workerId = process.env.SCHEMA_WORKER_ID || `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
@@ -119,7 +124,7 @@ try {
       // The pool's spare connection watches long CONCURRENTLY statements ("waiting_for_older_transactions").
       const outcome = await runNextStage(client, { engine, workerId, releaseId, log, observer: pool, modelId: modelArg });
       if (outcome) worked = true;
-      else if (!modelArg) await runDueContracts(client, { releaseId, log });
+      else if (contracts) await runDueContracts(client, { releaseId, log });
       backoffMs = 0;
     } catch (error) {
       const code = typeof error?.code === "string" && /^[0-9A-Z_]{1,40}$/.test(error.code) ? error.code : errorCode(error);
