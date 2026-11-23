@@ -4,8 +4,9 @@
 // Rename (step rename_column, from → to):
 //   expand    add `to`; a BEFORE ROW trigger keeps `from` and `to` equal both ways (writers that know
 //             either name keep working); backfill; build `to`'s index, unique, required check and
-//             foreign key (as the expanded shape says) through the engine's renderStep. When the stage
-//             finishes, the engine's bookkeeping switches the model's shape to `to`.
+//             foreign key (what `from` had at that point of the plan) through the engine's renderStep;
+//             then drop `from`'s unique index, check and foreign key. When the stage finishes, the
+//             engine's bookkeeping switches the model's shape to `to`.
 //   contract  later: drop the trigger and `from`.
 //
 // Type change (step change_type, column c, type A → B):
@@ -13,8 +14,8 @@
 //             partial "guard" index lists rows where c has a value and x does not (a value that cannot
 //             convert); backfill; refuse to go on while the guard finds any; build x's indexes.
 //   switch    one short transaction under the 3-second lock timeout: re-check the guard (an index
-//             lookup, not a scan), drop the trigger and guard, rename c to a retired name (with its
-//             indexes and constraints), rename x to c (with its indexes), add the required check and
+//             lookup, not a scan), drop the trigger and guard, drop c's indexes and constraints,
+//             rename c to a retired name, rename x to c (with its indexes), add the required check and
 //             foreign key NOT VALID. Then VALIDATE them, each in its own transaction.
 //   contract  later: drop the retired column.
 //
@@ -35,7 +36,8 @@ import { createHash } from "node:crypto";
 import { sql, type RawBuilder } from "kysely";
 import type pg from "pg";
 import { assertIdentifier, derivedName, TABLE_NAME_PATTERN, type DerivedNameKind } from "@/lib/schema/engine/names";
-import { PG_COLUMN_TYPES, type ColumnShape, type MigrationPlan, type PgColumnType, type PlanStep, type RenderedStatement } from "@/lib/schema/engine/plan";
+import { PG_COLUMN_TYPES, type ColumnShape, type MigrationPlan, type PgColumnType, type PlanStep, type RenderedStatement, type TableShape } from "@/lib/schema/engine/plan";
+import { applyStepToShape } from "@/lib/schema/engine/planner";
 import { compile } from "@/lib/schema/runner/engine";
 import { RefusedError, RunnerError } from "@/lib/schema/runner/errors";
 import { executeStatements, inLockTimedTransaction, type StepContext, type StepResult } from "@/lib/schema/runner/execute";
@@ -44,7 +46,7 @@ export const BACKFILL_BATCH_SIZE = 1_000;
 export const CONTRACT_MIN_DELAY_MS = 15 * 60_000;
 export const CONTRACT_MAX_DELAY_MS = 7 * 24 * 60 * 60_000;
 
-type Phase = "add_column" | "trigger" | "guard_index" | "backfill" | "precheck" | "indexes" | "switch" | "validate" | "done";
+type Phase = "add_column" | "trigger" | "guard_index" | "backfill" | "precheck" | "indexes" | "relax" | "switch" | "validate" | "done";
 
 interface TaskRow {
   id: string;
@@ -122,18 +124,21 @@ async function openTask(ctx: ExpandContext, planIndex: number, step: ExpandStep)
   return row;
 }
 
-/** The column as it will be after the stage (the expanded shape). */
-function targetColumn(ctx: ExpandContext, name: string): ColumnShape {
-  const shape = ctx.plan.expandedShape?.columns[name];
-  if (!shape) throw new RefusedError("plan_malformed");
-  return shape;
-}
-
-function sourceType(ctx: ExpandContext, step: ExpandStep): PgColumnType {
-  if (step.kind === "change_type") return step.from;
-  const before = ctx.plan.baseShape?.columns[step.from];
-  if (!before) throw new RefusedError("plan_malformed");
-  return before.pgType;
+/**
+ * The column as the plan has it just before step `planIndex` (the stage's starting shape replayed
+ * through the steps before it). Its constraints are what the new column must carry; constraint steps
+ * later in the plan then run on the new column as usual, so nothing is added twice or skipped.
+ */
+function columnBefore(ctx: ExpandContext, planIndex: number, name: string): ColumnShape {
+  let shape: TableShape | null = ctx.plan.baseShape;
+  try {
+    for (const earlier of ctx.plan.steps.slice(0, planIndex)) shape = applyStepToShape(shape, earlier);
+  } catch {
+    throw new RefusedError("plan_malformed");
+  }
+  const found = shape?.columns[name];
+  if (!found) throw new RefusedError("plan_malformed");
+  return found;
 }
 
 // ── Phases ───────────────────────────────────────────────────────────────────────────────────────
@@ -199,8 +204,8 @@ async function phaseProgress(client: pg.ClientBase, taskId: string, next: number
   await run(client, sql`update public.schema_expand_contract_tasks set phase_statement = ${next}, updated_at = now() where id = ${taskId}`);
 }
 
-/** Renames the indexes and constraints on `attname`: each name is mapped by `rename`. Inside the switch transaction. */
-async function renameDependents(client: pg.ClientBase, tableName: string, attname: string, rename: (name: string) => string | null) {
+/** The indexes and constraints that use column `attname` of content.<tableName>. */
+async function dependentsOf(client: pg.ClientBase, tableName: string, attname: string): Promise<Array<{ name: string; is_constraint: boolean }>> {
   const { rows } = await client.query<{ name: string; is_constraint: boolean }>(
     `with col as (
        select a.attrelid, a.attnum from pg_catalog.pg_attribute a
@@ -217,7 +222,12 @@ async function renameDependents(client: pg.ClientBase, tableName: string, attnam
         and not exists (select 1 from pg_catalog.pg_constraint c2 where c2.conindid = i.indexrelid and c2.conrelid = col.attrelid)`,
     [tableName, attname],
   );
-  for (const { name, is_constraint: isConstraint } of rows) {
+  return rows;
+}
+
+/** Renames the indexes and constraints on `attname`: each name is mapped by `rename`. Inside the switch transaction. */
+async function renameDependents(client: pg.ClientBase, tableName: string, attname: string, rename: (name: string) => string | null) {
+  for (const { name, is_constraint: isConstraint } of await dependentsOf(client, tableName, attname)) {
     const next = rename(name);
     if (!next || next === name) continue;
     if (isConstraint) await run(client, sql`alter table ${table(tableName)} rename constraint ${sql.id(name)} to ${sql.id(assertIdentifier(next))}`);
@@ -232,10 +242,12 @@ export async function runExpandStep(ctx: ExpandContext, stepIndex: number, planI
   if (step.kind !== "rename_column" && step.kind !== "change_type") throw new RunnerError("not_an_expand_step");
   if (step.table !== ctx.table) throw new RefusedError("plan_target_mismatch");
   const isRename = step.kind === "rename_column";
-  const fromType = sourceType(ctx, step);
-  const target = targetColumn(ctx, isRename ? step.to : step.column);
+  const source = columnBefore(ctx, planIndex, isRename ? step.from : step.column);
+  const fromType = source.pgType;
+  if (step.kind === "change_type" && step.from !== fromType) throw new RefusedError("plan_malformed");
   const toType = isRename ? fromType : step.to;
-  if (target.pgType !== toType) throw new RefusedError("plan_malformed");
+  // What the column must be once this step is done: renamed, or of the new type, constraints kept.
+  const target: ColumnShape = isRename ? { ...source, name: step.to } : { ...source, pgType: toType, fieldType: step.toField };
 
   let task = await openTask(ctx, planIndex, step);
   if (task.status === "awaiting_contract" || task.status === "contracted") return { statements: 0, lockRetries: 0 };
@@ -299,9 +311,27 @@ export async function runExpandStep(ctx: ExpandContext, stepIndex: number, planI
       ];
       const result = await executeStatements(ctx, statements, task.phase_statement, true, (next) => phaseProgress(client, task.id, next), stepIndex);
       lockRetries += result.lockRetries;
-      const next: Phase = isRename ? "done" : "switch";
-      await finishExpandPhase(ctx, task, next, isRename);
+      const next: Phase = isRename ? "relax" : "switch";
+      await setPhase(client, task.id, next);
       task.phase = next;
+      task.phase_statement = 0;
+    }
+
+    if (task.phase === "relax") {
+      // Rename: the new column now carries the unique index, check and foreign key, so the old
+      // column's go (a later step may relax them on the new name, and the trigger copies every value
+      // across, so the old column's own constraints would then reject saves). Its plain index stays
+      // until the contract drops the column.
+      const base = { stage: "expand" as const, summary: "", table: ctx.table, column: task.old_column };
+      const drops: PlanStep[] = [];
+      if (source.unique) drops.push({ ...base, kind: "drop_index", unique: true });
+      if (source.requiredWhenPublished) drops.push({ ...base, kind: "drop_required" });
+      if (source.foreignKey) drops.push({ ...base, kind: "drop_foreign_key" });
+      const statements = drops.flatMap((drop) => ctx.engine.renderStep(drop));
+      const result = await executeStatements(ctx, statements, task.phase_statement, true, (next) => phaseProgress(client, task.id, next), stepIndex);
+      lockRetries += result.lockRetries;
+      await finishExpandPhase(ctx, task, "done", true);
+      task.phase = "done";
     }
 
     if (task.phase === "switch") {
@@ -360,7 +390,12 @@ async function switchColumns(ctx: ExpandContext, task: TaskRow, fromType: PgColu
     if (rows.length > 0) throw new RunnerError("type_conversion_failed");
     await run(client, sql`drop trigger if exists ${sql.id(task.trigger_name)} on ${tbl}`);
     await run(client, sql`drop index if exists ${sql.id("content", guard)}`);
-    await renameDependents(client, task.table_name, task.old_column, (name) => derived("rx", task.id, name));
+    // The old column's indexes and constraints go now (metadata only, under the lock already held): the
+    // retired column is never read again and must not block a save or an entry's deletion.
+    for (const { name, is_constraint: isConstraint } of await dependentsOf(client, task.table_name, task.old_column)) {
+      if (isConstraint) await run(client, sql`alter table ${tbl} drop constraint if exists ${sql.id(assertIdentifier(name))}`);
+      else await run(client, sql`drop index if exists ${sql.id("content", assertIdentifier(name))}`);
+    }
     await run(client, sql`alter table ${tbl} rename column ${column(task.old_column)} to ${column(retired)}`);
     await renameDependents(client, task.table_name, task.new_column, (name) => finalNames.get(name) ?? null);
     await run(client, sql`alter table ${tbl} rename column ${column(task.new_column)} to ${column(task.old_column)}`);

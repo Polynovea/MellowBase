@@ -50,6 +50,9 @@ export function sqlState(error: unknown): string | null {
 /** The ledger/log code for any error. */
 export function errorCode(error: unknown): RunnerErrorCode {
   if (error instanceof RunnerError) return error.code;
+  // The schema engine's errors (SchemaEngineError) carry a code of the same form.
+  const code = (error as { name?: unknown; code?: unknown } | null);
+  if (code?.name === "SchemaEngineError" && typeof code.code === "string" && CODE.test(code.code)) return code.code;
   const state = sqlState(error);
   if (state) return NAMED_STATES[state] ?? `pg_${state.toLowerCase()}`;
   return "internal_error";

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { derivedName } from "@/lib/schema/engine/names";
 import { assertOwnerSession } from "@/lib/schema/runner/ownerPool";
 import { claimNextStage, RUNNER_LOCK_CLASS, lockKey, tryLockModel, unlockModel } from "@/lib/schema/runner/ledger";
-import { column, shape } from "@/lib/schema/runner/testing/stubEngine";
+import { column, shape } from "@/lib/schema/runner/testing/plans";
 import { connect, RunnerHarness } from "@/lib/schema/runner/testing/dualFixtures";
 
 // The migration runner against a real database: owner-only execution, the ledger, refusing tampered
@@ -55,7 +55,7 @@ describe("the ledger", () => {
     expect(ledger.finished_at.getTime()).toBeGreaterThanOrEqual(ledger.started_at.getTime());
     const run = await h.runRow(ledgerId);
     expect(run).toMatchObject({ status: "succeeded", worker_id: "test-worker", next_step: 1, next_statement: 0, lock_retries: 0 });
-    expect(run.step_log).toEqual([expect.objectContaining({ step: 0, planIndex: 0, kind: "create_table", statements: 3, lockRetries: 0 })]);
+    expect(run.step_log).toEqual([expect.objectContaining({ step: 0, planIndex: 0, kind: "create_table", statements: 4, lockRetries: 0 })]);
     expect(Date.parse(run.step_log[0].finishedAt)).toBeGreaterThanOrEqual(Date.parse(run.step_log[0].startedAt));
 
     const { rows: [table] } = await h.owner.query("select table_name, applied_shape_hash from content_model_tables where content_model_id = $1", [model.modelId]);
@@ -70,9 +70,9 @@ describe("the ledger", () => {
       shape(model.table, [column("title", "text"), column("old", "text"), column("views", "bigint")]),
       [{ kind: "add_column", stage: "expand", column: column("views", "bigint") }]);
     const ledgerId = await h.request(model, stale);
-    expect(await h.run(model)).toMatchObject({ outcome: "failed", code: "stage_not_current" });
+    expect(await h.run(model)).toMatchObject({ outcome: "failed", code: "stale_plan" });
     expect(await h.columns(model)).not.toHaveProperty("views");
-    expect((await h.ledger(ledgerId)).error_ref).toBe("stage_not_current");
+    expect((await h.ledger(ledgerId)).error_ref).toBe("stale_plan");
   });
 });
 
@@ -129,12 +129,25 @@ describe("never trusting the ledger row", () => {
   });
 });
 
+describe("never trusting the ledger row: data-deleting steps", () => {
+  it("(d) refuses a forged expand row that deletes a column, even with a correct hash; nothing runs", async () => {
+    const model = await h.newModel();
+    await h.createTable(model, [column("title", "text"), column("body", "text")]);
+    const after = shape(model.table, [column("title", "text")]);
+    const forged = h.plan(model, after, [{ kind: "drop_column", stage: "expand", column: "body" }]);
+    const ledgerId = await h.request(model, forged);
+    expect((await h.ledger(ledgerId)).status).toBe("pending");
+    expect(await h.run(model)).toEqual({ ledgerId, outcome: "refused", code: "plan_destructive_in_expand" });
+    expect(await h.columns(model)).toHaveProperty("body");
+  });
+});
+
 describe("required fields: NOT VALID, then VALIDATE (no SET NOT NULL)", () => {
   it("adds the check without a long lock, validates it, and drafts with the field empty still save", async () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text")]);
     const [draft, published] = await h.entries(model, 3);
-    await h.owner.query(`insert into content.${model.table} (entry_id, variant, title) values ($1, 'draft', null), ($2, 'published', 'Hello')`, [draft, published]);
+    await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'draft', null), ($2, '', 'published', 'Hello')`, [draft, published]);
     const required = shape(model.table, [column("title", "text", { requiredWhenPublished: true })]);
     const ledgerId = await h.request(model, h.plan(model, required, [{ kind: "set_required", stage: "expand", column: "title" }]));
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "succeeded" });
@@ -144,8 +157,8 @@ describe("required fields: NOT VALID, then VALIDATE (no SET NOT NULL)", () => {
     const { rows: [nullable] } = await h.owner.query("select is_nullable from information_schema.columns where table_schema = 'content' and table_name = $1 and column_name = 'title'", [model.table]);
     expect(nullable.is_nullable).toBe("YES");
     const [, , third] = await h.entries(model, 3);
-    await expect(h.app.query(`insert into content.${model.table} (entry_id, variant, title) values ($1, 'draft', null)`, [third])).resolves.toBeTruthy();
-    await expect(h.app.query(`insert into content.${model.table} (entry_id, variant, title) values ($1, 'published', null)`, [third])).rejects.toMatchObject({ code: "23514" });
+    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'draft', null)`, [third])).resolves.toBeTruthy();
+    await expect(h.app.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'published', null)`, [third])).rejects.toMatchObject({ code: "23514" });
     expect((await h.runRow(ledgerId)).step_log[0]).toMatchObject({ kind: "set_required", statements: 2 });
   });
 
@@ -153,7 +166,7 @@ describe("required fields: NOT VALID, then VALIDATE (no SET NOT NULL)", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("title", "text")]);
     const [entry] = await h.entries(model, 1);
-    await h.owner.query(`insert into content.${model.table} (entry_id, variant, title) values ($1, 'published', null)`, [entry]);
+    await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, title) values ($1, '', 'published', null)`, [entry]);
     const required = shape(model.table, [column("title", "text", { requiredWhenPublished: true })]);
     const ledgerId = await h.request(model, h.plan(model, required, [{ kind: "set_required", stage: "expand", column: "title" }]));
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "failed", code: "check_violation" });
@@ -177,7 +190,7 @@ describe("indexes CONCURRENTLY", () => {
     const model = await h.newModel();
     await h.createTable(model, [column("slug", "text")]);
     const [a, b] = await h.entries(model, 2);
-    await h.owner.query(`insert into content.${model.table} (entry_id, variant, slug) values ($1, 'draft', 'same'), ($2, 'draft', 'same')`, [a, b]);
+    await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, slug) values ($1, '', 'draft', 'same'), ($2, '', 'draft', 'same')`, [a, b]);
     const unique = shape(model.table, [column("slug", "text", { unique: true })]);
     const ledgerId = await h.request(model, h.plan(model, unique, [{ kind: "add_index", stage: "expand", column: "slug", unique: true }]));
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "failed", code: "unique_violation" });
