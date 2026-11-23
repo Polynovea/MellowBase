@@ -8,7 +8,7 @@ import { createOwnerPool, ownerPoolConfig } from "@/lib/schema/runner/ownerPool"
 // server imports lib/schema/runner (index.ts), which only writes and reads ledger rows as the app role.
 
 const root = path.resolve(__dirname, "..", "..", "..");
-const OWNER_SIDE = /["'](?:@\/|(?:\.\.?\/)+)(?:lib\/schema\/runner\/)?(ownerPool|runner|execute|expandContract|ledger|engineAdapter|testing\/stubEngine)(?:\.ts)?["']/;
+const OWNER_SIDE = /["'](?:@\/|(?:\.\.?\/)+)(?:lib\/schema\/runner\/)?(ownerPool|runner|execute|expandContract|ledger|engineAdapter|testing\/plans|testing\/dualFixtures)(?:\.ts)?["']/;
 const SKIP = new Set(["node_modules", ".next", ".git", ".claude", ".worktrees", "coverage", "dist"]);
 
 function sourceFiles(dir: string): string[] {

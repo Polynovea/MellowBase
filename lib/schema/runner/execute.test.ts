@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { RenderedStatement } from "@/lib/schema/engine/plan";
 import { compile } from "@/lib/schema/runner/engine";
 import { groupStatements } from "@/lib/schema/runner/execute";
-import { stubRenderStep } from "@/lib/schema/runner/testing/stubEngine";
+import { renderStep } from "@/lib/schema/engine";
 
 const statement = (transactional: boolean, lockSensitive: boolean): RenderedStatement => ({ sql: sql`select 1`, transactional, lockSensitive });
 
 describe("groupStatements", () => {
   it("never puts a NOT VALID constraint and its VALIDATE in one transaction", () => {
-    const statements = stubRenderStep({ kind: "set_required", stage: "expand", summary: "", table: "m_posts", column: "title" });
+    const statements = renderStep({ kind: "set_required", stage: "expand", summary: "", table: "m_posts", column: "title" });
     expect(groupStatements(statements)).toEqual([
       { start: 0, end: 1, transactional: true },
       { start: 1, end: 2, transactional: true },
@@ -26,9 +26,14 @@ describe("groupStatements", () => {
     ]);
   });
 
-  it("keeps a table's create, row-level security and policy in one transaction", () => {
-    const statements = stubRenderStep({ kind: "create_table", stage: "expand", summary: "", table: "m_posts", columns: [] });
-    expect(groupStatements(statements)).toEqual([{ start: 0, end: 3, transactional: true }]);
+  it("keeps a table's create, grant, row-level security and policy in one transaction", () => {
+    const statements = renderStep({ kind: "create_table", stage: "expand", summary: "", table: "m_posts", columns: [] });
+    expect(groupStatements(statements)).toEqual([{ start: 0, end: 4, transactional: true }]);
+  });
+
+  it("builds indexes CONCURRENTLY by default, alone and outside a transaction", () => {
+    const statements = renderStep({ kind: "add_index", stage: "expand", summary: "", table: "m_posts", column: "slug", unique: true });
+    expect(groupStatements(statements)).toEqual([{ start: 0, end: 1, transactional: false }]);
   });
 });
 

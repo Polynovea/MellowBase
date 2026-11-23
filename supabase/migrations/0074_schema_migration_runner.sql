@@ -64,10 +64,11 @@ create table if not exists public.schema_expand_contract_tasks (
   retired_column text check (retired_column ~ '^[a-z][a-z0-9_]{0,62}$'),
   trigger_name text not null check (trigger_name ~ '^[a-z][a-z0-9_]{0,62}$'),
   status text not null check (status in ('expanding', 'awaiting_contract', 'contracted', 'failed')),
-  -- Where the expand is: add_column, trigger, guard_index, backfill, precheck, indexes, switch,
-  -- validate, done; phase_statement is the next statement within a phase that has several.
+  -- Where the expand is: add_column, trigger, guard_index, backfill, precheck, indexes, relax (rename:
+  -- the old column's constraints go), switch, validate, done; phase_statement is the next statement
+  -- within a phase that has several.
   phase text not null default 'add_column'
-    check (phase in ('add_column', 'trigger', 'guard_index', 'backfill', 'precheck', 'indexes', 'switch', 'validate', 'done')),
+    check (phase in ('add_column', 'trigger', 'guard_index', 'backfill', 'precheck', 'indexes', 'relax', 'switch', 'validate', 'done')),
   phase_statement integer not null default 0 check (phase_statement >= 0),
   -- Last primary key the backfill finished: {"entry_id": ..., "variant": ..., "locale": ...}.
   backfill_cursor jsonb,
@@ -161,9 +162,21 @@ comment on function public.polynovea_schema_dual_write() is
   'Expand/contract dual-write trigger for content tables (lib/schema/runner/expandContract.ts). Sets NEW only.';
 
 -- ── App access ───────────────────────────────────────────────────────────────────────────────────
--- The helper from 0067/0068/0072, unchanged except for a fixed list of tables the app role may only
--- read: the migration ledger (as before) and the runner's two tables. Every later migration that ends
--- with `select public.polynovea_apply_app_access()` keeps them read-only.
+-- The helper from 0072 (the latest), unchanged except for one explicit list of tables the app role may
+-- only read. Default privileges give the app full rights on every new table, so for each listed table
+-- the helper grants SELECT and then revokes INSERT, UPDATE, DELETE and TRUNCATE; running it again (as
+-- every later migration does) never restores write access.
+--
+--   polynovea_migration_ledger    the migration files applied (migrations write it)
+--   schema_migration_runs         the runner's progress: it resumes from it, so only it writes it
+--   schema_expand_contract_tasks  the runner acts on the column and trigger names stored in it
+--   content_model_tables          each model's table and applied shape: the schema gate compares
+--                                 against it, so only the engine's apply bookkeeping writes it
+--   schema_name_reservations      deleted and renamed names, written only by the apply bookkeeping
+--
+-- schema_migration_ledger stays app-writable (the app inserts requests and confirms deletions), and so
+-- does content_field_permissions (the admin UI edits field permissions). installation keeps its 0072
+-- rule (SELECT and INSERT only).
 create or replace function public.polynovea_apply_app_access()
 returns void
 language plpgsql
@@ -175,7 +188,9 @@ declare
   grantee text;
   has_service_role boolean := exists (select 1 from pg_roles where rolname = 'service_role');
   api_roles text[] := array(select rolname::text from pg_roles where rolname in ('anon', 'authenticated'));
-  read_only text[] := array['polynovea_migration_ledger', 'schema_migration_runs', 'schema_expand_contract_tasks'];
+  read_only text[] := array[
+    'polynovea_migration_ledger', 'schema_migration_runs', 'schema_expand_contract_tasks',
+    'content_model_tables', 'schema_name_reservations'];
 begin
   execute 'grant usage on schema public to polynovea_app';
 
@@ -187,7 +202,7 @@ begin
       and pg_catalog.pg_has_role(c.relowner, 'USAGE')
   loop
     if item.relname = any (read_only) then
-      -- Written by migrations or the migration worker (polynovea_owner); the runtime only reads them.
+      -- Written by migrations, the migration worker or the engine's bookkeeping (polynovea_owner).
       execute format('grant select on public.%I to polynovea_app', item.relname);
       execute format('revoke insert, update, delete, truncate on public.%I from polynovea_app', item.relname);
       foreach grantee in array api_roles loop
@@ -259,5 +274,6 @@ revoke all on function public.polynovea_apply_app_access() from public;
 
 select public.polynovea_apply_app_access();
 
+-- 0075 may be applied before this file on some installs: never move the recorded version backwards.
 update public.cms_runtime_state
-set schema_migration = '0074', updated_at = now() where singleton = true;
+set schema_migration = greatest(schema_migration, '0074'), updated_at = now() where singleton = true;

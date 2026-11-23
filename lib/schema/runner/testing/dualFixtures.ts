@@ -8,7 +8,7 @@ import type { ColumnShape, MigrationPlan, PlanStage, TableShape } from "@/lib/sc
 import { kyselyOn } from "@/lib/schema/runner/engine";
 import { requestPlanStage } from "@/lib/schema/runner/request";
 import { runNextStage, type RunnerOptions, type StageOutcome } from "@/lib/schema/runner/runner";
-import { buildPlan, shape, stubEngine } from "@/lib/schema/runner/testing/stubEngine";
+import { bare, buildPlan, constraintSteps, shape, testEngine } from "@/lib/schema/runner/testing/plans";
 
 function url(name: string): string {
   const value = process.env[name];
@@ -76,14 +76,14 @@ export class RunnerHarness {
 
   async run(model: Model, options: Partial<RunnerOptions> = {}): Promise<StageOutcome | null> {
     return runNextStage(this.session, {
-      engine: stubEngine, workerId: "test-worker", releaseId: "test-release", retry: FAST_RETRY, ...options, modelId: model.modelId,
+      engine: testEngine, workerId: "test-worker", releaseId: "test-release", retry: FAST_RETRY, ...options, modelId: model.modelId,
     });
   }
 
-  /** Creates the model's table with `columns` through the runner. */
+  /** Creates the model's table with `columns` (and their constraints, as the planner would) through the runner. */
   async createTable(model: Model, columns: ColumnShape[]): Promise<void> {
     const next = shape(model.table, columns);
-    const plan = this.plan(model, next, [{ kind: "create_table", stage: "expand", columns }]);
+    const plan = this.plan(model, next, [{ kind: "create_table", stage: "expand", columns: columns.map(bare) }, ...columns.flatMap(constraintSteps)]);
     await this.request(model, plan);
     const outcome = await this.run(model);
     if (outcome?.outcome !== "succeeded") throw new Error(`create table failed: ${JSON.stringify(outcome)}`);

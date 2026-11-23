@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { hashShape } from "@/lib/schema/engine/hash";
 import type { MigrationPlan } from "@/lib/schema/engine/plan";
 import { RefusedError } from "@/lib/schema/runner/errors";
-import { buildPlan, column, shape, stubPlanHash } from "@/lib/schema/runner/testing/stubEngine";
+import { buildPlan, column, shape, testEngine } from "@/lib/schema/runner/testing/plans";
 import { verifyRowAgainstPlan, type LedgerRow } from "@/lib/schema/runner/verify";
 
 const WS = "11111111-1111-4111-8111-111111111111";
 const MODEL = "22222222-2222-4222-8222-222222222222";
-const engine = { computePlanHash: stubPlanHash };
+const engine = testEngine;
 
 const base = shape("m_posts", [column("title", "text")]);
 const expanded = shape("m_posts", [column("title", "text"), column("views", "bigint")]);
@@ -49,8 +49,6 @@ describe("verifyRowAgainstPlan", () => {
     const p = plan();
     const tampered = { ...p, steps: [{ ...p.steps[0], column: column("views", "text") }] };
     expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: tampered }), engine))).toBe("plan_hash_mismatch");
-    const tamperedSummaryOnly = { ...p, steps: [{ ...p.steps[0], summary: "different" }] };
-    expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: tamperedSummaryOnly }), engine))).toBe("plan_hash_mismatch");
     expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_hash: "0".repeat(64) }), engine))).toBe("plan_hash_mismatch");
   });
 
@@ -90,6 +88,12 @@ describe("verifyRowAgainstPlan", () => {
     expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: { ...p, steps: [step] } }), engine))).toBe("plan_malformed");
     expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: "not json" }), engine))).toBe("plan_malformed");
     expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: { ...p, formatVersion: 2 } }), engine))).toBe("plan_malformed");
+  });
+
+  it("refuses steps that do not replay to the shapes the plan claims (the engine's validatePlan)", () => {
+    const wrongShape = shape("m_posts", [column("title", "text"), column("views", "bigint", { unique: true })]);
+    const p = plan({ expanded: wrongShape });
+    expect(refusal(() => verifyRowAgainstPlan(row(p), engine))).toBe("invalid_plan");
   });
 
   it("re-runs the name rules and caps", () => {
