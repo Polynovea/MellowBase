@@ -50,6 +50,7 @@ export class RunnerHarness {
     const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
     const { rows: [ws] } = await this.owner.query("insert into workspaces (name, slug) values ($1, $2) returning id", [`Runner ${suffix}`, `runner-${suffix}`]);
     const { rows: [admin] } = await this.owner.query("insert into admin_users (username, email) values ($1, $2) returning id", [`runner-${suffix}`, `runner-${suffix}@example.test`]);
+    await this.owner.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [ws.id, admin.id]);
     const apiKey = `posts_${suffix}`;
     const { rows: [model] } = await this.owner.query("insert into content_models (workspace_id, name, api_key) values ($1, $2, $3) returning id", [ws.id, `Posts ${suffix}`, apiKey]);
     return { workspaceId: ws.id, adminId: admin.id, modelId: model.id, apiKey, table: tableNameCandidates(ws.id, apiKey)[0], shape: null };

@@ -295,8 +295,15 @@ describe("security review: what a stolen app login can no longer do", () => {
     await expect(h.confirm(destructiveId, model.adminId, other.apiKey)).rejects.toMatchObject({ code: "22023" });
     // The confirming user must be a real, active admin user.
     await expect(h.confirm(destructiveId, "00000000-0000-4000-8000-000000000001", model.apiKey)).rejects.toMatchObject({ code: "22023", message: "schema_confirmation_unknown_user" });
-    await h.owner.query("update admin_users set is_active = false where id = $1", [other.adminId]);
+    // An active admin of another workspace: refused.
     await expect(h.confirm(destructiveId, other.adminId, model.apiKey)).rejects.toMatchObject({ code: "22023", message: "schema_confirmation_unknown_user" });
+    // A member of this workspace who is suspended, or whose admin account is deactivated: refused.
+    const { rows: [second] } = await h.owner.query("insert into admin_users (username, email) values ($1, $1 || '@example.test') returning id", [`second-${model.apiKey}`]);
+    await h.owner.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'suspended')", [model.workspaceId, second.id]);
+    await expect(h.confirm(destructiveId, second.id, model.apiKey)).rejects.toMatchObject({ code: "22023", message: "schema_confirmation_unknown_user" });
+    await h.owner.query("update workspace_members set status = 'active' where admin_user_id = $1", [second.id]);
+    await h.owner.query("update admin_users set is_active = false where id = $1", [second.id]);
+    await expect(h.confirm(destructiveId, second.id, model.apiKey)).rejects.toMatchObject({ code: "22023", message: "schema_confirmation_unknown_user" });
     expect((await h.owner.query("select count(*)::int as n from schema_migration_confirmations where ledger_id = $1", [destructiveId])).rows[0].n).toBe(0);
     // An unknown ledger id: not found. Retrying a row that did not fail (pending, succeeded): refused.
     await expect(h.confirm("00000000-0000-4000-8000-000000000000", model.adminId, model.apiKey)).rejects.toMatchObject({ code: "P0002" });

@@ -281,8 +281,14 @@ begin
   if p_typed_api_key is distinct from model_key then
     raise exception using errcode = '22023', message = 'schema_confirmation_mismatch';
   end if;
-  -- The audit trail names a real, active admin user, never free text.
-  if not exists (select 1 from public.admin_users a where a.id = p_confirmed_by and coalesce(a.is_active, true)) then
+  -- The audit trail names a real, active admin user who is an active member of the request's
+  -- workspace, never free text.
+  if not exists (
+    select 1 from public.admin_users a
+      join public.workspace_members wm on wm.admin_user_id = a.id
+     where a.id = p_confirmed_by and coalesce(a.is_active, true)
+       and wm.workspace_id = request.workspace_id and wm.status = 'active'
+  ) then
     raise exception using errcode = '22023', message = 'schema_confirmation_unknown_user';
   end if;
   insert into public.schema_migration_confirmations (ledger_id, workspace_id, confirmed_by, typed_api_key)
