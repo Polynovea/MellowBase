@@ -1,4 +1,6 @@
+import { isIP } from "node:net";
 import pg from "pg";
+import { certificateAuthoritiesFor } from "@/lib/setup/database/caBundles";
 import { postgresConnectionConfig } from "../infrastructure/postgresTls.mjs";
 import { databaseUrlFromConfig, readConfigSync, type InstallConfig } from "./configStore.ts";
 
@@ -63,6 +65,35 @@ export function installConfig(env: Env = process.env): InstallConfig | null {
   return h.config.value;
 }
 
+export type ConnectionSettings = {
+  connectionString: string;
+  ssl: false | { rejectUnauthorized: true; ca?: string[]; servername?: string; minVersion?: "TLSv1.2" };
+};
+
+/**
+ * How to connect with config.enc's settings. TLS trusts exactly the root certificates the wizard
+ * verified the database with (config.database.caBundleId, from lib/setup/database/caBundles.ts),
+ * never the system store or DATABASE_CA_CERT. A local database without TLS (the bundled
+ * PostgreSQL on loopback) connects as postgresTls.mjs decides. Throws when the bundle cannot be
+ * loaded: no fallback to weaker trust.
+ */
+export function installConnection(config: InstallConfig, role: "owner" | "app", env: Env = process.env): ConnectionSettings {
+  const base = postgresConnectionConfig(databaseUrlFromConfig(config, role), env);
+  if (base.ssl === false || !config.database.caBundleId) return base;
+  const ca = certificateAuthoritiesFor(config.database.caBundleId);
+  if (!ca) throw new Error(`config.enc names CA bundle ${config.database.caBundleId}, which this release does not ship`);
+  const host = config.database.host.replace(/^[|]$/g, "");
+  return { connectionString: base.connectionString, ssl: { rejectUnauthorized: true, ca, minVersion: "TLSv1.2", ...(isIP(host) ? {} : { servername: host }) } };
+}
+
+/** Runtime (polynovea_app) connection settings: config.enc first, then the environment. Null before setup. */
+export function runtimeConnection(env: Env = process.env): ConnectionSettings | null {
+  const config = installConfig(env);
+  if (config) return installConnection(config, "app", env);
+  const url = envDatabaseUrl(env);
+  return url ? postgresConnectionConfig(url, env) : null;
+}
+
 /**
  * The runtime (polynovea_app) connection URL: config.enc first, then the environment. Null when the
  * database is not configured yet.
@@ -97,8 +128,10 @@ async function check(env: Env): Promise<ModeState> {
 
   let client: pg.Client | undefined;
   try {
+    // Inside the try: a CA bundle that cannot be loaded makes the CMS unavailable, never setup.
+    const connection = config ? installConnection(config, "app", env) : postgresConnectionConfig(url, env);
     client = new pg.Client({
-      ...postgresConnectionConfig(url, env),
+      ...connection,
       connectionTimeoutMillis: CHECK_TIMEOUT_MS,
       statement_timeout: CHECK_TIMEOUT_MS,
       query_timeout: CHECK_TIMEOUT_MS + 1_000,

@@ -1,6 +1,6 @@
 import pg from "pg";
 import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
-import { currentMode, runtimeDatabaseUrl } from "@/lib/setup/mode";
+import { currentMode, runtimeConnection } from "@/lib/setup/mode";
 
 /**
  * One pg.Pool per process, shared by every area on the direct path.
@@ -150,9 +150,10 @@ class ModeGuardedPool extends pg.Pool {
 }
 
 function openPool(purpose: Purpose, max?: number): pg.Pool {
-  const url = runtimeDatabaseUrl();
-  if (!url) throw new Error("Database is not configured: finish setup at /setup, or set POLYNOVEA_DATABASE_URL");
-  const config = poolConfigFor(url);
+  const connection = runtimeConnection();
+  if (!connection) throw new Error("Database is not configured: finish setup at /setup, or set POLYNOVEA_DATABASE_URL");
+  // TLS from config.enc's CA bundle when the wizard configured the database (lib/setup/mode.ts).
+  const config = { ...poolConfigFor(connection.connectionString), ssl: connection.ssl };
   const pool = new ModeGuardedPool(max ? { ...config, max } : config, purpose);
   // An idle client losing its connection must not crash the process; the pool replaces it.
   pool.on("error", (error) => {

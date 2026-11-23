@@ -12,12 +12,20 @@ const db = vi.hoisted(() => ({
   installed: false,
   connects: 0,
   urls: [] as string[],
+  ssl: [] as unknown[],
+}));
+
+const TEST_ROOT = vi.hoisted(() => ["-----BEGIN CERTIFICATE-----", "root", "-----END CERTIFICATE-----"].join("\n"));
+
+vi.mock("@/lib/setup/database/caBundles", () => ({
+  certificateAuthoritiesFor: (id: string | null) => (id === "aws-rds-global-1" ? [TEST_ROOT] : null),
 }));
 
 vi.mock("pg", () => {
   class Client {
-    constructor(readonly config: { connectionString: string }) {
+    constructor(readonly config: { connectionString: string; ssl?: unknown }) {
       db.urls.push(config.connectionString);
+      db.ssl.push(config.ssl);
     }
     async connect() {
       db.connects += 1;
@@ -41,7 +49,7 @@ const emptyDir = () => mkdtempSync(path.join(os.tmpdir(), "polynovea-mode-"));
 const envUrl = "postgresql://polynovea_app:pw@localhost:5432/cms";
 
 beforeEach(() => {
-  Object.assign(db, { reachable: true, hasTable: true, hasAdmins: false, installed: false, connects: 0, urls: [] });
+  Object.assign(db, { reachable: true, hasTable: true, hasAdmins: false, installed: false, connects: 0, urls: [], ssl: [] });
   resetModeForTests();
   resetKeyRingCache();
 });
@@ -104,6 +112,41 @@ describe("setup mode decision", () => {
     const state = await resolveMode({ POLYNOVEA_CONFIG_DIR: dir, CMS_MASTER_KEY: `k1:${randomBytes(32).toString("base64")}` });
     expect(state).toMatchObject({ mode: "unavailable", databaseSource: "config" });
     expect(db.connects).toBe(0);
+  });
+});
+
+describe("TLS from config.enc", () => {
+  const writeConfig = (caBundleId: string | null, host = "cms.abc123.eu-west-1.rds.amazonaws.com") => {
+    const dir = emptyDir();
+    const env = { POLYNOVEA_CONFIG_DIR: dir, CMS_MASTER_KEY: `k1:${randomBytes(32).toString("base64")}`, DATABASE_CA_CERT: "ignored" };
+    const config = {
+      v: 1 as const,
+      databaseMode: "managed" as const,
+      database: { host, port: 5432, name: "polynovea", caBundleId },
+      roles: { owner: { user: "polynovea_owner", password: generateSecret() }, app: { user: "polynovea_app", password: generateSecret() } },
+      authSecret: generateSecret(),
+      backupRepoPassword: null,
+    };
+    writeFileSync(path.join(dir, "config.enc"), encryptInstallConfig(config, env), { mode: 0o600 });
+    return env;
+  };
+
+  it("trusts exactly the wizard's CA bundle, with the endpoint name for verification", async () => {
+    db.installed = true;
+    expect((await resolveMode(writeConfig("aws-rds-global-1"))).mode).toBe("running");
+    expect(db.ssl[0]).toEqual({ rejectUnauthorized: true, ca: [TEST_ROOT], minVersion: "TLSv1.2", servername: "cms.abc123.eu-west-1.rds.amazonaws.com" });
+  });
+
+  it("an unknown CA bundle makes the CMS unavailable instead of falling back to weaker trust", async () => {
+    const state = await resolveMode(writeConfig("retired-bundle-9"));
+    expect(state.mode).toBe("unavailable");
+    expect(db.connects).toBe(0);
+  });
+
+  it("the bundled database on loopback connects without TLS", async () => {
+    db.installed = true;
+    expect((await resolveMode(writeConfig(null, "127.0.0.1"))).mode).toBe("running");
+    expect(db.ssl[0]).toBe(false);
   });
 });
 
