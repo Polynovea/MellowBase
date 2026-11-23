@@ -35,7 +35,7 @@ function catalogChecks(label: string, url: () => string | undefined) {
       expect(rows.map((row) => row.relname)).toEqual([]);
     });
 
-    it("polynovea_app can read and write every table, and only read the migration ledger", async () => {
+    it("polynovea_app can read and write every table, and only read the migration ledger and the schema runner's tables", async () => {
       const { rows } = await db.query(`
         select c.relname,
           has_table_privilege('polynovea_app', c.oid, 'select') as can_select,
@@ -44,7 +44,10 @@ function catalogChecks(label: string, url: () => string | undefined) {
         where n.nspname = 'public' and c.relkind in ('r', 'p')`);
       expect(rows.length).toBeGreaterThanOrEqual(140);
       expect(rows.filter((row) => !row.can_select).map((row) => row.relname)).toEqual([]);
-      expect(rows.filter((row) => !row.can_write).map((row) => row.relname)).toEqual(["polynovea_migration_ledger"]);
+      // 0074: the schema migration runner acts on its own tables' contents, so the app may only read them.
+      expect(rows.filter((row) => !row.can_write).map((row) => row.relname).sort()).toEqual([
+        "polynovea_migration_ledger", "schema_expand_contract_tasks", "schema_migration_runs",
+      ]);
     });
 
     it("polynovea_app executes every SQL function and PUBLIC executes none", async () => {
