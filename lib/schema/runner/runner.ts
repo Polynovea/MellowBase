@@ -10,7 +10,7 @@
 // Any error ends the stage as failed with a code (never SQL text or values). A failed stage keeps its
 // position: setting its ledger row back to pending resumes it after the cause is fixed.
 import type pg from "pg";
-import { kyselyOn, type SchemaEngine } from "@/lib/schema/runner/engine";
+import { transactionOn, type SchemaEngine } from "@/lib/schema/runner/engine";
 import { errorCode, RefusedError, RunnerError } from "@/lib/schema/runner/errors";
 import { executeStep, inLockTimedTransaction, type RunnerHooks } from "@/lib/schema/runner/execute";
 import { contractDue, runExpandStep } from "@/lib/schema/runner/expandContract";
@@ -59,11 +59,13 @@ export async function runClaimedStage(client: pg.ClientBase, row: LedgerRow, opt
     const run = await openRun(client, row, options.workerId);
     runId = run.id;
 
-    // The engine's gate, re-checked on every attempt (a resumed run has not changed the applied shape).
+    // The engine's gate, re-checked on every attempt (a resumed run has not changed the applied
+    // shape). It locks the model's rows FOR UPDATE, so it gets a short transaction of its own: no
+    // transaction stays open across the steps, CONCURRENTLY statements, backfill batches or sleeps.
     try {
-      await inLockTimedTransaction(client, () => options.engine.assertStageCurrent(kyselyOn(client), plan, stage), options.retry);
+      await inLockTimedTransaction(client, () => options.engine.assertStageCurrent(transactionOn(client), plan, stage, { limits: options.limits }), options.retry);
     } catch (error) {
-      throw error instanceof RunnerError ? error : new RefusedError("stage_not_current");
+      throw error instanceof RunnerError ? error : new RefusedError(errorCode(error) === "internal_error" ? "stage_not_current" : errorCode(error));
     }
 
     const context = { client, engine: options.engine, runId, table: plan.table, retry: options.retry, hooks: options.hooks };
@@ -81,10 +83,13 @@ export async function runClaimedStage(client: pg.ClientBase, row: LedgerRow, opt
       log("step_done", { ledgerId: row.id, step: index, kind: step.kind, lockRetries: result.lockRetries });
     }
 
+    // The final transaction: the gate once more, the engine's bookkeeping and "succeeded", together.
+    // (Every step's own work committed already, with the run's position; a crash before this commit
+    // resumes straight here.)
     await inLockTimedTransaction(client, async () => {
-      const db = kyselyOn(client);
-      await options.engine.assertStageCurrent(db, plan, stage);
-      await options.engine.applyStageBookkeeping(db, plan, stage);
+      const trx = transactionOn(client);
+      await options.engine.assertStageCurrent(trx, plan, stage, { limits: options.limits });
+      await options.engine.applyStageBookkeeping(trx, plan, stage);
       await markSucceeded(client, row.id, runId as string);
     }, options.retry);
     log("stage_succeeded", { ledgerId: row.id, stage, ms: Date.now() - started });

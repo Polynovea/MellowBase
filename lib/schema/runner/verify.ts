@@ -5,6 +5,8 @@
 // row from scratch, and refuses it unless every check passes:
 //
 // - plan_json parses as a plan of a format this runner knows, with no unknown keys anywhere;
+// - the engine's validatePlan passes (hash recomputed, names, types, caps, stage rules, and replaying
+//   the steps reaches the shapes the plan claims);
 // - the plan hash recomputed by the engine equals the row's and the plan's; the shape hashes match
 //   the shapes they claim to describe; the row's base hash is the stage's starting hash;
 // - the row, the plan and the model agree on workspace, model, api key and table;
@@ -87,7 +89,9 @@ const planStep = z.discriminatedUnion("kind", [
   z.strictObject({ ...stepBase, kind: z.literal("drop_table"), affectedRows: count }),
   z.strictObject({ ...stepBase, kind: z.literal("add_column"), column: columnShape }),
   z.strictObject({ ...stepBase, kind: z.literal("drop_column"), column: name, affectedValues: count }),
-  z.strictObject({ ...stepBase, kind: z.literal("rename_column"), from: name, to: name }),
+  z.strictObject({ ...stepBase, kind: z.literal("rename_column"), from: name, to: name, column: columnShape }),
+  z.strictObject({ ...stepBase, kind: z.literal("backfill_column"), column: name, pgType, value: z.unknown() }),
+  z.strictObject({ ...stepBase, kind: z.literal("drop_field_metadata"), field: name }),
   z.strictObject({ ...stepBase, kind: z.literal("change_type"), column: name, from: pgType, to: pgType, fromField: fieldType, toField: fieldType }),
   z.strictObject({ ...stepBase, kind: z.literal("change_field_type"), column: name, fromField: fieldType, toField: fieldType }),
   z.strictObject({ ...stepBase, kind: z.literal("replace_column"), column: columnShape, fromField: fieldType, fromPgType: pgType, affectedValues: count }),
@@ -153,7 +157,9 @@ export function stepColumnNames(step: PlanStep): string[] {
     case "replace_column":
       return [step.column.name];
     case "rename_column":
-      return [step.from, step.to];
+      return [step.from, step.to, step.column.name];
+    case "drop_field_metadata":
+      return [step.field];
     default:
       return [step.column];
   }
@@ -179,7 +185,7 @@ function indexCount(shape: TableShape | null): number {
 }
 
 /** Checks that need only the row and the plan (no database). Exported for unit tests. */
-export function verifyRowAgainstPlan(row: LedgerRow, engine: Pick<SchemaEngine, "computePlanHash">, limits: SchemaLimits = schemaLimitsFromEnv()): Omit<VerifiedStage, "createsTable"> {
+export function verifyRowAgainstPlan(row: LedgerRow, engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan">, limits: SchemaLimits = schemaLimitsFromEnv()): Omit<VerifiedStage, "createsTable"> {
   if (row.stage !== "expand" && row.stage !== "destructive") throw new RefusedError("ledger_stage_invalid");
   const stage: PlanStage = row.stage;
   const plan = parsePlan(row.plan_json);
@@ -212,6 +218,14 @@ export function verifyRowAgainstPlan(row: LedgerRow, engine: Pick<SchemaEngine, 
     if (indexCount(shape) > limits.maxIndexesPerModel) throw new RefusedError("cap_indexes_exceeded");
   }
 
+  // The engine's own validation on top: the steps must replay to the shapes the plan claims.
+  try {
+    engine.validatePlan(plan, { limits });
+  } catch (error) {
+    const code = (error as { name?: string; code?: string }).name === "SchemaEngineError" ? (error as { code: string }).code : "invalid_plan";
+    throw new RefusedError(code === "cap_exceeded" ? "cap_exceeded" : "invalid_plan");
+  }
+
   if (stage === "destructive" && (!row.confirmed_by || !row.confirmed_at || !plan.requiresConfirmation)) {
     throw new RefusedError("destructive_not_confirmed");
   }
@@ -222,7 +236,7 @@ export function verifyRowAgainstPlan(row: LedgerRow, engine: Pick<SchemaEngine, 
 }
 
 /** Every check, including the ones against the database (model, its table, the model cap). */
-export async function verifyLedgerRow(client: pg.ClientBase, row: LedgerRow, engine: Pick<SchemaEngine, "computePlanHash">, limits: SchemaLimits = schemaLimitsFromEnv()): Promise<VerifiedStage> {
+export async function verifyLedgerRow(client: pg.ClientBase, row: LedgerRow, engine: Pick<SchemaEngine, "computePlanHash" | "validatePlan">, limits: SchemaLimits = schemaLimitsFromEnv()): Promise<VerifiedStage> {
   const verified = verifyRowAgainstPlan(row, engine, limits);
   const { plan, stage, steps } = verified;
 
