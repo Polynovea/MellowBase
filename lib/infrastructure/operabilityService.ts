@@ -4,6 +4,7 @@ import { getConnection } from "@/lib/infrastructure/connectionService";
 import { resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
 import { enqueueDeliveryJob } from "@/lib/operations/deliveryJobService";
 import { createPublicationTarget } from "@/lib/content/publicationService";
+import { secureConfigKeyAvailable } from "@/lib/content/secureConfig";
 import { getModel, getVersion } from "@/lib/schema/modelService";
 import { dryRunSchemaPromotion, modelBundle, promoteSchemaBundle, type SchemaBundle } from "@/lib/developer/schemaDeliveryService";
 import * as controlPlaneData from "@/lib/infrastructure/controlPlaneData";
@@ -35,7 +36,7 @@ export async function ensureEnvironmentComponents(workspaceId:string,environment
   const active=(connections??[]).filter(c=>c.active&&c.status==="active");const databaseConnection=active.find(c=>c.connector_family==="database")??null;const storageConnection=active.find(c=>c.connector_family==="storage")??null;
   const legacyR2=Boolean(process.env.R2_ACCESS_KEY_ID&&process.env.R2_SECRET_ACCESS_KEY&&(process.env.R2_ACCOUNT_ID||process.env.R2_S3_ENDPOINT));
   const runtimeProvider=env.runtime_provider??null;const edgeProvider=runtimeProvider&&/(supabase|edge|deno)/i.test(runtimeProvider)?runtimeProvider:null;
-  const secretReady=Boolean(secretProvider&&secretProvider.status==="active"&&(secretProvider.provider_kind!=="encrypted_postgres"||process.env.CMS_CONFIG_ENCRYPTION_KEY));
+  const secretReady=Boolean(secretProvider&&secretProvider.status==="active"&&(secretProvider.provider_kind!=="encrypted_postgres"||secureConfigKeyAvailable()));
   const isLocalProvider=String(runtimeProvider||"").toLowerCase().includes("local");
   const providerByCapability:Record<string,string|null>={
     postgres:databaseConnection?.connector_type??(isLocalProvider?"local-postgres":null),
@@ -77,7 +78,7 @@ export async function runSystemDoctor(params:{workspaceId:string;environmentId:s
     }
   }
   if(env.kind!=="local"&&env.cms_base_url&&String(env.cms_base_url).startsWith("http://"))add("http.insecure","blocking","Non-local CMS URL uses HTTP instead of HTTPS.","environment","/admin/environments",{url:env.cms_base_url});
-  if(secretProvider?.provider_kind==="encrypted_postgres"&&!process.env.CMS_CONFIG_ENCRYPTION_KEY)add("secret.encryption_key","blocking","This environment uses encrypted PostgreSQL credentials but CMS_CONFIG_ENCRYPTION_KEY is not configured.","secret_store","/admin/environments");
+  if(secretProvider?.provider_kind==="encrypted_postgres"&&!secureConfigKeyAvailable())add("secret.encryption_key","blocking","This environment uses encrypted PostgreSQL credentials but has no master key: set CMS_MASTER_KEY or restore master.key.","secret_store","/admin/environments");
   for(const component of components??[]){if(component.required&&component.state!=="present")add(`component.${component.component_key}`,"blocking",`Required component ${component.component_key} is ${component.state}.`,"deployment","/admin/infrastructure",{provider:component.provider,state:component.state});}
   for(const connection of connections??[]){if(["failed","degraded"].includes(connection.status))add(`connection.${connection.id}`,connection.status==="failed"?"blocking":"warning",`${connection.name} is ${connection.status}${connection.last_error_message?`: ${connection.last_error_message}`:""}.`,"connections","/admin/connections",{connectorType:connection.connector_type});else if(connection.status!=="active")add(`connection.${connection.id}`,"warning",`${connection.name} has not been verified active.`,"connections","/admin/connections",{status:connection.status});}
   const recentFailed=(jobs??[]).filter(j=>["failed","dead_letter"].includes(j.status));if(recentFailed.length)add("delivery.failures","warning",`${recentFailed.length} recent durable delivery job(s) need attention.`,"delivery","/admin/operations",{count:recentFailed.length});
