@@ -3,6 +3,11 @@ output "setup_address" {
   value       = var.domain != "" ? "https://${var.domain}/setup" : "http://localhost:3000/setup, through the ssh_tunnel command"
 }
 
+output "setup_code" {
+  description = "Where to find the one-time setup code. Shown only until setup is finished; anyone in the account who can read the console output can see it until then."
+  value       = "AWS console > EC2 > Instances > select ${var.name}-server > Actions > Monitor and troubleshoot > Get system log. Look for the line with \"Setup code\"."
+}
+
 output "public_ip" {
   value = aws_eip.server.public_ip
 }

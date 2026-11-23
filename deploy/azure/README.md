@@ -32,7 +32,7 @@ Prices are estimates from Azure's pay-as-you-go list prices, before tax, with li
 1. **An Azure subscription where you are Owner** of the resource group, or Contributor plus User Access Administrator. The template creates role assignments and locks, which plain Contributor can't do.
 2. **The resource providers registered** (once per subscription): `Microsoft.Compute`, `Microsoft.Network`, `Microsoft.Storage`, `Microsoft.KeyVault`, `Microsoft.DBforPostgreSQL` and `Microsoft.Consumption`. In the portal: **Subscriptions → your subscription → Resource providers**, select each one, **Register**. Deployment usually registers them itself if you are a subscription Owner.
 3. **An SSH public key.** Azure needs one for a Linux VM. To make one in the portal: search **SSH keys → Create → Generate new key pair → Review + create → Download private key and create resource**. Keep the downloaded `.pem` file safe, and paste the **public** key (it starts with `ssh-rsa` or `ssh-ed25519`) into the template.
-4. **Your public IP address**, for SSH. Search "what is my IP" and add `/32`, for example `203.0.113.7/32`. SSH is how you read the setup code from the VM's log, and without a domain it is also the only route into the setup wizard.
+4. **Your public IP address**, for SSH. Search "what is my IP" and add `/32`, for example `203.0.113.7/32`. Without a domain, SSH is the only route into the setup wizard. With a domain it is optional: the setup code is also shown in the portal.
 5. **Optionally, a domain** (for example `cms.example.com`) whose DNS you can change. With one, the site gets HTTPS and setup is at `https://<domain>/setup`. Without one, ports 80 and 443 stay closed and setup goes through an SSH tunnel.
 6. **A region with Flexible Server Burstable capacity.** Some subscription offers (free trials, some sponsorships) restrict PostgreSQL Flexible Server or budgets in some regions. If deployment fails with a capacity or offer error, choose another region.
 
@@ -77,6 +77,7 @@ The deployment's **Outputs** tab lists:
 | --- | --- |
 | `setupAddress` | Where to open the setup wizard |
 | `publicIp` | The VM's fixed address. Point your domain's A record here. |
+| `setupCode` | Where to read the one-time setup code in the portal |
 | `sshTunnel` | The SSH command (with the tunnel when there is no domain), when `adminCidr` is set |
 | `databaseSecretRef` | The Key Vault secret's address, set on the VM as `POLYNOVEA_DB_SECRET_REF` (managed only) |
 | `databaseHost` | The database's private name; reachable only from the VM |
@@ -86,7 +87,7 @@ Then open the setup wizard:
 
 1. **With a domain**, point its A record at `publicIp`. Caddy gets the certificate within a few minutes of that.
 2. **Wait for first boot.** On plain Ubuntu it installs updates, Docker and the CMS, which takes several minutes. Progress, over SSH: `sudo journalctl -u polynovea-bootstrap -f`.
-3. **Find the setup code** in the CMS's log over SSH (`ssh -i <your .pem file> polynovea@<publicIp>`): `sudo journalctl -t polynovea | grep -i setup`.
+3. **Find the setup code.** In the Azure portal: **Virtual machines → `polynovea-vm` → Help → Serial console** (or **Help → Boot diagnostics → Serial log**), and look for the line with "Setup code". It appears a few minutes after the VM starts (refresh if it isn't there yet), and only until setup is finished. It works once and expires after an hour. Anyone in this subscription who can read the VM's serial console can see it during that time. Over SSH (`ssh -i <your .pem file> polynovea@<publicIp>`): `sudo journalctl -t polynovea | grep -i "setup code"`.
 4. **Open the wizard** at `setupAddress`: `https://<domain>/setup`, or, without a domain, `http://localhost:3000/setup` while the `sshTunnel` command is running.
 5. **Database step.** With `managed`, choose **Created for you**: the wizard reads the secret once through the VM's managed identity, runs its five checks, creates `polynovea_owner` and `polynovea_app`, and runs the migrations. With `on-this-server`, choose **On this server** and the Azure Blob container from the outputs.
 
