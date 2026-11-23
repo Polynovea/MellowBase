@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+Phase 1 roles and functions sign-off: all 58 SECURITY DEFINER functions pin their search_path (checked on plain PostgreSQL and Supabase, now including the polynovea_auth schema), none names a schema polynovea_app can write, and the no-DDL test for polynovea_app now also covers replacing or altering functions, triggers, sequences, comments, schema ownership, the auth tables, database CREATE (trusted extensions) and SET ROLE to the owner.
 Phase 1 wave 5: bootstrap:admin writes the master admin, workspace membership and owner role directly to PostgreSQL when the admin area is on the direct path, in one transaction. Creating the auth identity still uses Supabase Auth until the built-in auth workstream.
 Phase 1 wave 5: the legacy marketing tables adapter (blog posts, live metrics, social posts, ad campaigns) on the direct path. Saving live metrics replaces them in one transaction (a failed insert used to lose every metric), and writes take only each table's editable columns.
 Phase 1 wave 5: the queries API routes made directly move to the direct path (routes switch). Security: on the Supabase path the developer API's release check never denied versions from models outside a token's allowlist, and restricted tokens saw every release, because two PostgREST embeds were ambiguous and failed silently; the relationships are now named and a failed read refuses instead of allowing. The platform PATCH route no longer writes arbitrary body fields.
