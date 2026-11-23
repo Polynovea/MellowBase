@@ -9,6 +9,22 @@
 import { LOCK_CONFLICT_STATES, sqlState } from "@/lib/schema/runner/errors";
 
 export const LOCK_TIMEOUT_MS = 3_000;
+
+/**
+ * Lock wait for CREATE / DROP INDEX CONCURRENTLY (and the clean-up of a failed build). These wait for
+ * every older transaction in the database to finish, not only for transactions on their own table, so
+ * one long report anywhere would exhaust a 3-second wait. While they wait they hold only SHARE UPDATE
+ * EXCLUSIVE, which never blocks reads or writes, so a patient wait costs nobody anything. Retries
+ * still apply. POLYNOVEA_MIGRATION_CONCURRENT_LOCK_TIMEOUT_MS overrides it.
+ */
+export const DEFAULT_CONCURRENT_LOCK_TIMEOUT_MS = 10 * 60_000;
+
+export function concurrentLockTimeoutMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.POLYNOVEA_MIGRATION_CONCURRENT_LOCK_TIMEOUT_MS?.trim();
+  const value = raw ? Number(raw) : NaN;
+  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_CONCURRENT_LOCK_TIMEOUT_MS;
+}
+
 export const MAX_LOCK_RETRIES = 5;
 export const BACKOFF_MS: readonly number[] = Object.freeze([1_000, 2_000, 4_000, 8_000, 16_000]);
 /** Each sleep is scaled by a random factor in [1 - JITTER, 1 + JITTER], so two workers do not retry in step. */

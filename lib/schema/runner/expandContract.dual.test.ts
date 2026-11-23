@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { derivedName } from "@/lib/schema/engine/names";
 import { contractDue } from "@/lib/schema/runner/expandContract";
 import { column, shape } from "@/lib/schema/runner/testing/plans";
@@ -6,6 +6,10 @@ import { FAST_RETRY, RunnerHarness, type Model } from "@/lib/schema/runner/testi
 
 // Renames and type changes by expand and contract: dual writes, a batched backfill that resumes from
 // its last key, a switch that never loses a value, and the later contract.
+
+// Index builds CONCURRENTLY wait for every older transaction in the database, including the
+// 30-second ones lockWait.dual.test.ts opens in parallel: give each test room for that wait.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 60_000 });
 
 const h = new RunnerHarness();
 beforeAll(() => h.open());

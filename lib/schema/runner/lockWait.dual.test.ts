@@ -83,3 +83,50 @@ describe("a schema change while a 30-second query holds a lock", () => {
     }
   }, 120_000);
 });
+
+describe("an index built CONCURRENTLY while a 30-second transaction runs elsewhere in the database", () => {
+  it("waits patiently (no lock-timeout failure), and never blocks the table's readers or writers", async () => {
+    const model = await h.newModel();
+    await h.createTable(model, [column("slug", "text")]);
+    const ids = await h.entries(model, 20);
+    for (const id of ids) await h.owner.query(`insert into content.${model.table} (entry_id, locale, variant, slug) values ($1, '', 'draft', $1::text)`, [id]);
+    const ledgerId = await h.request(model, h.plan(model, shape(model.table, [column("slug", "text", { unique: true })]),
+      [{ kind: "add_index", stage: "expand", column: "slug", unique: true }]));
+
+    // A long report on a different table: CREATE INDEX CONCURRENTLY must wait for its snapshot.
+    const holder = await connect("app");
+    const prober = await connect("app");
+    try {
+      await holder.query("begin");
+      const holding = holder.query(`select count(*), pg_sleep(${HOLD_SECONDS}) from workspaces`).then(() => holder.query("commit"));
+      const heldSince = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const latencies: number[] = [];
+      let done = false;
+      const probing = (async () => {
+        while (!done) {
+          const started = Date.now();
+          await prober.query(`select slug from content.${model.table} where entry_id = $1`, [ids[0]]);
+          await prober.query(`update content.${model.table} set slug = slug where entry_id = $1`, [ids[1]]);
+          latencies.push(Date.now() - started);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      })();
+
+      const outcome = await h.run(model, { retry: undefined });
+      const finishedAfter = Date.now() - heldSince;
+      done = true;
+      await Promise.all([probing, holding]);
+
+      expect(outcome).toEqual({ ledgerId, outcome: "succeeded" });
+      expect(finishedAfter).toBeGreaterThanOrEqual((HOLD_SECONDS - 2) * 1000);
+      expect((await h.runRow(ledgerId)).lock_retries).toBe(0);
+      expect(latencies.length).toBeGreaterThan(40);
+      expect(Math.max(...latencies)).toBeLessThan(1_500);
+    } finally {
+      await holder.end().catch(() => undefined);
+      await prober.end().catch(() => undefined);
+    }
+  }, 120_000);
+});
