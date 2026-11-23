@@ -8,6 +8,8 @@
  *
  *   npm run worker:schema            # poll every 1.5 s
  *   npm run worker:schema -- --once  # run what is waiting, then exit
+ *   npm run worker:schema -- --rollback-task=<uuid>
+ *                                    # undo a failed expand (trigger, guard index, new column), then exit
  *
  * Start it with the project's module loader, like the certification scripts (Node strips the
  * TypeScript types itself; the loader resolves the "@/lib/..." imports):
@@ -45,8 +47,11 @@ const { createOwnerPool, assertOwnerSession } = await import("../lib/schema/runn
 const { runNextStage, runDueContracts } = await import("../lib/schema/runner/runner.ts");
 const { productionEngine } = await import("../lib/schema/runner/engineAdapter.ts");
 const { errorCode } = await import("../lib/schema/runner/errors.ts");
+const { rollbackExpandTask } = await import("../lib/schema/runner/expandContract.ts");
+const { tryLockModel, unlockModel } = await import("../lib/schema/runner/ledger.ts");
 
 const once = process.argv.includes("--once");
+const rollbackArg = process.argv.find((arg) => arg.startsWith("--rollback-task="))?.slice("--rollback-task=".length);
 const pollMs = Math.max(250, Number(process.env.SCHEMA_WORKER_POLL_MS || 1500));
 const workerId = process.env.SCHEMA_WORKER_ID || `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 const releaseId = process.env.POLYNOVEA_RELEASE_ID?.trim() || JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -69,6 +74,25 @@ try {
 }
 try {
   await assertOwnerSession(client);
+  if (rollbackArg) {
+    // Operator: undo one failed expand under its model's lock, then exit.
+    const { rows: [task] } = await client.query("select content_model_id from public.schema_expand_contract_tasks where id = $1", [rollbackArg]);
+    if (!task?.content_model_id || !(await tryLockModel(client, task.content_model_id))) {
+      log("rollback_refused", { code: task ? "model_busy" : "expand_task_not_found" });
+      process.exitCode = 1;
+    } else {
+      try {
+        await rollbackExpandTask({ client }, rollbackArg);
+        log("expand_rolled_back", { taskId: rollbackArg });
+      } catch (error) {
+        log("rollback_refused", { code: errorCode(error) });
+        process.exitCode = 1;
+      } finally {
+        await unlockModel(client, task.content_model_id);
+      }
+    }
+    stopping = true;
+  }
   log("started", { workerId, releaseId, once });
   while (!stopping) {
     let worked = false;

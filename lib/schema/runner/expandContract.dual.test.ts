@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { derivedName } from "@/lib/schema/engine/names";
-import { contractDue } from "@/lib/schema/runner/expandContract";
+import { contractDue, rollbackExpandTask } from "@/lib/schema/runner/expandContract";
 import { column, shape } from "@/lib/schema/runner/testing/plans";
 import { FAST_RETRY, RunnerHarness, type Model } from "@/lib/schema/runner/testing/dualFixtures";
 
@@ -120,9 +120,12 @@ describe("type change by expand and contract", () => {
     const { rows } = await h.owner.query(`select amount from content.${model.table} order by amount`);
     expect(rows.map((row) => row.amount)).toContain("abc");
     expect(rows).toHaveLength(13);
-    expect(await task(model)).toMatchObject({ status: "failed", phase: "precheck", error_ref: "type_conversion_failed" });
+    // The failed type change was rolled back at once: no copy trigger, no hidden column.
+    expect(await task(model)).toMatchObject({ status: "rolled_back", phase: "add_column", error_ref: "type_conversion_failed" });
+    expect(Object.keys(await h.columns(model)).sort()).toEqual(["_entry_id", "_locale", "_variant", "amount"]);
+    expect(await triggers(model)).toEqual([]);
 
-    // Fix the value and retry: resumes at the check, switches, and the column is numeric.
+    // Fix the value and retry: the type change starts afresh, switches, and the column is numeric.
     await h.app.query(`update content.${model.table} set amount = '42' where _entry_id = $1`, [ids[12]]);
     await h.retry(ledgerId);
     expect(await h.run(model, { batchSize: 5 })).toEqual({ ledgerId, outcome: "succeeded" });
@@ -163,7 +166,8 @@ describe("type change by expand and contract", () => {
     expect(concurrentStatements).toBe(2);
     expect((await h.columns(model)).amount).toBe("text");
     expect((await h.owner.query(`select amount from content.${model.table} where _entry_id = $1`, [ids[4]])).rows[0].amount).toBe("twelve");
-    expect(await task(model)).toMatchObject({ status: "failed", phase: "switch" });
+    expect(await task(model)).toMatchObject({ status: "rolled_back" });
+    expect(await triggers(model)).toEqual([]);
 
     await h.app.query(`update content.${model.table} set amount = '12' where _entry_id = $1`, [ids[4]]);
     await h.retry(ledgerId);
@@ -216,5 +220,41 @@ describe("later steps on the renamed or retyped column", () => {
     expect(await h.indexes(model)).toContainEqual({ name: derivedName("uq", model.table, "amount"), valid: true });
     const { rows } = await h.owner.query(`select amount from content.${model.table} order by amount`);
     expect(rows.map((row) => Number(row.amount))).toEqual([0, 1, 2, 3]);
+  });
+});
+
+describe("a failed type change never leaves its copy trigger behind", () => {
+  it("left in place (no automatic rollback), it blocks the model's later stages until an operator rolls it back", async () => {
+    const model = await h.newModel();
+    await h.createTable(model, [column("amount", "text")]);
+    const ids = await h.entries(model, 6);
+    for (const [i, id] of ids.slice(0, 4).entries()) await h.owner.query(`insert into content.${model.table} (_entry_id, _locale, _variant, amount) values ($1, '', 'draft', $2)`, [id, String(i)]);
+    const numeric = shape(model.table, [column("amount", "numeric")]);
+    const change = h.plan(model, numeric, [{ kind: "change_type", stage: "expand", column: "amount", from: "text", to: "numeric", fromField: "text", toField: "number" }]);
+    const ledgerId = await h.request(model, change);
+    const crash = { afterBackfillBatch: () => { throw new Error("simulated crash"); } };
+    expect(await h.run(model, { hooks: crash, batchSize: 2, rollbackFailedTypeChange: false })).toMatchObject({ ledgerId, outcome: "failed" });
+    const failed = await task(model);
+    expect(failed).toMatchObject({ status: "failed", phase: "backfill" });
+    expect(await triggers(model)).toHaveLength(1);
+    // The run itself is at its first step, yet the model's next stage is refused while the trigger is there.
+    expect((await h.runRow(ledgerId))).toMatchObject({ next_step: 0, next_statement: 0 });
+    const later = await h.request(model, h.plan(model, shape(model.table, [column("amount", "text"), column("note", "text")]), [{ kind: "add_column", stage: "expand", column: column("note", "text") }]));
+    expect(await h.run(model)).toEqual({ ledgerId: later, outcome: "refused", code: "model_has_unfinished_stage" });
+    // Saves keep working throughout.
+    await expect(h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, amount) values ($1, '', 'draft', 'x')`, [ids[4]])).resolves.toBeTruthy();
+
+    // The operator's rollback: the table is exactly as before, and the model's next stage runs.
+    await rollbackExpandTask({ client: h.session, retry: FAST_RETRY }, failed.id);
+    expect(await task(model)).toMatchObject({ status: "rolled_back" });
+    expect(Object.keys(await h.columns(model)).sort()).toEqual(["_entry_id", "_locale", "_variant", "amount"]);
+    expect(await triggers(model)).toEqual([]);
+    expect((await h.indexes(model)).filter((index) => index.name.startsWith("cx_"))).toEqual([]);
+    const again = await h.request(model, h.plan(model, shape(model.table, [column("amount", "text"), column("note", "text")]), [{ kind: "add_column", stage: "expand", column: column("note", "text") }]));
+    expect(await h.run(model)).toEqual({ ledgerId: again, outcome: "succeeded" });
+    await expect(h.app.query(`insert into content.${model.table} (_entry_id, _locale, _variant, amount) values ($1, '', 'draft', 'y')`, [ids[5]])).resolves.toBeTruthy();
+    // A switched or finished task cannot be rolled back.
+    await h.owner.query("update schema_expand_contract_tasks set status = 'awaiting_contract', phase = 'done' where id = $1", [failed.id]);
+    await expect(rollbackExpandTask({ client: h.session, retry: FAST_RETRY }, failed.id)).rejects.toMatchObject({ code: "expand_not_rollbackable" });
   });
 });

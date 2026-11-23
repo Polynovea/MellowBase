@@ -129,13 +129,21 @@ export async function finishStep(client: pg.ClientBase, runId: string, entry: St
   );
 }
 
-/** A model may not start a new stage while an earlier one stopped halfway (its changes are partly applied). */
+/**
+ * A model may not start a new stage while an earlier one stopped halfway: a failed run that got past
+ * its first statement, or an expand/contract task still expanding or failed (its dual-write trigger
+ * and new column are on the table even when the run itself is at 0/0). Retrying that stage, or
+ * rolling its task back (rollbackExpandTask), clears it.
+ */
 export async function unfinishedStageOf(client: pg.ClientBase, modelId: string, exceptLedgerId: string): Promise<boolean> {
   const { rows } = await client.query(
     `select 1 from public.schema_migration_runs r
        join public.schema_migration_ledger l on l.id = r.ledger_id
       where r.content_model_id = $1 and r.ledger_id <> $2 and r.status = 'failed'
         and (r.next_step > 0 or r.next_statement > 0) and l.status <> 'succeeded'
+     union all
+     select 1 from public.schema_expand_contract_tasks t
+      where t.content_model_id = $1 and t.ledger_id <> $2 and t.status in ('expanding', 'failed')
       limit 1`,
     [modelId, exceptLedgerId],
   );

@@ -36,6 +36,8 @@ export interface RunnerOptions {
   waitLogIntervalMs?: number;
   /** Structured log line: an event name and codes/ids only. */
   log?: RunnerLog;
+  /** Roll a failed type change back at once (default true; see rollbackExpandTask). */
+  rollbackFailedTypeChange?: boolean;
 }
 
 export type StageOutcome =
@@ -82,7 +84,7 @@ export async function runClaimedStage(client: pg.ClientBase, row: LedgerRow, opt
       const stepStarted = new Date();
       const resumed = run.resumed && index === run.next_step;
       const result = step.kind === "rename_column" || step.kind === "change_type"
-        ? await runExpandStep({ ...context, ledgerId: row.id, workspaceId: plan.workspaceId, modelId: plan.modelId, plan, releaseId: options.releaseId, batchSize: options.batchSize }, index, planIndex, step)
+        ? await runExpandStep({ ...context, ledgerId: row.id, workspaceId: plan.workspaceId, modelId: plan.modelId, plan, releaseId: options.releaseId, batchSize: options.batchSize, rollbackFailedTypeChange: options.rollbackFailedTypeChange }, index, planIndex, step)
         : await executeStep(context, index, step, resumed ? run.next_statement : 0, resumed);
       await finishStep(client, run.id, {
         step: index, planIndex, kind: step.kind, startedAt: stepStarted.toISOString(), finishedAt: new Date().toISOString(),

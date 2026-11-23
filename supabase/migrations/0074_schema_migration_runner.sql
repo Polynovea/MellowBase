@@ -69,7 +69,9 @@ create table if not exists public.schema_expand_contract_tasks (
   new_column text not null check (new_column ~ '^[a-z][a-z0-9_]{0,62}$'),
   retired_column text check (retired_column ~ '^[a-z][a-z0-9_]{0,62}$'),
   trigger_name text not null check (trigger_name ~ '^[a-z][a-z0-9_]{0,62}$'),
-  status text not null check (status in ('expanding', 'awaiting_contract', 'contracted', 'failed')),
+  -- rolled_back: a failed expand whose trigger, guard index and new column were removed again
+  -- (rollbackExpandTask), leaving the table exactly as before; a retry starts it afresh.
+  status text not null check (status in ('expanding', 'awaiting_contract', 'contracted', 'failed', 'rolled_back')),
   -- Where the expand is: add_column, trigger, guard_index, backfill, precheck, indexes, relax (rename:
   -- the old column's constraints go), switch, validate, done; phase_statement is the next statement
   -- within a phase that has several.

@@ -61,7 +61,7 @@ interface TaskRow {
   new_column: string;
   retired_column: string | null;
   trigger_name: string;
-  status: "expanding" | "awaiting_contract" | "contracted" | "failed";
+  status: "expanding" | "awaiting_contract" | "contracted" | "failed" | "rolled_back";
   phase: Phase;
   phase_statement: number;
   /** The last primary key the backfill finished (JSON keys are the logical names). */
@@ -76,6 +76,8 @@ export interface ExpandContext extends StepContext {
   /** The worker's release (POLYNOVEA_RELEASE_ID, else the package version). */
   releaseId: string;
   batchSize?: number;
+  /** Roll a failed type change back at once (default true). Tests turn it off to exercise the operator path. */
+  rollbackFailedTypeChange?: boolean;
 }
 
 const TASK_COLUMNS = "id, kind, table_name, old_column, new_column, retired_column, trigger_name, status, phase, phase_statement, backfill_cursor";
@@ -257,8 +259,10 @@ export async function runExpandStep(ctx: ExpandContext, stepIndex: number, planI
 
   let task = await openTask(ctx, planIndex, step);
   if (task.status === "awaiting_contract" || task.status === "contracted") return { statements: 0, lockRetries: 0 };
-  if (task.status === "failed") {
+  if (task.status === "failed" || task.status === "rolled_back") {
+    // A rolled-back task starts afresh (its phase was reset); a failed one resumes where it stopped.
     await run(ctx.client, sql`update public.schema_expand_contract_tasks set status = 'expanding', error_ref = null, updated_at = now() where id = ${task.id}`);
+    task.status = "expanding";
   }
   let lockRetries = 0;
   const client = ctx.client;
@@ -356,6 +360,15 @@ export async function runExpandStep(ctx: ExpandContext, stepIndex: number, planI
   } catch (error) {
     const code = error instanceof RunnerError ? error.code : null;
     await run(client, sql`update public.schema_expand_contract_tasks set status = 'failed', error_ref = ${code ?? "expand_failed"}, updated_at = now() where id = ${task.id}`).catch(() => undefined);
+    // A type change that failed before its switch is undone at once: its copy-trigger would otherwise
+    // stay on the table (and fail every save once the source column is gone). A rename keeps its place
+    // so a retry resumes the backfill; until then the model's later stages are refused.
+    if (!isRename && ctx.rollbackFailedTypeChange !== false) {
+      await rollbackExpandTask(ctx, task.id).then(
+        () => ctx.log?.("expand_rolled_back", { ledgerId: ctx.ledgerId, step: stepIndex }),
+        (rollbackError: unknown) => ctx.log?.("expand_rollback_failed", { ledgerId: ctx.ledgerId, code: rollbackError instanceof RunnerError ? rollbackError.code : "internal_error" }),
+      );
+    }
     throw error;
   }
   return { statements: 0, lockRetries };
@@ -413,6 +426,39 @@ async function switchColumns(ctx: ExpandContext, task: TaskRow, fromType: PgColu
     await setPhase(client, task.id, "validate");
   }, ctx.retry);
   return retries;
+}
+
+// ── Roll back ────────────────────────────────────────────────────────────────────────────────────
+
+/** Phases a task can be rolled back from: before a type change's switch, before a rename gives up the old column's constraints. */
+const ROLLBACK_PHASES: Record<TaskRow["kind"], ReadonlySet<Phase>> = {
+  change_type: new Set<Phase>(["add_column", "trigger", "guard_index", "backfill", "precheck", "indexes", "switch"]),
+  rename: new Set<Phase>(["add_column", "trigger", "backfill", "indexes"]),
+};
+
+/**
+ * Undoes an expand that has not switched: drops its trigger, guard index and new column (with any
+ * index built on it) in one short transaction under the 3-second lock timeout, and marks the task
+ * rolled_back. The table is then exactly as before the stage. The worker calls it when a type change
+ * fails; an operator can call it for any expanding or failed task (npm run worker:schema --
+ * --rollback-task=<id>). Refuses (expand_not_rollbackable) once a switch has happened.
+ */
+export async function rollbackExpandTask(ctx: Pick<StepContext, "client" | "retry">, taskId: string): Promise<void> {
+  await inLockTimedTransaction(ctx.client, async () => {
+    const { rows: [row] } = await run(ctx.client, sql`select ${sql.raw(TASK_COLUMNS)} from public.schema_expand_contract_tasks where id = ${taskId} for update`);
+    const task = row as TaskRow | undefined;
+    if (!task) throw new RunnerError("expand_task_not_found");
+    if (task.status === "rolled_back") return;
+    if ((task.status !== "expanding" && task.status !== "failed") || !ROLLBACK_PHASES[task.kind].has(task.phase)) throw new RunnerError("expand_not_rollbackable");
+    const tbl = table(task.table_name);
+    await run(ctx.client, sql`drop trigger if exists ${sql.id(assertIdentifier(task.trigger_name))} on ${tbl}`);
+    await run(ctx.client, sql`drop index if exists ${sql.id("content", derived("cx", task.id))}`);
+    await run(ctx.client, sql`alter table ${tbl} drop column if exists ${column(task.new_column)}`);
+    await run(ctx.client, sql`
+      update public.schema_expand_contract_tasks
+         set status = 'rolled_back', phase = 'add_column', phase_statement = 0, backfill_cursor = null, backfilled_rows = 0, updated_at = now()
+       where id = ${task.id}`);
+  }, ctx.retry);
 }
 
 // ── Contract ─────────────────────────────────────────────────────────────────────────────────────
