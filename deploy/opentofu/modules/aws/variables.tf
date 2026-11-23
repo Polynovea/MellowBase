@@ -25,6 +25,17 @@ variable "database_instance_class" {
   default = "db.t4g.micro"
 }
 
+variable "postgres_version" {
+  description = "A PostgreSQL 16 minor version RDS can create (the bare \"16\" is no longer accepted). Each release bumps the default; automatic minor upgrades keep it patched after that."
+  type        = string
+  default     = "16.15"
+
+  validation {
+    condition     = can(regex("^16\\.[0-9]+$", var.postgres_version))
+    error_message = "postgres_version must be a PostgreSQL 16 minor version, such as 16.15."
+  }
+}
+
 variable "database_storage_gb" {
   type    = number
   default = 20

@@ -181,9 +181,17 @@ describe("policy: AWS CloudFormation", () => {
     expect(unpackCfnBootstrap()).toBe(bootstrap); // the rest of user data is the release package's own script
   });
 
+  it("names the PostgreSQL 16 minor version in one parameter, with automatic minor upgrades", () => {
+    expect(cfn).toContain('  PostgresVersion:\n    Type: String\n    Default: "16.15"\n    AllowedPattern: "^16\\\\.[0-9]+$"\n');
+    expect(cfnResource("Database")).toContain("AutoMinorVersionUpgrade: true");
+    expect(read("opentofu/modules/aws/variables.tf")).toMatch(/variable "postgres_version" \{[\s\S]+?default\s+= "16\.\d+"/);
+    expect(tfResource(tofuAws, "aws_db_instance", "database")).toMatch(/engine_version\s+= var\.postgres_version/);
+    expect(bicep).toMatch(/version: '16'/); // Azure takes the major version; it applies minor updates itself
+  });
+
   it("keeps the database private, encrypted, protected from deletion and backed up for 7 days", () => {
     const db = cfnResource("Database");
-    for (const line of ["PubliclyAccessible: false", "StorageEncrypted: true", "DeletionProtection: true", "BackupRetentionPeriod: 7", "MultiAZ: false", 'EngineVersion: "16.15"', "DeletionPolicy: Snapshot"]) expect(db).toContain(line);
+    for (const line of ["PubliclyAccessible: false", "StorageEncrypted: true", "DeletionProtection: true", "BackupRetentionPeriod: 7", "MultiAZ: false", 'EngineVersion: !Ref PostgresVersion', "DeletionPolicy: Snapshot"]) expect(db).toContain(line);
     const dbSg = cfnResource("DatabaseSecurityGroup");
     expect(dbSg).toContain("SourceSecurityGroupId: !Ref ServerSecurityGroup");
     expect(dbSg).not.toContain("0.0.0.0/0");
