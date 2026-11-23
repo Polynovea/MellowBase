@@ -27,7 +27,7 @@ export const PUBLIC_CA_BUNDLE_ID = "digicert-microsoft-1";
  * reviewed step: scripts/refresh-rds-ca.mjs downloads the bundle and updates this value, the README and
  * the test together.
  */
-export const RDS_BUNDLE_SHA256: string | null = null;
+export const RDS_BUNDLE_SHA256: string | null = "90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b";
 
 export const RDS_BUNDLE_RELATIVE_PATH = path.join("lib", "setup", "database", "ca", "rds-global-bundle.pem");
 
@@ -51,6 +51,14 @@ export interface TrustedRoots {
 /** True for an Amazon RDS endpoint name: `<label>….rds.amazonaws.com`, case-insensitive, trailing dot allowed. */
 export function isRdsHostname(hostname: string): boolean {
   return isManagedDatabaseHostname(hostname) && normalizeDatabaseHostname(hostname).endsWith(".rds.amazonaws.com");
+}
+
+/**
+ * SHA-256 of the bundle text with line endings normalised to LF (as AWS serves it), so a Windows
+ * checkout that turns them into CRLF still matches the recorded value.
+ */
+export function bundleSha256(text: string): string {
+  return createHash("sha256").update(text.replace(/\r\n/g, "\n"), "utf8").digest("hex");
 }
 
 function splitPem(text: string): string[] {
@@ -80,7 +88,7 @@ export function rdsRoots(options: { root?: string; expectedSha256?: string | nul
   const expected = options.expectedSha256 === undefined ? RDS_BUNDLE_SHA256 : options.expectedSha256;
   if (!expected || !existsSync(file)) throw new CaBundleError(`The Amazon RDS root bundle is missing (${RDS_BUNDLE_RELATIVE_PATH})`, "rds");
   const bytes = readFileSync(file);
-  if (createHash("sha256").update(bytes).digest("hex") !== expected) {
+  if (bundleSha256(bytes.toString("utf8")) !== expected) {
     throw new CaBundleError("The Amazon RDS root bundle does not match its recorded SHA-256", "rds");
   }
   const now = Date.now();

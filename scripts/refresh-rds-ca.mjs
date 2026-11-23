@@ -20,7 +20,8 @@ const readmeFile = path.join(root, "lib", "setup", "database", "ca", "README.md"
 const codeFile = path.join(root, "lib", "setup", "database", "caBundles.ts");
 const dryRun = process.argv.includes("--dry-run");
 
-const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+// Must match bundleSha256 in caBundles.ts: line endings normalised to LF before hashing.
+const sha256 = (text) => createHash("sha256").update(String(text).replace(/\r\n/g, "\n"), "utf8").digest("hex");
 
 const response = await fetch(SOURCE, { redirect: "error" });
 if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
@@ -37,8 +38,8 @@ for (const pem of pems) {
   console.log(`  ${subject}  (expires ${new Date(certificate.validTo).toISOString().slice(0, 10)})`);
 }
 
-const oldHash = existsSync(bundleFile) ? sha256(readFileSync(bundleFile)) : "(none)";
-const newHash = sha256(Buffer.from(text, "utf8"));
+const oldHash = existsSync(bundleFile) ? sha256(readFileSync(bundleFile, "utf8")) : "(none)";
+const newHash = sha256(text);
 console.log(`\nOld SHA-256: ${oldHash}\nNew SHA-256: ${newHash}`);
 if (oldHash === newHash) {
   console.log("Unchanged; nothing to do.");

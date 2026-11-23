@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
+
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { rootCertificates } from "node:tls";
 import {
-  CaBundleError, certificateAuthoritiesFor, isRdsHostname, publicRoots, PUBLIC_CA_BUNDLE_ID, RDS_BUNDLE_RELATIVE_PATH, RDS_BUNDLE_SHA256, RDS_CA_BUNDLE_ID,
+  bundleSha256, CaBundleError, certificateAuthoritiesFor, isRdsHostname, publicRoots, PUBLIC_CA_BUNDLE_ID, RDS_BUNDLE_RELATIVE_PATH, RDS_BUNDLE_SHA256, RDS_CA_BUNDLE_ID,
   rdsRoots, rootsForHost,
 } from "./caBundles";
 
@@ -13,7 +13,7 @@ function bundleDir(contents: string) {
   const dir = mkdtempSync(path.join(tmpdir(), "rds-ca-"));
   mkdirSync(path.dirname(path.join(dir, RDS_BUNDLE_RELATIVE_PATH)), { recursive: true });
   writeFileSync(path.join(dir, RDS_BUNDLE_RELATIVE_PATH), contents);
-  return { dir, sha256: createHash("sha256").update(contents).digest("hex") };
+  return { dir, sha256: bundleSha256(contents) };
 }
 
 describe("the shipped RDS bundle", () => {
@@ -26,8 +26,16 @@ describe("the shipped RDS bundle", () => {
       expect(existsSync(file)).toBe(false);
       return;
     }
-    expect(createHash("sha256").update(readFileSync(file)).digest("hex")).toBe(RDS_BUNDLE_SHA256);
+    expect(bundleSha256(readFileSync(file, "utf8"))).toBe(RDS_BUNDLE_SHA256);
     expect(rdsRoots().length).toBeGreaterThan(0);
+  });
+
+  it("still matches after a Windows checkout turns its line endings into CRLF", () => {
+    if (RDS_BUNDLE_SHA256 === null) return;
+    const crlf = readFileSync(file, "utf8").replace(/\r?\n/g, "\r\n");
+    expect(bundleSha256(crlf)).toBe(RDS_BUNDLE_SHA256);
+    const { dir } = bundleDir(crlf);
+    expect(rdsRoots({ root: dir }).length).toBeGreaterThan(100);
   });
 
   it("is recorded with the same hash in ca/README.md", () => {
