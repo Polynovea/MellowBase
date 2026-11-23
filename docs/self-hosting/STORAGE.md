@@ -86,5 +86,7 @@ the key is derived from `CMS_CONFIG_ENCRYPTION_KEY` with HKDF under a storage-on
 ## Local development with Azurite
 
 `node scripts/dev-db/setup.mjs` also starts an Azurite blob service for this checkout and writes
-`POLYNOVEA_TEST_AZURITE_CONNECTION_STRING` to `.env.test.local`; `lib/media/azureBlobStorage.azurite.test.ts`
-runs against it and is skipped when it is not configured.
+`POLYNOVEA_TEST_AZURITE_CONNECTION_STRING` to `.env.test.local`. `*.azurite.test.ts` files run with
+`npm run test:dual` (the plain `npx vitest run` excludes them, like `*.dual.test.ts`), and skip with a
+note when Azurite is not configured or not reachable. To run only them, with the stack up:
+`npx vitest run --config vitest.dual.config.ts lib/media/azureBlobStorage.azurite.test.ts`.

@@ -10,6 +10,6 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["**/*.test.ts"],
-    exclude: ["node_modules/**", ".next/**", "ui-ux-pro-max-skill/**", ".worktrees/**", ".claude/**", "**/*.dual.test.ts"],
+    exclude: ["node_modules/**", ".next/**", "ui-ux-pro-max-skill/**", ".worktrees/**", ".claude/**", "**/*.dual.test.ts", "**/*.azurite.test.ts"],
   },
 });
