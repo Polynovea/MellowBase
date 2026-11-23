@@ -143,6 +143,11 @@ describe("TLS from config.enc", () => {
     expect(db.connects).toBe(0);
   });
 
+  it("a remote database with no CA bundle ID is refused, not verified against the system roots", async () => {
+    expect((await resolveMode(writeConfig(null))).mode).toBe("unavailable");
+    expect(db.connects).toBe(0);
+  });
+
   it("the bundled database on loopback connects without TLS", async () => {
     db.installed = true;
     expect((await resolveMode(writeConfig(null, "127.0.0.1"))).mode).toBe("running");

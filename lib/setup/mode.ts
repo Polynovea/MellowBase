@@ -74,12 +74,14 @@ export type ConnectionSettings = {
  * How to connect with config.enc's settings. TLS trusts exactly the root certificates the wizard
  * verified the database with (config.database.caBundleId, from lib/setup/database/caBundles.ts),
  * never the system store or DATABASE_CA_CERT. A local database without TLS (the bundled
- * PostgreSQL on loopback) connects as postgresTls.mjs decides. Throws when the bundle cannot be
- * loaded: no fallback to weaker trust.
+ * PostgreSQL on loopback, caBundleId null) connects as postgresTls.mjs decides. Throws when a remote
+ * database has no bundle ID or the bundle cannot be loaded: no fallback to weaker trust.
  */
 export function installConnection(config: InstallConfig, role: "owner" | "app", env: Env = process.env): ConnectionSettings {
   const base = postgresConnectionConfig(databaseUrlFromConfig(config, role), env);
-  if (base.ssl === false || !config.database.caBundleId) return base;
+  if (base.ssl === false) return base;
+  // A remote database without a bundle ID would fall back to the system roots: refused.
+  if (!config.database.caBundleId) throw new Error("config.enc has no CA bundle for a remote database");
   const ca = certificateAuthoritiesFor(config.database.caBundleId);
   if (!ca) throw new Error(`config.enc names CA bundle ${config.database.caBundleId}, which this release does not ship`);
   const host = config.database.host.replace(/^[|]$/g, "");
