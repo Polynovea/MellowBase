@@ -7,7 +7,10 @@
 //   leaves a master admin with no membership or a membership with its system roles removed and no
 //   owner role yet.
 //
-// Creating the auth identity itself stays with Supabase Auth until the built-in auth workstream.
+// The auth identity comes from Supabase Auth, or with AUTH_PROVIDER=builtin from
+// lib/auth/bootstrapOwner.mjs, which also owns the PostgreSQL rows used here (grantOwnerRows).
+
+import { grantOwnerRows } from "../../lib/auth/bootstrapOwner.mjs";
 
 const MASTER_ACCESS = { role: "master", is_active: true, surface_access: ["cms", "content"], module_access: ["*"], module_write_access: ["*"] };
 
@@ -78,37 +81,12 @@ export function supabaseAdminStore(client) {
 /** @param {import("pg").Client} client a connected client; the store runs one transaction on it */
 export function postgresAdminStore(client) {
   return {
-    async grantOwner({ authUserId, email, username, displayName, workspaceSlug }) {
+    async grantOwner(details) {
       await client.query("begin");
       try {
-        const existing = await client.query("select id from admin_users where email = $1 order by id limit 2 for update", [email]);
-        if (existing.rows.length > 1) throw new Error(`More than one admin user has the email ${email}. Resolve the duplicate before bootstrapping.`);
-        const access = [MASTER_ACCESS.role, MASTER_ACCESS.is_active, MASTER_ACCESS.surface_access, MASTER_ACCESS.module_access, MASTER_ACCESS.module_write_access];
-        const adminUser = existing.rows.length
-          ? (await client.query(
-            "update admin_users set auth_user_id = $2, username = $3, display_name = $4, role = $5, is_active = $6, surface_access = $7, module_access = $8, module_write_access = $9, updated_at = now() where id = $1 returning id",
-            [existing.rows[0].id, authUserId, username, displayName, ...access],
-          )).rows[0]
-          : (await client.query(
-            "insert into admin_users (auth_user_id, username, email, display_name, role, is_active, surface_access, module_access, module_write_access, created_by) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'bootstrap:admin') returning id",
-            [authUserId, username, email, displayName, ...access],
-          )).rows[0];
-
-        const workspace = (await client.query("select id from workspaces where slug = $1", [workspaceSlug])).rows[0];
-        if (!workspace) throw new Error(`Workspace '${workspaceSlug}' does not exist. Apply migrations before bootstrapping the first admin.`);
-
-        const member = (await client.query(
-          "insert into workspace_members (workspace_id, admin_user_id, status, updated_at) values ($1, $2, 'active', now()) on conflict (workspace_id, admin_user_id) do update set status = 'active', updated_at = now() returning id",
-          [workspace.id, adminUser.id],
-        )).rows[0];
-
-        const ownerRole = (await client.query("select id from roles where workspace_id = $1 and key = 'owner'", [workspace.id])).rows[0];
-        if (!ownerRole) throw new Error("Default owner role is missing. Apply workspace migrations first.");
-
-        await client.query("delete from member_roles where workspace_member_id = $1 and role_id in (select id from roles where workspace_id = $2 and is_system)", [member.id, workspace.id]);
-        await client.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2) on conflict (workspace_member_id, role_id) do nothing", [member.id, ownerRole.id]);
+        const granted = await grantOwnerRows(client, details);
         await client.query("commit");
-        return { adminUserId: adminUser.id, workspaceId: workspace.id, memberId: member.id };
+        return granted;
       } catch (error) {
         await client.query("rollback").catch(() => {});
         throw error;
