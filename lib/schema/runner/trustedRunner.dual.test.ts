@@ -15,6 +15,7 @@ import { runNextStage } from "@/lib/schema/runner/runner";
 import { buildPlan, column, shape, TEST_LIMITS } from "@/lib/schema/runner/testing/plans";
 import { connect } from "@/lib/schema/runner/testing/dualFixtures";
 import type pg from "pg";
+import { spawn } from "node:child_process";
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 60_000 });
 
@@ -178,5 +179,45 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
       await expect(cancelPlanStage(kyselyOn(app), { ledgerId: running.expandLedgerId!, cancelledBy: m.adminUserId })).rejects.toMatchObject({ code: "55000" });
       await backend.query("update schema_migration_ledger set status = 'pending' where id = $1", [running.expandLedgerId]);
     });
+  });
+
+  it("the worker process survives losing its database session: the next poll reconnects and runs the stage", async () => {
+    const m = await model([field("title")]);
+    const child = spawn(process.execPath, ["--no-warnings", "--loader", "./scripts/phase12_75-node-loader.mjs", "scripts/schema-migration-worker.mjs", `--model=${m.modelId}`], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env, NEXT_RUNTIME: "", POLYNOVEA_MIGRATION_DATABASE_URL: process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL, DATABASE_URL: "",
+        SCHEMA_WORKER_POLL_MS: "250", POLYNOVEA_RELEASE_ID: "test-release", POLYNOVEA_SCHEMA_MAX_MODELS: "1000000",
+      },
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += String(chunk); });
+    child.stderr.on("data", (chunk) => { output += String(chunk); });
+    const until = async (check: () => Promise<boolean> | boolean, ms: number) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        if (await check()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      return false;
+    };
+    try {
+      expect(await until(() => output.includes('"event":"started"'), 30_000)).toBe(true);
+      // Kill the worker's session from outside, as a failover or an operator would.
+      const killed = await backend.query<{ killed: boolean }>(
+        "select pg_terminate_backend(pid) as killed from pg_stat_activity where application_name = 'polynovea-schema-runner' and pid <> pg_backend_pid()",
+      );
+      expect(killed.some((row) => row.killed)).toBe(true);
+      const queued = await request(m, m.v1);
+      const done = await until(async () => {
+        const [row] = await backend.query<{ status: string }>("select status from schema_migration_ledger where id = $1", [queued.expandLedgerId]);
+        return row?.status === "succeeded";
+      }, 45_000);
+      expect(done, output).toBe(true);
+      expect(output).toContain('"event":"reconnected"');
+      expect(output).not.toContain("postgres://");
+    } finally {
+      child.kill();
+    }
   });
 });

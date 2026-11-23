@@ -8,6 +8,7 @@
  *
  *   npm run worker:schema            # poll every 1.5 s
  *   npm run worker:schema -- --once  # run what is waiting, then exit
+ *   npm run worker:schema -- --model=<uuid>  # only that model's stages (and no contracts)
  *   npm run worker:schema -- --rollback-task=<uuid>
  *                                    # undo a failed expand (trigger, guard index, new column), then exit
  *
@@ -51,6 +52,7 @@ const { rollbackExpandTask } = await import("../lib/schema/runner/expandContract
 const { tryLockModel, unlockModel } = await import("../lib/schema/runner/ledger.ts");
 
 const once = process.argv.includes("--once");
+const modelArg = process.argv.find((arg) => arg.startsWith("--model="))?.slice("--model=".length);
 const rollbackArg = process.argv.find((arg) => arg.startsWith("--rollback-task="))?.slice("--rollback-task=".length);
 const pollMs = Math.max(250, Number(process.env.SCHEMA_WORKER_POLL_MS || 1500));
 const workerId = process.env.SCHEMA_WORKER_ID || `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
@@ -62,9 +64,22 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping 
 
 const engine = productionEngine();
 const pool = createOwnerPool();
+// The run's session: kept across polls (it holds the model's advisory lock while a stage runs), and
+// replaced when its connection dies (a failover, a restart, pg_terminate_backend). A stage that was
+// running is reclaimed and resumed from its run row once the lock went with the old session.
 let client;
+let clientBroken = false;
+async function openSession() {
+  const next = await pool.connect();
+  next.on("error", () => { clientBroken = true; });
+  clientBroken = false;
+  await assertOwnerSession(next);
+  return next;
+}
+const CONNECTION_CODES = new Set(["57P01", "57P02", "57P03", "08000", "08001", "08003", "08004", "08006", "ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT"]);
+const isConnectionError = (error) => CONNECTION_CODES.has(error?.code) || /connection terminated|connection.*(closed|ended)|not queryable/i.test(String(error?.message ?? ""));
 try {
-  client = await pool.connect();
+  client = await openSession();
 } catch (error) {
   // A code only (e.g. ECONNREFUSED, 28P01): never the connection string.
   const code = typeof error?.code === "string" && /^[0-9A-Z_]{1,40}$/.test(error.code) ? error.code : errorCode(error);
@@ -73,7 +88,6 @@ try {
   process.exit(1);
 }
 try {
-  await assertOwnerSession(client);
   if (rollbackArg) {
     // Operator: undo one failed expand under its model's lock, then exit.
     const { rows: [task] } = await client.query("select content_model_id from public.schema_expand_contract_tasks where id = $1", [rollbackArg]);
@@ -93,22 +107,43 @@ try {
     }
     stopping = true;
   }
-  log("started", { workerId, releaseId, once });
+  log("started", { workerId, releaseId, once, model: modelArg ?? null });
+  let backoffMs = 0;
   while (!stopping) {
     let worked = false;
     try {
+      if (!client) {
+        client = await openSession();
+        log("reconnected", { workerId });
+      }
       // The pool's spare connection watches long CONCURRENTLY statements ("waiting_for_older_transactions").
-      const outcome = await runNextStage(client, { engine, workerId, releaseId, log, observer: pool });
+      const outcome = await runNextStage(client, { engine, workerId, releaseId, log, observer: pool, modelId: modelArg });
       if (outcome) worked = true;
-      else await runDueContracts(client, { releaseId, log });
+      else if (!modelArg) await runDueContracts(client, { releaseId, log });
+      backoffMs = 0;
     } catch (error) {
-      log("loop_error", { code: errorCode(error) });
+      const code = typeof error?.code === "string" && /^[0-9A-Z_]{1,40}$/.test(error.code) ? error.code : errorCode(error);
+      log("loop_error", { code });
+      if (client && (clientBroken || isConnectionError(error))) {
+        // Throw the dead session away (never back into the pool) and open a new one after a pause.
+        client.release(true);
+        client = undefined;
+        backoffMs = Math.min(30_000, backoffMs ? backoffMs * 2 : 1_000);
+        log("session_lost", { retryInMs: backoffMs });
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        continue;
+      }
+      if (!client) {
+        backoffMs = Math.min(30_000, backoffMs ? backoffMs * 2 : 1_000);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        continue;
+      }
     }
     if (once && !worked) break;
     if (!worked) await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
 } finally {
-  client.release();
+  client?.release(clientBroken);
   await pool.end();
   log("stopped", { workerId });
 }
