@@ -73,7 +73,8 @@ try {
   while (!stopping) {
     let worked = false;
     try {
-      const outcome = await runNextStage(client, { engine, workerId, releaseId, log });
+      // The pool's spare connection watches long CONCURRENTLY statements ("waiting_for_older_transactions").
+      const outcome = await runNextStage(client, { engine, workerId, releaseId, log, observer: pool });
       if (outcome) worked = true;
       else await runDueContracts(client, { releaseId, log });
     } catch (error) {

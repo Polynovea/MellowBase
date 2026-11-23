@@ -21,6 +21,9 @@ import { RunnerError, sqlState } from "@/lib/schema/runner/errors";
 import { concurrentLockTimeoutMs, LOCK_TIMEOUT_MS, withLockRetry, type LockRetryOptions } from "@/lib/schema/runner/lockRetry";
 import { setProgress } from "@/lib/schema/runner/ledger";
 
+/** A structured log line: an event name and codes, ids or numbers only (never SQL, names or values). */
+export type RunnerLog = (event: string, fields: Record<string, string | number | boolean | null>) => void;
+
 /** Test hooks: throwing from one simulates a crash at that point. */
 export interface RunnerHooks {
   /** Inside a statement group's transaction, after its statements and progress, before COMMIT. */
@@ -39,8 +42,67 @@ export interface StepContext {
   table: string;
   retry?: LockRetryOptions;
   hooks?: RunnerHooks;
-  /** Lock wait for CONCURRENTLY statements; default concurrentLockTimeoutMs(). */
+  /** Lock wait for CONCURRENTLY statements; default concurrentLockTimeoutMs(), capped below the session's statement_timeout. */
   concurrentLockTimeoutMs?: number;
+  log?: RunnerLog;
+  /** A second connection (the owner pool) to look at a long CONCURRENTLY statement from outside. */
+  observer?: Pick<pg.ClientBase, "query">;
+  /** How often a long CONCURRENTLY statement is reported (default 10 s). */
+  waitLogIntervalMs?: number;
+}
+
+const PHASE_CODE = /[^a-z0-9]+/g;
+
+/**
+ * While a CONCURRENTLY statement runs, reports it every interval so an operator can see why an index
+ * stage is slow: "waiting_for_older_transactions" when it waits (a lock wait, or a progress phase
+ * "waiting for ..."), with the elapsed time and the phase as a code. Returns a stop function.
+ */
+function watchConcurrent(ctx: StepContext, backendPid: number | null): () => void {
+  const log = ctx.log;
+  if (!log) return () => undefined;
+  const started = Date.now();
+  let busy = false;
+  const timer = setInterval(async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      let event = "concurrent_statement_running";
+      let phase: string | null = null;
+      if (ctx.observer && backendPid !== null) {
+        const { rows: [row] } = await ctx.observer.query(
+          `select a.wait_event_type, p.phase from pg_catalog.pg_stat_activity a
+             left join pg_catalog.pg_stat_progress_create_index p on p.pid = a.pid
+            where a.pid = $1`,
+          [backendPid],
+        );
+        phase = typeof row?.phase === "string" ? row.phase.toLowerCase().replace(PHASE_CODE, "_").slice(0, 60) : null;
+        if (row?.wait_event_type === "Lock" || phase?.startsWith("waiting")) event = "waiting_for_older_transactions";
+      }
+      log(event, { elapsedMs: Date.now() - started, phase });
+    } catch {
+      // Observation only: never affects the statement.
+    } finally {
+      busy = false;
+    }
+  }, ctx.waitLogIntervalMs ?? 10_000);
+  timer.unref?.();
+  return () => {
+    clearInterval(timer);
+    const elapsedMs = Date.now() - started;
+    if (elapsedMs >= (ctx.waitLogIntervalMs ?? 10_000)) log("concurrent_statement_done", { elapsedMs });
+  };
+}
+
+/** The patient lock wait for CONCURRENTLY statements, capped a minute below the session's statement_timeout. */
+async function patientLockTimeout(ctx: StepContext): Promise<number> {
+  const wanted = Math.floor(ctx.concurrentLockTimeoutMs ?? concurrentLockTimeoutMs());
+  const { rows: [row] } = await ctx.client.query<{ ms: string | number }>(
+    "select (extract(epoch from current_setting('statement_timeout')::interval) * 1000)::bigint as ms",
+  );
+  const statementTimeout = Number(row?.ms ?? 0);
+  const cap = statementTimeout > 0 ? statementTimeout - 60_000 : Number.POSITIVE_INFINITY;
+  return Math.max(LOCK_TIMEOUT_MS, Math.min(wanted, cap));
 }
 
 export interface StatementGroup {
@@ -111,14 +173,18 @@ export async function dropInvalidIndexes(client: pg.ClientBase, table: string, r
 async function runNonTransactional(ctx: StepContext, statement: RenderedStatement, resumedHere: boolean): Promise<number> {
   const { client, table, retry } = ctx;
   const compiled = compile(statement.sql);
-  const patient = Math.max(LOCK_TIMEOUT_MS, Math.floor(ctx.concurrentLockTimeoutMs ?? concurrentLockTimeoutMs()));
+  const patient = await patientLockTimeout(ctx);
   await client.query(`set lock_timeout = '${patient}ms'`);
+  const { rows: [me] } = await client.query<{ pid: number }>("select pg_backend_pid() as pid");
   try {
     await dropInvalidIndexes(client, table, retry);
     const { retries } = await withLockRetry(async () => {
+      const stopWatch = watchConcurrent(ctx, me?.pid ?? null);
       try {
         await client.query(compiled.text, compiled.values);
+        stopWatch();
       } catch (error) {
+        stopWatch();
         const state = sqlState(error);
         // A resumed run repeating a statement that had finished before the crash.
         if (resumedHere && (state === "42P07" || state === "42704")) return;

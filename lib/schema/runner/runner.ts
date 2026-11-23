@@ -12,7 +12,7 @@
 import type pg from "pg";
 import { transactionOn, type SchemaEngine } from "@/lib/schema/runner/engine";
 import { errorCode, RefusedError, RunnerError } from "@/lib/schema/runner/errors";
-import { executeStep, inLockTimedTransaction, type RunnerHooks } from "@/lib/schema/runner/execute";
+import { executeStep, inLockTimedTransaction, type RunnerHooks, type RunnerLog } from "@/lib/schema/runner/execute";
 import { contractDue, runExpandStep } from "@/lib/schema/runner/expandContract";
 import {
   claimNextStage, finishStep, markFailed, markSucceeded, openRun, unfinishedStageOf, unlockModel, tryLockModel,
@@ -31,8 +31,11 @@ export interface RunnerOptions {
   batchSize?: number;
   /** Lock wait for CONCURRENTLY statements (default 10 minutes; see lockRetry.ts). */
   concurrentLockTimeoutMs?: number;
+  /** A second owner connection (the worker's pool) to report long CONCURRENTLY statements from outside. */
+  observer?: Pick<pg.ClientBase, "query">;
+  waitLogIntervalMs?: number;
   /** Structured log line: an event name and codes/ids only. */
-  log?: (event: string, fields: Record<string, string | number | boolean | null>) => void;
+  log?: RunnerLog;
 }
 
 export type StageOutcome =
@@ -72,6 +75,7 @@ export async function runClaimedStage(client: pg.ClientBase, row: LedgerRow, opt
 
     const context = {
       client, engine: options.engine, runId, table: plan.table, retry: options.retry, hooks: options.hooks, concurrentLockTimeoutMs: options.concurrentLockTimeoutMs,
+      log, observer: options.observer, waitLogIntervalMs: options.waitLogIntervalMs,
     };
     for (let index = run.next_step; index < steps.length; index += 1) {
       const { planIndex, step } = steps[index];
