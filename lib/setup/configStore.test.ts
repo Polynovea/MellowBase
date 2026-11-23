@@ -112,3 +112,56 @@ describe("config.enc rotation through keys reencrypt", () => {
     expect(await reencryptConfigFile(rotated)).toBe("current");
   });
 });
+
+describe("readInstallConfigSync (plain-Node reader for scripts)", () => {
+  it("returns null when config.enc is absent, and the config when it is valid", async () => {
+    const { readInstallConfigSync } = await import("@/lib/setup/configStore.mjs");
+    const env = { POLYNOVEA_CONFIG_DIR: tempDir(), CMS_MASTER_KEY: entry("k1") };
+    expect(readInstallConfigSync(env)).toBeNull();
+    const value = config();
+    await writeConfig(value, env);
+    expect(readInstallConfigSync(env)).toEqual(value);
+  });
+
+  it("refuses a wrong key or a tampered file without revealing values", async () => {
+    const { readInstallConfigSync } = await import("@/lib/setup/configStore.mjs");
+    const dir = tempDir();
+    const value = config();
+    await writeConfig(value, { POLYNOVEA_CONFIG_DIR: dir, CMS_MASTER_KEY: entry("k1") });
+    resetKeyRingCache();
+    const wrong = (() => {
+      try {
+        readInstallConfigSync({ POLYNOVEA_CONFIG_DIR: dir, CMS_MASTER_KEY: entry("k1") });
+      } catch (error) {
+        return error as Error;
+      }
+    })();
+    expect(wrong?.message).toMatch(/could not be decrypted/);
+    for (const secret of [value.roles.owner.password, value.authSecret, value.database.host]) expect(wrong?.message).not.toContain(secret);
+    resetKeyRingCache();
+    const env = { POLYNOVEA_CONFIG_DIR: dir, CMS_MASTER_KEY: entry("other") };
+    expect(() => readInstallConfigSync(env)).toThrow(/not in the key ring/);
+    const file = configPath(env);
+    const envelope = JSON.parse(readFileSync(file, "utf8"));
+    envelope.tag = Buffer.alloc(16).toString("base64");
+    writeFileSync(file, JSON.stringify(envelope), { mode: 0o600 });
+    resetKeyRingCache();
+    expect(() => readInstallConfigSync({ POLYNOVEA_CONFIG_DIR: dir, CMS_MASTER_KEY: entry("k1") })).toThrow(/could not be decrypted|not in the key ring/);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a config.enc with loose permissions", async () => {
+    const { readInstallConfigSync } = await import("@/lib/setup/configStore.mjs");
+    const env = { POLYNOVEA_CONFIG_DIR: tempDir(), CMS_MASTER_KEY: entry("k1") };
+    writeFileSync(configPath(env), encryptInstallConfig(config(), env), { mode: 0o640 });
+    expect(() => readInstallConfigSync(env)).toThrow(/chmod 600/);
+  });
+
+  it("loads in plain Node without path aliases, as run-migrations.mjs will use it", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const env = { POLYNOVEA_CONFIG_DIR: tempDir(), CMS_MASTER_KEY: entry("k1") };
+    await writeConfig(config(), env);
+    const script = 'const m = await import("./lib/setup/configStore.mjs"); const c = m.readInstallConfigSync(); console.log(c.database.name + " " + (m.configPath() === process.env.EXPECTED));';
+    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, ...env, EXPECTED: configPath(env) }, encoding: "utf8" });
+    expect(out.trim()).toBe("polynovea true");
+  });
+});

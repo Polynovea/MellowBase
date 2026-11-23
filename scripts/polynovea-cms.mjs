@@ -26,7 +26,7 @@ if (area === "auth") {
   }
   const pg = (await import("pg")).default;
   const { postgresConnectionConfig } = await import("../lib/infrastructure/postgresTls.mjs");
-  const { readConfigSync, databaseUrlFromConfig } = await import("../lib/setup/configStore.ts");
+  const { readConfigSync, databaseUrlFromConfig } = await import("../lib/setup/configStore.mjs");
   const { reencryptSecrets, reencryptConfigFile, formatReencryptReport } = await import("../lib/setup/reencrypt.ts");
   let db;
   try {
