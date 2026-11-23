@@ -46,6 +46,24 @@ $$;
 -- schema-guard:end
 
 revoke all on schema content from public;
+
+-- Only the owner (the migrating role) may create objects in content. An adopted schema may carry older
+-- grants: take CREATE away from every other role that holds it.
+-- create-revoke:start
+do $$
+declare
+  grantee_name text;
+begin
+  for grantee_name in
+    select pg_catalog.pg_get_userbyid(a.grantee)
+    from pg_catalog.pg_namespace n, pg_catalog.aclexplode(n.nspacl) a
+    where n.nspname = 'content' and a.privilege_type = 'CREATE' and a.grantee <> 0 and a.grantee <> n.nspowner
+  loop
+    execute pg_catalog.format('revoke create on schema content from %I', grantee_name);
+  end loop;
+end;
+$$;
+-- create-revoke:end
 grant usage on schema content to polynovea_app;
 alter default privileges in schema content grant select, insert, update, delete on tables to polynovea_app;
 

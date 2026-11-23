@@ -65,3 +65,32 @@ describeWithDatabase("migration 0073: existing content schema guard", (backend) 
     }
   });
 });
+
+describeWithDatabase("migration 0073: only the owner may create in content", (backend) => {
+  it("after 0073, no role but the owner (or a superuser) has CREATE on content", async () => {
+    const rows = await backend.query<{ rolname: string }>(`
+      select r.rolname from pg_roles r, pg_namespace n
+      where n.nspname = 'content' and has_schema_privilege(r.oid, n.oid, 'CREATE')
+        and not r.rolsuper and not pg_has_role(r.oid, n.nspowner, 'MEMBER')`);
+    expect(rows.map((row) => row.rolname)).toEqual([]);
+  });
+
+  it("takes CREATE away from other roles on an adopted schema", async () => {
+    const revoke = migration.match(/-- create-revoke:start\n([\s\S]*?)-- create-revoke:end/)?.[1];
+    expect(revoke, "0073 must mark its revoke with -- create-revoke:start / -- create-revoke:end").toBeTruthy();
+    const schema = `content_revoke_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const block = revoke!.split("'content'").join(`'${schema}'`).split("on schema content from").join(`on schema ${schema} from`);
+    await backend.query("begin");
+    try {
+      await backend.query(`create schema ${schema}`);
+      await backend.query(`grant create, usage on schema ${schema} to polynovea_app`);
+      const [before] = await backend.query<{ can: boolean }>("select has_schema_privilege('polynovea_app', $1, 'CREATE') as can", [schema]);
+      expect(before.can).toBe(true);
+      await backend.query(block);
+      const [after] = await backend.query<{ can: boolean; usage: boolean }>("select has_schema_privilege('polynovea_app', $1, 'CREATE') as can, has_schema_privilege('polynovea_app', $1, 'USAGE') as usage", [schema]);
+      expect(after).toEqual({ can: false, usage: true });
+    } finally {
+      await backend.query("rollback");
+    }
+  });
+});
