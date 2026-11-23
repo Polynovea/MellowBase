@@ -11,7 +11,7 @@ export const APP_ROLE = "polynovea_app";
 export const APP_POLICY = "polynovea_app_all";
 
 export interface RenderOptions {
-  /** Build and drop indexes CONCURRENTLY (outside a transaction). The runner sets it; tests leave it off. */
+  /** Build and drop indexes CONCURRENTLY, outside a transaction (default true, for the runner). The reference executor and tests set false. */
   concurrentIndexes?: boolean;
 }
 
@@ -51,7 +51,7 @@ function backfillValue(value: unknown, type: PgColumnType): RawBuilder<unknown> 
 }
 
 export function renderStep(step: PlanStep, options: RenderOptions = {}): RenderedStatement[] {
-  const concurrently = Boolean(options.concurrentIndexes);
+  const concurrently = options.concurrentIndexes !== false;
   const table = tableRef(step.table);
   switch (step.kind) {
     case "create_table": {
@@ -118,7 +118,7 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
     case "drop_index": {
       const name = indexRef(derivedName(step.unique ? "uq" : "ix", step.table, step.column));
       const query = sql`drop index ${sql.raw(concurrently ? "concurrently " : "")}${name}`;
-      return [{ sql: query, transactional: !concurrently, lockSensitive: true }];
+      return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently }];
     }
     case "add_foreign_key": {
       if (!Object.prototype.hasOwnProperty.call(FK_ACTION_SQL, step.onDelete)) throw new Error(`Unknown foreign key action refused: ${JSON.stringify(String(step.onDelete))}`);

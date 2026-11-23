@@ -346,7 +346,7 @@ export function stepIdentity(step: PlanStep): Record<string, unknown> {
 }
 
 /** Recomputes a plan's hash from its contents (the runner checks a stored plan was not altered). */
-export function recomputePlanHash(plan: MigrationPlan): string {
+export function computePlanHash(plan: MigrationPlan): string {
   const { formatVersion, workspaceId, modelId, modelApiKey, table, baseShapeHash, expandedShapeHash, targetShapeHash, targetSchemaHash } = plan;
   return hashCanonical({ formatVersion, workspaceId, modelId, modelApiKey, table, baseShapeHash, expandedShapeHash, targetShapeHash, targetSchemaHash, steps: plan.steps.map(stepIdentity) });
 }

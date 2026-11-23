@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMigrationPlan, recomputePlanHash, type PlanInput } from "@/lib/schema/engine/planner";
+import { buildMigrationPlan, computePlanHash, type PlanInput } from "@/lib/schema/engine/planner";
 import { withSummaries } from "@/lib/schema/engine/describe";
 import { shapeForSchema } from "@/lib/schema/engine/columns";
 import { hashShape } from "@/lib/schema/engine/hash";
@@ -178,11 +178,11 @@ describe("migration plan: hash and plain words", () => {
     const a = plan(v1, model(f("title")));
     const b = plan(v1, model(f("title")));
     expect(a.planHash).toBe(b.planHash);
-    expect(recomputePlanHash(a)).toBe(a.planHash);
+    expect(computePlanHash(a)).toBe(a.planHash);
     expect(plan(v1, model(f("body", "long_text"))).planHash).not.toBe(a.planHash);
     const counted = withSummaries({ ...a, steps: a.steps.map((s) => ({ ...s, affectedValues: 1240 })) as PlanStep[] }, { modelName: "Post", schemas: [v1] });
-    expect(recomputePlanHash(counted)).toBe(a.planHash);
-    expect(recomputePlanHash({ ...a, steps: [{ ...a.steps[0], table: "m_other" }] as PlanStep[] })).not.toBe(a.planHash);
+    expect(computePlanHash(counted)).toBe(a.planHash);
+    expect(computePlanHash({ ...a, steps: [{ ...a.steps[0], table: "m_other" }] as PlanStep[] })).not.toBe(a.planHash);
   });
 
   it("says how many values a destructive step deletes", () => {

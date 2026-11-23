@@ -74,3 +74,14 @@ describe("rendered SQL", () => {
     expect(() => compile({ kind: "add_foreign_key", stage: "expand", summary: "", table: "m_post", column: "author", onDelete: "cascade" as never })).toThrow(/Unknown foreign key action/);
   });
 });
+
+describe("rendered SQL defaults", () => {
+  it("builds and drops indexes CONCURRENTLY outside a transaction unless told otherwise", () => {
+    const [add] = renderStep({ kind: "add_index", stage: "expand", summary: "", table: "m_post", column: "title", unique: false });
+    expect(add.transactional).toBe(false);
+    expect(add.sql.compile(db).sql).toContain("create index concurrently");
+    const [drop] = renderStep({ kind: "drop_index", stage: "expand", summary: "", table: "m_post", column: "title", unique: true });
+    expect(drop).toMatchObject({ transactional: false, lockSensitive: false });
+    expect(renderStep({ kind: "add_foreign_key", stage: "expand", summary: "", table: "m_post", column: "a", onDelete: "restrict" }).map((s) => s.transactional)).toEqual([true, true]);
+  });
+});
