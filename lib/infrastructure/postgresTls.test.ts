@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { rootCertificates } from "node:tls";
-import { postgresConnectionConfig } from "./postgresTls.mjs";
+import { pinnedTlsOptions, postgresConnectionConfig } from "./postgresTls.mjs";
 
 const PEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
 
@@ -37,5 +37,21 @@ describe("postgresConnectionConfig", () => {
   it("drops file-reading SSL parameters from user-supplied URLs", () => {
     const config = postgresConnectionConfig("postgresql://u:p@db.example.com/app?sslrootcert=/etc/passwd&sslkey=/x&application_name=cms", {});
     expect(config.connectionString).toBe("postgresql://u:p@db.example.com/app?application_name=cms");
+  });
+});
+
+describe("pinnedTlsOptions", () => {
+  it("verifies against only the given roots and checks the real hostname", () => {
+    expect(pinnedTlsOptions({ servername: "db.abc.eu-west-1.rds.amazonaws.com", ca: [PEM] }))
+      .toEqual({ rejectUnauthorized: true, servername: "db.abc.eu-west-1.rds.amazonaws.com", ca: [PEM], minVersion: "TLSv1.2" });
+  });
+
+  it.each(["", "10.0.0.5", "[::1]", "2606:4700::1"])("refuses %j as the server name", (servername) => {
+    expect(() => pinnedTlsOptions({ servername, ca: [PEM] })).toThrow(/hostname/);
+  });
+
+  it("refuses an empty or non-PEM root list (there is no unverified fallback)", () => {
+    expect(() => pinnedTlsOptions({ servername: "db.example.com", ca: [] })).toThrow(/root/);
+    expect(() => pinnedTlsOptions({ servername: "db.example.com", ca: ["not a cert"] })).toThrow(/root/);
   });
 });

@@ -11,3 +11,8 @@ export function bootstrapInstallRoles(
 ): Promise<void>;
 export function scramSha256Verifier(password: string, options?: { iterations?: number; salt?: Buffer }): string;
 export function assertNoBypassAttributes(client: ClientBase): Promise<void>;
+export function withOwnerRole<T>(client: ClientBase, fn: () => Promise<T>, options?: { setRole?: boolean }): Promise<T>;
+export function installationState(client: ClientBase): Promise<"fresh" | "resumable" | "installed" | "foreign">;
+export function hardenPublicSchema(ownerClient: ClientBase): Promise<void>;
+export function appRoleProblems(client: ClientBase): Promise<string[]>;
+export function tablesMissingAppPolicy(client: ClientBase): Promise<string[]>;
