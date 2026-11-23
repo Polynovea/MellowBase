@@ -217,8 +217,9 @@ export function verifyRowAgainstPlan(
   // The request asked for exactly this stage: the row's hash is the stage's hash, recomputed here.
   if (recomputed !== plan.planHash || row.plan_hash !== stageHash) throw new RefusedError("plan_hash_mismatch");
   if (row.base_shape_hash !== stageBaseHash(plan, stage)) throw new RefusedError("ledger_base_hash_mismatch");
+  // The row's model and workspace say which model the request is for; its table_name, model_api_key
+  // and plan_json are never relied on (the trusted plan and content_model_tables decide the table).
   if (row.workspace_id !== plan.workspaceId || row.content_model_id !== plan.modelId) throw new RefusedError("plan_target_mismatch");
-  if (row.model_api_key !== plan.modelApiKey || row.table_name !== plan.table) throw new RefusedError("plan_target_mismatch");
 
   if (!TABLE_NAME_PATTERN.test(plan.table)) throw new RefusedError("plan_target_mismatch");
   if (nameProblem(plan.modelApiKey, "model")) throw new RefusedError("plan_name_rejected");

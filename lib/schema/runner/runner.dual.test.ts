@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { derivedName } from "@/lib/schema/engine/names";
 import { assertOwnerSession } from "@/lib/schema/runner/ownerPool";
 import { claimNextStage, RUNNER_LOCK_CLASS, lockKey, tryLockModel, unlockModel } from "@/lib/schema/runner/ledger";
+import { kyselyOn } from "@/lib/schema/runner/engine";
 import { productionEngine } from "@/lib/schema/runner/engineAdapter";
+import { requestPlanStage } from "@/lib/schema/runner/request";
 import { column, shape } from "@/lib/schema/runner/testing/plans";
 import { connect, RunnerHarness } from "@/lib/schema/runner/testing/dualFixtures";
 
@@ -230,6 +232,52 @@ describe("security review: what a stolen app login can no longer do", () => {
     expect(await h.columns(model)).not.toHaveProperty("body");
   });
 
+  it("refuses a request that names another workspace or another model's version; writes the model's own api key", async () => {
+    const model = await h.newModel();
+    const other = await h.newModel();
+    await h.createTable(model, [column("title", "text")]);
+    const plan = h.plan(model, shape(model.table, [column("title", "text"), column("x", "text")]), [{ kind: "add_column", stage: "expand", column: column("x", "text") }]);
+    const { rows: [otherVersion] } = await h.owner.query(
+      "insert into content_model_versions (content_model_id, version_number, schema_hash, schema_json) values ($1, 1, $2, '{}'::jsonb) returning id",
+      [other.modelId, "0".repeat(64)],
+    );
+    const { rows: [ownVersion] } = await h.owner.query(
+      "insert into content_model_versions (content_model_id, version_number, schema_hash, schema_json) values ($1, 1, $2, '{}'::jsonb) returning id",
+      [model.modelId, "0".repeat(64)],
+    );
+    // Another workspace's id with this model: refused.
+    await expect(h.request(model, { ...plan, workspaceId: other.workspaceId })).rejects.toMatchObject({ code: "23514", message: "schema_request_model_mismatch" });
+    // Another model's version: refused. Its own version: accepted.
+    await expect(requestPlanStage(kyselyOn(h.app), { plan, stage: "expand", requestedBy: model.adminId, targetVersionId: otherVersion.id }))
+      .rejects.toMatchObject({ code: "23514", message: "schema_request_version_mismatch" });
+    const ok = await requestPlanStage(kyselyOn(h.app), { plan: { ...plan, modelApiKey: "forged_key" }, stage: "expand", requestedBy: model.adminId, targetVersionId: ownVersion.id });
+    // The api key the app wrote is replaced by the model's own.
+    expect((await h.ledger(ok.ledgerId)).model_api_key).toBe(model.apiKey);
+    expect(ok.status).toBe("pending");
+  });
+
+  it("no setting the app can change gets it past the trigger: the status is always forced", async () => {
+    const model = await h.newModel();
+    await h.createTable(model, [column("title", "text")]);
+    const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "title" }], shape(model.table, []));
+    await expect(h.app.query("set role polynovea_owner")).rejects.toMatchObject({ code: "42501" });
+    await h.app.query("begin");
+    try {
+      await h.app.query("set local role polynovea_app");
+      await h.app.query("set local search_path = public, pg_catalog");
+      await h.app.query("set local polynovea.is_owner = 'true'");
+      await h.app.query("set local session_replication_role = 'replica'").catch(() => undefined);
+      const { rows: [row] } = await h.app.query(
+        `insert into schema_migration_ledger (workspace_id, content_model_id, model_api_key, table_name, stage, plan_hash, plan_json)
+         values ($1, $2, $3, $4, 'destructive', $5, '{}'::jsonb) returning status, attempts`,
+        [model.workspaceId, model.modelId, model.apiKey, model.table, plan.planHash],
+      );
+      expect(row).toEqual({ status: "awaiting_confirmation", attempts: 0 });
+    } finally {
+      await h.app.query("rollback");
+    }
+  });
+
   it("the owner-side confirm and retry functions refuse everything but their one job", async () => {
     const model = await h.newModel();
     const other = await h.newModel();
@@ -242,6 +290,10 @@ describe("security review: what a stolen app login can no longer do", () => {
     const plan = h.plan(model, model.shape, [{ kind: "drop_column", stage: "destructive", column: "body" }], shape(model.table, [column("title", "text")]));
     const destructiveId = await h.request(model, plan, "destructive");
     await expect(h.confirm(destructiveId, model.adminId, other.apiKey)).rejects.toMatchObject({ code: "22023" });
+    // The confirming user must be a real, active admin user.
+    await expect(h.confirm(destructiveId, "00000000-0000-4000-8000-000000000001", model.apiKey)).rejects.toMatchObject({ code: "22023", message: "schema_confirmation_unknown_user" });
+    await h.owner.query("update admin_users set is_active = false where id = $1", [other.adminId]);
+    await expect(h.confirm(destructiveId, other.adminId, model.apiKey)).rejects.toMatchObject({ code: "22023", message: "schema_confirmation_unknown_user" });
     expect((await h.owner.query("select count(*)::int as n from schema_migration_confirmations where ledger_id = $1", [destructiveId])).rows[0].n).toBe(0);
     // An unknown ledger id: not found. Retrying a row that did not fail (pending, succeeded): refused.
     await expect(h.confirm("00000000-0000-4000-8000-000000000000", model.adminId, model.apiKey)).rejects.toMatchObject({ code: "P0002" });

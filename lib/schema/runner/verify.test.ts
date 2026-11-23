@@ -63,7 +63,9 @@ describe("verifyRowAgainstPlan", () => {
     });
     expect(refusal(() => verifyRowAgainstPlan(row(wholePlan), engine))).toBe("plan_target_mismatch");
     const otherRow = plan();
-    expect(refusal(() => verifyRowAgainstPlan(row(otherRow, { table_name: "m_other" }), engine))).toBe("plan_target_mismatch");
+    // The row's own table_name and model_api_key are untrusted and ignored: the trusted plan decides.
+    expect(verifyRowAgainstPlan(row(otherRow, { table_name: "m_other", model_api_key: "forged" }), engine).plan.table).toBe("m_posts");
+    expect(refusal(() => verifyRowAgainstPlan(row(otherRow, { content_model_id: WS }), engine))).toBe("plan_target_mismatch");
   });
 
   it("(c) checks the destructive stage on its own; the confirmation itself is a row (runner.dual.test.ts)", () => {

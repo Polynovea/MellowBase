@@ -178,19 +178,40 @@ alter table public.schema_migration_ledger
   add column if not exists renames jsonb not null default '[]'::jsonb check (jsonb_typeof(renames) = 'array');
 
 -- Whatever an inserting session supplies, a request starts clean: its status follows from its stage
--- (expand: pending; destructive: awaiting_confirmation) and nothing about a run is set. Sessions that
--- may UPDATE the ledger (the owner: migrations, the worker, the engine's reference executor) are left
--- alone, so this never depends on role names.
+-- (expand: pending; destructive: awaiting_confirmation) and nothing about a run is set. Everything the
+-- app supplies is untrusted: the request must name a model of the workspace it claims, a target version
+-- of that model, and the model's own api key is written in (the worker ignores the row's table name,
+-- api key and plan_json anyway).
+--
+-- Who is "the app": a session whose role may not UPDATE the ledger. That is decided by
+-- has_table_privilege on current_user, which only role membership changes. polynovea_app belongs to no
+-- other role, so it cannot SET ROLE out of it, and no setting it can change (GUCs, search_path,
+-- session variables) has any effect here. The owner (migrations, the worker, the engine's reference
+-- executor) is left alone, so this never depends on role names.
 create or replace function public.polynovea_schema_ledger_request()
 returns trigger
 language plpgsql
 security invoker
 set search_path = ''
 as $$
+declare
+  model_workspace uuid;
+  model_key text;
 begin
   if pg_catalog.has_table_privilege(current_user, 'public.schema_migration_ledger', 'UPDATE') then
     return new;
   end if;
+  select m.workspace_id, m.api_key into model_workspace, model_key
+    from public.content_models m where m.id = new.content_model_id;
+  if model_workspace is null or model_workspace is distinct from new.workspace_id then
+    raise exception using errcode = '23514', message = 'schema_request_model_mismatch';
+  end if;
+  if new.target_version_id is not null and not exists (
+    select 1 from public.content_model_versions v where v.id = new.target_version_id and v.content_model_id = new.content_model_id
+  ) then
+    raise exception using errcode = '23514', message = 'schema_request_version_mismatch';
+  end if;
+  new.model_api_key := model_key;
   new.status := case new.stage when 'destructive' then 'awaiting_confirmation' else 'pending' end;
   new.attempts := 0;
   new.error_ref := null;
@@ -259,6 +280,10 @@ begin
   end if;
   if p_typed_api_key is distinct from model_key then
     raise exception using errcode = '22023', message = 'schema_confirmation_mismatch';
+  end if;
+  -- The audit trail names a real, active admin user, never free text.
+  if not exists (select 1 from public.admin_users a where a.id = p_confirmed_by and coalesce(a.is_active, true)) then
+    raise exception using errcode = '22023', message = 'schema_confirmation_unknown_user';
   end if;
   insert into public.schema_migration_confirmations (ledger_id, workspace_id, confirmed_by, typed_api_key)
   values (p_ledger_id, request.workspace_id, p_confirmed_by, p_typed_api_key);
