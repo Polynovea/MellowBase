@@ -1,14 +1,27 @@
 import { createHash } from "node:crypto";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { listEntries } from "@/lib/content/entryService";
 import { getLocalizationStatus } from "@/lib/content/localizationService";
 import { runEntryPreflight } from "@/lib/content/preflightService";
 import { getAssetUsageGraph, getImpact } from "@/lib/content/impactGraphService";
 import { getEntryPerformanceComparison } from "@/lib/content/analyticsIntelligenceService";
 import { enqueueDeliveryJob } from "@/lib/operations/deliveryJobService";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { logPlatformEventFor } from "@/lib/platform/audit";
+import * as healthData from "@/lib/content/healthData";
 
 const DAY = 86_400_000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TASK_STATUSES = new Set(["open", "in_progress", "done", "dismissed"]);
+const TASK_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
+
+/** Input checks shared by both paths: malformed ids read as "not found", unknown values are refused. */
+function checkTaskInput(params: { findingId?: string | null; entityType?: "entry" | "asset"; entityId?: string; assignedTo?: string | null; status?: string; priority?: string; dueAt?: string | null }) {
+  if (params.findingId && !UUID.test(params.findingId)) throw new Error("Health finding not found in workspace");
+  if (params.entityId !== undefined && !UUID.test(params.entityId)) throw new Error(params.entityType === "asset" ? "Asset not found in workspace" : "Entry not found in workspace");
+  if (params.assignedTo && !UUID.test(params.assignedTo)) throw new Error("Assignee must be an active workspace member");
+  if (params.status !== undefined && !TASK_STATUSES.has(params.status)) throw new Error("Unsupported remediation task status");
+  if (params.priority !== undefined && !TASK_PRIORITIES.has(params.priority)) throw new Error("Unsupported remediation task priority");
+  if (params.dueAt && Number.isNaN(Date.parse(params.dueAt))) throw new Error("Due date is not a valid date");
+}
 const fingerprint = (...parts: string[]) => createHash("sha256").update(parts.join(":"), "utf8").digest("hex");
 
 type FindingInput = {
@@ -22,7 +35,7 @@ type FindingInput = {
 };
 
 async function upsertFinding(workspaceId: string, finding: FindingInput) {
-  const { data, error } = await createServiceRoleClient().rpc("cms_upsert_health_finding", {
+  return healthData.callUpsertHealthFinding({
     p_workspace_id: workspaceId,
     p_entity_type: finding.entityType,
     p_entity_id: finding.entityId,
@@ -33,19 +46,13 @@ async function upsertFinding(workspaceId: string, finding: FindingInput) {
     p_detail: finding.detail ?? null,
     p_evidence: finding.evidence ?? {},
   });
-  if (error) throw new Error(error.message);
-  return data;
 }
 
 export async function scanContentHealth(params: { workspaceId: string; actorId?: string | null }) {
-  const db = createServiceRoleClient();
-  const [entries, profilesResult, assetsResult] = await Promise.all([
+  const [entries, { profiles, assets }] = await Promise.all([
     listEntries(params.workspaceId),
-    db.from("content_health_profiles").select("*").eq("workspace_id", params.workspaceId),
-    db.from("assets").select("id, filename, mime_type, archived_at").eq("workspace_id", params.workspaceId).is("archived_at", null),
+    healthData.scanRows(params.workspaceId),
   ]);
-  const profiles = profilesResult.data ?? [];
-  const assets = assetsResult.data ?? [];
   const now = Date.now();
   const detected = new Set<string>();
   let findingsWritten = 0;
@@ -96,14 +103,10 @@ export async function scanContentHealth(params: { workspaceId: string; actorId?:
     if (usage.length === 0) await emit({ entityType: "asset", entityId: asset.id, code: "unused_asset", severity: "info", title: "Media asset is unused", detail: asset.filename, evidence: { filename: asset.filename, mimeType: asset.mime_type } });
   }
 
-  const { data: openFindings } = await db.from("content_health_findings").select("id, fingerprint, state").eq("workspace_id", params.workspaceId).in("state", ["open", "acknowledged"]);
-  const resolvedIds = (openFindings ?? []).filter((finding) => !detected.has(finding.fingerprint)).map((finding) => finding.id);
-  if (resolvedIds.length) {
-    await db.from("content_health_findings").update({ state: "resolved", resolved_at: new Date().toISOString(), updated_at: new Date().toISOString() }).in("id", resolvedIds).eq("workspace_id", params.workspaceId);
-  }
+  const resolved = await healthData.resolveUndetected(params.workspaceId, detected);
 
-  if (params.actorId) await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "content_health.scan_completed", entityType: "workspace", entityId: params.workspaceId, metadata: { entries: entries.length, assets: assets.length, findingsWritten, resolved: resolvedIds.length } });
-  return { entries: entries.length, assets: assets.length, findingsWritten, resolved: resolvedIds.length };
+  if (params.actorId) await logPlatformEventFor("content", { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "content_health.scan_completed", entityType: "workspace", entityId: params.workspaceId, metadata: { entries: entries.length, assets: assets.length, findingsWritten, resolved } });
+  return { entries: entries.length, assets: assets.length, findingsWritten, resolved };
 }
 
 export async function queueContentHealthScan(params: { workspaceId: string; actorId: string }) {
@@ -112,19 +115,14 @@ export async function queueContentHealthScan(params: { workspaceId: string; acto
 }
 
 export async function getContentHealth(workspaceId: string) {
-  const db = createServiceRoleClient();
-  const [{ data: findings }, { data: tasks }, { data: profiles }] = await Promise.all([
-    db.from("content_health_findings").select("*").eq("workspace_id", workspaceId).order("last_detected_at", { ascending: false }),
-    db.from("content_remediation_tasks").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending: false }),
-    db.from("content_health_profiles").select("*").eq("workspace_id", workspaceId),
-  ]);
-  const open = (findings ?? []).filter((item) => ["open", "acknowledged"].includes(item.state));
+  const { findings, tasks, profiles } = await healthData.overviewRows(workspaceId);
+  const open = findings.filter((item) => ["open", "acknowledged"].includes(item.state));
   return {
     summary: {
       blocking: open.filter((item) => item.severity === "blocking").length,
       warnings: open.filter((item) => item.severity === "warning").length,
       info: open.filter((item) => item.severity === "info").length,
-      openTasks: (tasks ?? []).filter((item) => ["open", "in_progress"].includes(item.status)).length,
+      openTasks: tasks.filter((item) => ["open", "in_progress"].includes(item.status)).length,
       missingOwner: open.filter((item) => item.finding_code === "missing_owner").length,
       overdueReview: open.filter((item) => ["review_overdue", "review_never_completed"].includes(item.finding_code)).length,
       expired: open.filter((item) => item.finding_code === "expired").length,
@@ -132,15 +130,16 @@ export async function getContentHealth(workspaceId: string) {
       unusedAssets: open.filter((item) => item.finding_code === "unused_asset").length,
       performanceDecline: open.filter((item) => item.finding_code === "performance_decline").length,
     },
-    findings: findings ?? [],
-    tasks: tasks ?? [],
-    profiles: profiles ?? [],
+    findings,
+    tasks,
+    profiles,
   };
 }
 
 export async function createRemediationTask(params: { workspaceId: string; actorId: string; findingId?: string | null; entityType: "entry" | "asset"; entityId: string; title: string; priority?: string; assignedTo?: string | null; dueAt?: string | null }) {
   if (!params.title.trim()) throw new Error("Task title is required");
-  const { data, error } = await createServiceRoleClient().from("content_remediation_tasks").insert({
+  checkTaskInput(params);
+  return healthData.insertRemediationTask({
     workspace_id: params.workspaceId,
     finding_id: params.findingId ?? null,
     entity_type: params.entityType,
@@ -150,13 +149,12 @@ export async function createRemediationTask(params: { workspaceId: string; actor
     assigned_to: params.assignedTo ?? null,
     due_at: params.dueAt ?? null,
     created_by: params.actorId,
-  }).select().single();
-  if (error || !data) throw new Error(error?.message || "Could not create remediation task");
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "content_health.remediation_created", entityType: "content_remediation_task", entityId: data.id, metadata: { findingId: params.findingId ?? null, entityType: params.entityType, entityId: params.entityId } });
-  return data;
+  }, (task) => ({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "content_health.remediation_created", entityType: "content_remediation_task", entityId: task.id, metadata: { findingId: params.findingId ?? null, entityType: params.entityType, entityId: params.entityId } }));
 }
 
 export async function updateRemediationTask(params: { workspaceId: string; actorId: string; id: string; status?: string; priority?: string; assignedTo?: string | null; dueAt?: string | null; resolutionNote?: string | null }) {
+  if (!UUID.test(params.id)) throw new Error("Remediation task not found");
+  checkTaskInput(params);
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (params.status !== undefined) patch.status = params.status;
   if (params.priority !== undefined) patch.priority = params.priority;
@@ -164,10 +162,8 @@ export async function updateRemediationTask(params: { workspaceId: string; actor
   if (params.dueAt !== undefined) patch.due_at = params.dueAt;
   if (params.resolutionNote !== undefined) patch.resolution_note = params.resolutionNote;
   if (params.status === "done") Object.assign(patch, { completed_by: params.actorId, completed_at: new Date().toISOString() });
-  const { data, error } = await createServiceRoleClient().from("content_remediation_tasks").update(patch).eq("workspace_id", params.workspaceId).eq("id", params.id).select().maybeSingle();
-  if (error) throw new Error(error.message);
+  const data = await healthData.updateRemediationTaskRow(params.workspaceId, params.id, patch, (task) => ({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "content_health.remediation_updated", entityType: "content_remediation_task", entityId: params.id, metadata: { status: params.status ?? task.status } }));
   if (!data) throw new Error("Remediation task not found");
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "content_health.remediation_updated", entityType: "content_remediation_task", entityId: params.id, metadata: { status: params.status ?? data.status } });
   return data;
 }
 
@@ -175,11 +171,11 @@ export async function updateRemediationTask(params: { workspaceId: string; actor
 export async function updateContentHealthProfile(params: {
   workspaceId: string; actorId: string; entryId: string; ownerId?: string | null; reviewCadenceDays?: number | null; lastReviewedAt?: string | null; expiresAt?: string | null;
 }) {
-  const { data, error } = await createServiceRoleClient().rpc("cms_upsert_content_health_profile", {
+  if (!UUID.test(params.entryId)) throw new Error("Entry not found in workspace");
+  if (params.ownerId && !UUID.test(params.ownerId)) throw new Error("Owner must be an active workspace member");
+  return healthData.callUpsertHealthProfile({
     p_workspace_id: params.workspaceId, p_actor_id: params.actorId, p_entry_id: params.entryId,
     p_owner_id: params.ownerId ?? null, p_review_cadence_days: params.reviewCadenceDays ?? null,
     p_last_reviewed_at: params.lastReviewedAt ?? null, p_expires_at: params.expiresAt ?? null,
   });
-  if (error || !data) throw new Error(error?.message || "Could not update content health profile");
-  return data;
 }
