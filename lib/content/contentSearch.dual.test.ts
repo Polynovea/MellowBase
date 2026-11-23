@@ -65,7 +65,7 @@ describeWithDatabase("search before and after a model's reads move to its table"
       if (!created.ok) throw new Error(created.error);
     }
     const run = async (q: string, scoped = true) =>
-      (await searchContent({ workspaceId, query: q, modelId: scoped ? modelId : undefined })).map((hit: { entry_id: string }) => hit.entry_id);
+      (await searchContent({ workspaceId, query: q, modelId: scoped ? modelId : undefined })).map((hit: { entry_id: string | null }) => String(hit.entry_id));
 
     const before = new Map<string, string[]>();
     for (const { q } of QUERIES) before.set(q, await run(q));
