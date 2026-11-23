@@ -1,6 +1,7 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as mlGovernanceData from "@/lib/intelligence/mlGovernanceData";
 import { getOperationalLearningPolicy } from "@/lib/intelligence/operationalMlService";
-import { logPlatformEvent } from "@/lib/platform/audit";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function calibrationError(rows: Array<{ probability: number; outcome: number }>, bins = 5) {
   if (!rows.length) return null;
@@ -18,26 +19,10 @@ function calibrationError(rows: Array<{ probability: number; outcome: number }>,
 }
 
 export async function enforceOperationalLearningRetention(workspaceId: string) {
-  const db = createServiceRoleClient();
   const policy = await getOperationalLearningPolicy(workspaceId);
   const cutoff = new Date(Date.now() - Number(policy.retention_days) * 86400000).toISOString();
-  const [snapshots, predictions, events, evaluations] = await Promise.all([
-    db.from("operational_feature_snapshots").delete().eq("workspace_id", workspaceId).lt("captured_at", cutoff).select("id"),
-    db.from("operational_predictions").delete().eq("workspace_id", workspaceId).lt("created_at", cutoff).select("id"),
-    db.from("operational_events").delete().eq("workspace_id", workspaceId).lt("occurred_at", cutoff).select("id"),
-    db.from("operational_model_evaluations").delete().eq("workspace_id", workspaceId).lt("evaluated_at", cutoff).select("id"),
-  ]);
-  for (const result of [snapshots, predictions, events, evaluations]) if (result.error) throw new Error(result.error.message);
-  return {
-    cutoff,
-    retentionDays: policy.retention_days,
-    deleted: {
-      featureSnapshots: snapshots.data?.length ?? 0,
-      predictions: predictions.data?.length ?? 0,
-      operationalEvents: events.data?.length ?? 0,
-      evaluations: evaluations.data?.length ?? 0,
-    },
-  };
+  const deleted = await mlGovernanceData.deleteExpiredLearningData(workspaceId, cutoff);
+  return { cutoff, retentionDays: policy.retention_days, deleted };
 }
 
 export async function recordPredictionFeedback(params: {
@@ -49,14 +34,9 @@ export async function recordPredictionFeedback(params: {
   reason?: string | null;
   metadata?: Record<string, unknown>;
 }) {
-  const db = createServiceRoleClient();
-  const { data: prediction } = await db.from("operational_predictions")
-    .select("id,environment_id,status,model_id,model_version_id,feature_snapshot_id")
-    .eq("workspace_id", params.workspaceId)
-    .eq("id", params.predictionId)
-    .maybeSingle();
+  const prediction = UUID.test(params.predictionId) ? await mlGovernanceData.predictionForFeedback(params.workspaceId, params.predictionId) : null;
   if (!prediction) throw Object.assign(new Error("Prediction not found"), { status: 404 });
-  const { data, error } = await db.from("operational_prediction_feedback").insert({
+  return mlGovernanceData.insertFeedback({
     workspace_id: params.workspaceId,
     prediction_id: params.predictionId,
     feedback_type: params.feedbackType,
@@ -64,9 +44,7 @@ export async function recordPredictionFeedback(params: {
     reason: params.reason?.slice(0, 2000) ?? null,
     metadata_json: params.metadata ?? {},
     created_by: params.actorId,
-  }).select().single();
-  if (error || !data) throw new Error(error?.message || "Could not record prediction feedback");
-  await logPlatformEvent({
+  }, {
     workspaceId: params.workspaceId,
     actorAdminUserId: params.actorId,
     action: "operational.ml.feedback.recorded",
@@ -74,29 +52,15 @@ export async function recordPredictionFeedback(params: {
     entityId: params.predictionId,
     metadata: { feedbackType: params.feedbackType, modelVersionId: prediction.model_version_id, featureSnapshotId: prediction.feature_snapshot_id },
   });
-  return data;
 }
 
 export async function refreshOnlineModelEvaluations(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
-  const { data: predictions, error } = await db.from("operational_predictions")
-    .select("id,prediction_key,model_version_id,probability,estimate,interval_lower,interval_upper")
-    .eq("workspace_id", workspaceId)
-    .eq("environment_id", environmentId)
-    .not("model_version_id", "is", null)
-    .order("created_at", { ascending: false })
-    .limit(1000);
-  if (error) throw new Error(error.message);
-  const ids = (predictions ?? []).map((row) => row.id);
-  if (!ids.length) return { evaluations: [] };
-  const { data: outcomes, error: outcomeError } = await db.from("operational_prediction_outcomes")
-    .select("prediction_id,outcome_json,evaluation_json,observed_at")
-    .eq("workspace_id", workspaceId)
-    .in("prediction_id", ids);
-  if (outcomeError) throw new Error(outcomeError.message);
-  const outcomeByPrediction = new Map((outcomes ?? []).map((row) => [row.prediction_id, row]));
+  if (!UUID.test(environmentId)) return { evaluations: [] };
+  const { predictions, outcomes } = await mlGovernanceData.evaluationInputs(workspaceId, environmentId);
+  if (!predictions.length) return { evaluations: [] };
+  const outcomeByPrediction = new Map(outcomes.map((row) => [row.prediction_id, row]));
   const groups = new Map<string, Array<{ prediction: any; outcome: any }>>();
-  for (const prediction of predictions ?? []) {
+  for (const prediction of predictions) {
     const outcome = outcomeByPrediction.get(prediction.id);
     if (!outcome || !prediction.model_version_id) continue;
     const rows = groups.get(prediction.model_version_id) ?? [];
@@ -114,7 +78,7 @@ export async function refreshOnlineModelEvaluations(workspaceId: string, environ
     const intervalCoverage = intervalRows.length ? intervalRows.filter((row) => row.inside).length / intervalRows.length : null;
     const reviewRequired = rows.length >= 20 && ((brier != null && brier > 0.30) || (ece != null && ece > 0.15) || (intervalCoverage != null && intervalCoverage < 0.60));
     const metrics = { sampleCount: rows.length, brierScore: brier, expectedCalibrationError: ece, meanAbsoluteErrorMs: mae, intervalCoverage, reviewRequired };
-    const { data: evaluation, error: insertError } = await db.from("operational_model_evaluations").insert({
+    const evaluation = await mlGovernanceData.insertEvaluation({
       workspace_id: workspaceId,
       model_version_id: modelVersionId,
       evaluation_kind: "online",
@@ -122,19 +86,12 @@ export async function refreshOnlineModelEvaluations(workspaceId: string, environ
       metrics_json: metrics,
       distribution_json: { environmentId, reviewRequired, automaticRetraining: false },
       status: reviewRequired ? "warning" : "recorded",
-    }).select().single();
-    if (insertError || !evaluation) throw new Error(insertError?.message || "Could not persist online model evaluation");
+    });
     evaluations.push(evaluation);
   }
   return { evaluations };
 }
 
 export async function listOperationalMlFeedback(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
-  const { data: predictions } = await db.from("operational_predictions").select("id").eq("workspace_id", workspaceId).eq("environment_id", environmentId).limit(500);
-  const ids = (predictions ?? []).map((item) => item.id);
-  if (!ids.length) return [];
-  const { data, error } = await db.from("operational_prediction_feedback").select("*").eq("workspace_id", workspaceId).in("prediction_id", ids).order("created_at", { ascending: false }).limit(100);
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return UUID.test(environmentId) ? mlGovernanceData.feedbackFor(workspaceId, environmentId) : [];
 }

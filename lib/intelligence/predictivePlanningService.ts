@@ -1,7 +1,7 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as mlData from "@/lib/intelligence/mlData";
+import * as mlGovernanceData from "@/lib/intelligence/mlGovernanceData";
 import { sha256Canonical } from "@/lib/intelligence/operationalCanonical";
 import { captureOperationalFeatureSnapshot, ensureOperationalModelRegistry, getOperationalLearningPolicy } from "@/lib/intelligence/operationalMlService";
-import { logPlatformEvent } from "@/lib/platform/audit";
 
 const CLASSIFICATION_ORDER: Record<string, number> = {
   safe: 0,
@@ -26,14 +26,12 @@ interface Scenario {
 }
 
 async function loadFamily(workspaceId: string, family: Family) {
-  const db = createServiceRoleClient();
-  const { data: model } = await db.from("operational_model_registry").select("*").eq("workspace_id", workspaceId).eq("model_family", family).eq("enabled", true).maybeSingle();
+  const { model, version } = await mlData.deployedModelRows(workspaceId, family);
   if (!model) return { model: null, version: null, integrity: "unavailable" as const };
-  const { data: version } = await db.from("operational_model_versions").select("*").eq("model_id", model.id).eq("status", "deployed").maybeSingle();
   if (!version) return { model, version: null, integrity: "unavailable" as const };
   const expected = sha256Canonical({ modelKey: model.model_key, version: version.version, technique: version.technique, artifact: version.artifact_json, featureContract: version.feature_contract_json });
   if (expected !== version.integrity_sha256) {
-    await db.from("operational_model_versions").update({ status: "failed" }).eq("id", version.id).eq("status", "deployed");
+    await mlData.failDeployedVersion(workspaceId, version.id);
     return { model, version: null, integrity: "failed" as const };
   }
   return { model, version, integrity: "verified" as const };
@@ -60,7 +58,7 @@ async function persistScenarioPrediction(params: {
   prediction?: Record<string, unknown>;
   explanation?: Record<string, unknown>;
 }) {
-  const { data, error } = await createServiceRoleClient().from("operational_predictions").insert({
+  return mlData.insertPrediction({
     workspace_id: params.workspaceId,
     environment_id: params.environmentId,
     model_id: params.model.id,
@@ -81,9 +79,7 @@ async function persistScenarioPrediction(params: {
     prediction_json: { family: params.family, scenarioKey: params.scenario.key, ...(params.prediction ?? {}) },
     explanation_json: { deterministicClassification: params.scenario.deterministicClassification, deterministicSafetyAuthority: true, ...(params.explanation ?? {}) },
     expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-  }).select().single();
-  if (error || !data) throw new Error(error?.message || "Could not persist scenario prediction");
-  return data;
+  });
 }
 
 function scenariosFromPlan(plan: any, nodes: any[]): Scenario[] {
@@ -140,15 +136,13 @@ function metricByFamily(predictions: any[], family: Family) {
 }
 
 export async function compareOperationalPlanScenarios(params: { workspaceId: string; environmentId: string; planId: string; actorId: string }) {
-  const db = createServiceRoleClient();
   await ensureOperationalModelRegistry(params.workspaceId);
-  const [{ data: plan }, { data: nodes }, policy] = await Promise.all([
-    db.from("operational_change_plans").select("*").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("id", params.planId).maybeSingle(),
-    db.from("operational_change_plan_nodes").select("*").eq("plan_id", params.planId).order("ordinal"),
+  const [{ plan, nodes }, policy] = await Promise.all([
+    mlGovernanceData.planWithNodes(params.workspaceId, params.environmentId, params.planId),
     getOperationalLearningPolicy(params.workspaceId),
   ]);
   if (!plan) throw Object.assign(new Error("Operational plan not found"), { status: 404 });
-  const scenarios = scenariosFromPlan(plan, nodes ?? []);
+  const scenarios = scenariosFromPlan(plan, nodes);
   const snapshot = await captureOperationalFeatureSnapshot({ workspaceId: params.workspaceId, environmentId: params.environmentId, featureFamily: "plan_comparison_v1" });
   const familyState = new Map<Family, Awaited<ReturnType<typeof loadFamily>>>();
   for (const family of FAMILIES) familyState.set(family, await loadFamily(params.workspaceId, family));
@@ -231,27 +225,19 @@ export async function compareOperationalPlanScenarios(params: { workspaceId: str
     rankingMethod: "lexicographic: deterministic classification first; calibrated risk, impact and duration only rank equally safe deterministic choices",
     createdAt: new Date().toISOString(),
   };
-  const { data: comparison, error } = await db.from("operational_plan_comparisons").insert({ workspace_id: params.workspaceId, environment_id: params.environmentId, plan_id: plan.id, comparison_json: document, created_by: params.actorId }).select().single();
-  if (error || !comparison) throw new Error(error?.message || "Could not persist operational plan comparison");
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.plan.compared", entityType: "operational_change_plan", entityId: plan.id, metadata: { comparisonId: comparison.id, scenarioCount: rendered.length, rankedActionableScenarioKeys: rankedKeys, mlEnabled: Boolean(policy.local_learning_enabled) } });
-  return comparison;
+  return mlGovernanceData.insertComparison({ workspace_id: params.workspaceId, environment_id: params.environmentId, plan_id: plan.id, comparison_json: document, created_by: params.actorId }, (comparison) => ({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.plan.compared", entityType: "operational_change_plan", entityId: plan.id, metadata: { comparisonId: comparison.id, scenarioCount: rendered.length, rankedActionableScenarioKeys: rankedKeys, mlEnabled: Boolean(policy.local_learning_enabled) } }));
 }
 
 export async function selectOperationalPlanScenario(params: { workspaceId: string; environmentId: string; comparisonId: string; scenarioKey: string; actorId: string; reason?: string | null }) {
-  const db = createServiceRoleClient();
-  const { data: comparison } = await db.from("operational_plan_comparisons").select("*").eq("workspace_id", params.workspaceId).eq("environment_id", params.environmentId).eq("id", params.comparisonId).maybeSingle();
+  const comparison = await mlGovernanceData.comparisonById(params.workspaceId, params.environmentId, params.comparisonId);
   if (!comparison) throw Object.assign(new Error("Plan comparison not found"), { status: 404 });
   const scenarios = Array.isArray(comparison.comparison_json?.scenarios) ? comparison.comparison_json.scenarios : [];
   if (!scenarios.some((item: any) => item.key === params.scenarioKey)) throw Object.assign(new Error("Scenario is not part of this immutable comparison"), { status: 409 });
   const now = new Date().toISOString();
-  const { data, error } = await db.from("operational_plan_comparisons").update({ selected_scenario_key: params.scenarioKey, selection_reason: params.reason?.slice(0, 2000) ?? null, selected_by: params.actorId, selected_at: now, updated_at: now }).eq("id", comparison.id).select().single();
-  if (error || !data) throw new Error(error?.message || "Could not record selected plan scenario");
-  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.plan.scenario_selected", entityType: "operational_plan_comparison", entityId: comparison.id, metadata: { planId: comparison.plan_id, scenarioKey: params.scenarioKey } });
-  return data;
+  return mlGovernanceData.selectScenario(params.workspaceId, comparison.id, { selected_scenario_key: params.scenarioKey, selection_reason: params.reason?.slice(0, 2000) ?? null, selected_by: params.actorId, selected_at: now, updated_at: now },
+    { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "operational.plan.scenario_selected", entityType: "operational_plan_comparison", entityId: comparison.id, metadata: { planId: comparison.plan_id, scenarioKey: params.scenarioKey } });
 }
 
 export async function listOperationalPlanComparisons(workspaceId: string, environmentId: string) {
-  const { data, error } = await createServiceRoleClient().from("operational_plan_comparisons").select("*").eq("workspace_id", workspaceId).eq("environment_id", environmentId).order("created_at", { ascending: false }).limit(100);
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return mlGovernanceData.listComparisons(workspaceId, environmentId);
 }
