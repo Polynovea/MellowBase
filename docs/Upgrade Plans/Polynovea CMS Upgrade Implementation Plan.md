@@ -183,6 +183,25 @@ Taxonomy (24 calls) moved in phase 0. The delivery worker already uses `pg` dire
 
 All merged at `cb5aece`. On the stack tip: the type-check and lint pass, 802 unit tests and 133 dual-backend tests pass, and the build passes. `npm audit` and Semgrep are clean. Then #30 to #32 merged at `41a8e39`: 819 unit tests and 164 dual-backend tests pass. Then #34 and #35 merged at `27a81cf`: 819 unit tests pass, and 171 dual-backend tests pass on two runs in a row, each straight after a database reset. Then #37 and #38 merged: 819 unit tests and 189 dual-backend tests pass. Then #40 and #41 merged: 819 unit tests and 207 dual-backend tests pass. Then #43 and #44 merged, completing wave 2: 819 unit tests and 223 dual-backend tests pass. Wave 3 has started: #46 merged, with 819 unit tests and 232 dual-backend tests passing. Then #48 and #49 merged: 819 unit tests and 244 dual-backend tests pass. Then #51 and #52 merged: 819 unit tests and 254 dual-backend tests pass. The four content groups the plan names are done. Then #54 to #56 merged: 825 unit tests and 271 dual-backend tests pass. Then #58 to #62 merged, completing wave 3: 831 unit tests and 294 dual-backend tests pass. Then #64 to #66 merged: 831 unit tests and 312 dual-backend tests pass. Then #68 and #69 merged: 831 unit tests and 322 dual-backend tests pass. Then #71 to #73 merged, completing wave 4: 831 unit tests and 337 dual-backend tests pass. Then the rest of Phase 1 merged as one PR, #86, after its exit check passed on PostgreSQL 15, 16 and 17 with no Supabase services. **Phase 1 is complete.** Next: Phase 2, the setup wizard, as one PR from `sroy/phase-2`.
 
+### Phase 2 progress (24 November 2026)
+
+Phase 2 was built on Payal's laptop in four lanes (gate-config, setup-code, db-step, owner-step) and ships as one PR, #87.
+
+| Lane | What it adds |
+| --- | --- |
+| gate-config | Migration 0072 (`installation` row, backfilled for existing installs by a seed-aware "already installed" rule); setup mode with a route gate, pool guard and `/api/health`; the master key ring and `config.enc` (ADR-006), with the legacy `CMS_CONFIG_ENCRYPTION_KEY` used as the ring when it is the only key; `keys reencrypt` |
+| setup-code | One-time setup code printed at boot, cleared on first use; attempt limiter keyed on the real socket peer; forwarded headers believed only from `POLYNOVEA_TRUSTED_PROXIES`; plain HTTP only over a real loopback tunnel |
+| db-step | Database host checks through `guardedNetwork` (resolve once, pin, private ranges only for RDS, Azure or the allowlist); verify-full TLS with the shipped Amazon RDS and Azure roots; roles and migrations with live progress; refuses a database that already holds an install or whose roles serve another database; one run per install |
+| owner-step | Owner account with mandatory two-step enrolment and recovery codes, the organisation and first workspace, the `installation` row in the owner's transaction, optional starter content; `bootstrap:admin` writes the row too |
+
+A security review of the merged lanes found two blockers (setup could open on a live install; the wizard could take over another install's database) and four should-fix items. All were fixed with tests before merge.
+
+Exit check on `sroy/phase-2`: 1,422 unit tests, build, `npm audit` and Semgrep clean; on PostgreSQL 15, 16 and 17: 277 database tests, an owner created through `bootstrap:admin`, the app reporting `running` with `/setup` closed, and all 26 certification scripts. The six browser acceptance tests run next on Payal's laptop against Docker, then on the first Azure deployment.
+
+Carried forward: "On this server" waits for Phase 5's image (`localServerHostForThisImage()`); the `polynovea` workspace slug is hard-coded in `lib/platform/actor.ts` and `adminUserService.postgres.ts`; a `config.enc` in `POLYNOVEA_CONFIG_DIR` takes priority over `DATABASE_URL` in `db:migrate`, so dev and test config folders stay empty.
+
+From Phase 3 on, every test run, including each phase's exit check, runs on Payal's laptop. Next: Phases 3 and 5 in parallel, then Phase 4, one PR per phase.
+
 The shared audit logger goes first because every area writes through it. Phase 0 found that it still uses Supabase, so on a database without Supabase the audit events of moved areas are silently dropped. No area counts as moved until its audit events land. The direct-path logger now exists (`lib/platform/audit.postgres.ts`, merged in PR #17: audit row, webhook deliveries and delivery jobs in the caller's transaction) and taxonomy uses it; wave 1 makes every other area call it.
 
 **How each area moves**
@@ -371,6 +390,7 @@ This runs in parallel with phases 3 and 4 because it only depends on the wizard 
 **Release package (weeks 20–22)**
 
 - [ ] A container image with the Next.js standalone build, the worker and PostgreSQL 16 (used only by the "on this server" option), run as a non-root user. The base image needs Node 24.7 or later for the password hashing.
+- [ ] The setup wizard's SSH-tunnel route needs the app bound to loopback: Phase 2's guards accept plain HTTP only when the server is bound to 127.0.0.1 and the peer is loopback. With Docker's published ports the peer is the Docker gateway, so the image offers host networking with `HOSTNAME=127.0.0.1` for the tunnel route, or requires HTTPS through a trusted proxy (`POLYNOVEA_TRUSTED_PROXIES`).
 - [ ] A VM image built from it for AWS (AMI) and Azure (managed image), with IMDSv2 required, automatic security updates and the data disk mounted at `/var/lib/polynovea`.
 - [ ] Images signed with cosign and published with an SBOM. Images are built and signed with a key from a local release machine by a script, not by GitHub Actions (owner's rule: no organisation Actions minutes). Keyless signing would need Actions' identity, so it is not used.
 
