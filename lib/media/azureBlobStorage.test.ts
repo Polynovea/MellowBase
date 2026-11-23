@@ -42,9 +42,16 @@ describe("Azure Blob endpoint", () => {
     }
   });
 
-  it("allows local HTTP (Azurite) only in Local environments", async () => {
+  it("allows Azurite on loopback in the same environments that accept connection strings", async () => {
     await expect(assertBlobEndpoint("http://127.0.0.1:10000/dev", "local")).resolves.toBeUndefined();
-    await expect(assertBlobEndpoint("http://127.0.0.1:10000/dev", "development")).rejects.toThrow();
+    await expect(assertBlobEndpoint("http://127.0.0.1:10000/dev", "development")).resolves.toBeUndefined();
+    await expect(assertBlobEndpoint("http://localhost:10000/dev", "development")).resolves.toBeUndefined();
+    for (const kind of ["staging", "production", "custom"] as const) {
+      await expect(assertBlobEndpoint("http://127.0.0.1:10000/dev", kind)).rejects.toThrow();
+    }
+    // Development still refuses other private or non-Azure hosts.
+    await expect(assertBlobEndpoint("http://10.0.0.5:10000/dev", "development")).rejects.toThrow();
+    await expect(assertBlobEndpoint("https://internal.corp", "development")).rejects.toThrow();
   });
 });
 

@@ -1,10 +1,11 @@
-import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, statfs, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { buffer } from "node:stream/consumers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  inFlightUploadBytes,
   keySegments,
   lexicalPath,
   localStorageRoot,
@@ -129,10 +130,30 @@ describe("local disk objects", () => {
     await expect(openLocalObject(root, key)).rejects.toThrow();
   });
 
-  it("probes a writable root and reports free space", async () => {
+  it("probes a writable root (including a hard link, which uploads rely on) and reports free space", async () => {
     const probe = await probeLocalStorage(root, noReserve);
     expect(probe.availableBytes).toBeGreaterThan(0);
     expect(await readdir(path.join(root, ".polynovea-verification"))).toEqual([]);
+  });
+
+  it("counts in-flight uploads against free space and releases them, on success and on failure", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slow = new Readable({ read() {} });
+    const writing = writeLocalObject(root, key, slow, { expectedBytes: 5000, env: noReserve });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(inFlightUploadBytes()).toBe(5000);
+    // A second upload is checked against free space minus the 5000 bytes already promised.
+    const info = await statfs(root);
+    const available = Number(info.bavail) * Number(info.bsize);
+    const reserve = { POLYNOVEA_STORAGE_MIN_FREE_BYTES: String(available - 6000) };
+    await expect(writeLocalObject(root, `${ws}/general/2-b.png`, Buffer.alloc(2000), { env: reserve })).rejects.toThrow(/free space/);
+    void gate.then(() => { slow.push(Buffer.alloc(5000)); slow.push(null); });
+    release();
+    await writing;
+    expect(inFlightUploadBytes()).toBe(0);
+    await expect(writeLocalObject(root, `${ws}/general/3-c.png`, new Readable({ read() { this.destroy(new Error("gone")); } }), { expectedBytes: 10, env: noReserve })).rejects.toThrow();
+    expect(inFlightUploadBytes()).toBe(0);
   });
 });
 
@@ -159,6 +180,7 @@ describe("served content type", () => {
     const ftyp = Buffer.from("\0\0\0\x18ftypqt  ", "latin1");
     expect(servedContentType("x/a.mov", ftyp).contentType).toBe("video/quicktime");
     expect(servedContentType("x/a.mp4", ftyp).contentType).toBe("video/mp4");
-    expect(servedContentType("x/a.pdf", Buffer.from("%PDF-1.7")).contentType).toBe("application/pdf");
+    // PDFs download: the sandbox CSP breaks browser PDF viewers.
+    expect(servedContentType("x/a.pdf", Buffer.from("%PDF-1.7"))).toEqual({ contentType: "application/pdf", inline: false });
   });
 });

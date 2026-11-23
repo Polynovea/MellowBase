@@ -5,13 +5,15 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeLocalObject } from "@/lib/media/localDiskStorage";
-import { signedReadUrl, signedUploadUrl, signStorageToken } from "@/lib/media/signedStorageUrls";
+import { mediaLinkUrl, signedReadUrl, signedUploadUrl, signStorageToken } from "@/lib/media/signedStorageUrls";
 
 const getStorageProvider = vi.fn();
 vi.mock("@/lib/media/storageProvider", () => ({ getStorageProvider: (...args: unknown[]) => getStorageProvider(...args) }));
 
 const { PUT } = await import("@/app/api/storage/upload/[token]/route");
 const { GET, HEAD } = await import("@/app/api/storage/files/[token]/[name]/route");
+const media = await import("@/app/api/storage/media/[token]/[name]/route");
+const { AzureStorageError } = await import("@/lib/media/azureBlobStorage");
 
 const ws = "11111111-1111-4111-8111-111111111111";
 const providerKey = "connection:22222222-2222-4222-8222-222222222222";
@@ -99,6 +101,24 @@ describe("PUT /api/storage/upload/[token]", () => {
     expect(await readdir(path.join(root, ws, "general"))).toEqual([]);
   });
 
+  it("releases the request stream when the adapter fails before reading it", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(new Uint8Array(png)); }, cancel() { cancelled = true; } });
+    getStorageProvider.mockResolvedValue({ key: providerKey, writeStream: async () => { throw new Error("Not enough free space on the storage disk for this upload"); } });
+    const response = await put(uploadToken(key, png.length), body, { "content-type": "image/png" });
+    expect(response.status).toBe(500);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(cancelled).toBe(true);
+  });
+
+  it("never returns the storage service's own error text", async () => {
+    getStorageProvider.mockResolvedValue({ key: providerKey, writeStream: async () => { throw new AzureStorageError(403, "abcd1234"); } });
+    const response = await put(uploadToken(key, png.length), png, { "content-type": "image/png" });
+    expect(response.status).toBe(502);
+    const json = await response.json();
+    expect(json.error).toBe("The storage service could not store the upload (ref abcd1234)");
+  });
+
   it("refuses when the token's connection resolves to another provider", async () => {
     getStorageProvider.mockResolvedValue({ key: "connection:other", writeStream: vi.fn() });
     expect((await put(uploadToken(key, png.length), png, { "content-type": "image/png" })).status).toBe(409);
@@ -168,5 +188,59 @@ describe("GET /api/storage/files/[token]/[name]", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/octet-stream");
     expect(response.headers.get("content-disposition")).toBe("attachment");
+  });
+});
+
+describe("GET /api/storage/media/[token]/[name] (permanent content links)", () => {
+  const key = `${ws}/general/1-a.png`;
+
+  function get(url: string, headers: Record<string, string> = {}) {
+    const parts = url.split("/");
+    const token = parts[parts.length - 2];
+    return media.GET(new Request(`http://cms.test${url}`, { headers }), { params: Promise.resolve({ token, name: "1-a.png" }) });
+  }
+
+  it("serves local-disk media without a database lookup and keeps working long after read links expire", async () => {
+    await writeLocalObject(root, key, png);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-23T10:00:00Z"));
+      const link = mediaLinkUrl({ providerKey, workspaceId: ws, key, servedFromDisk: true });
+      vi.setSystemTime(new Date("2027-11-23T10:00:00Z"));
+      const response = await get(link);
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer()).equals(png)).toBe(true);
+      expect(response.headers.get("cache-control")).toBe("public, max-age=86400");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(getStorageProvider).not.toHaveBeenCalled();
+  });
+
+  it("redirects other providers to a freshly signed read URL", async () => {
+    const resolveReadUrl = vi.fn(async () => "https://bucket.example.com/x.png?X-Amz-Signature=fresh");
+    getStorageProvider.mockResolvedValue({ key: providerKey, resolveReadUrl });
+    const response = await get(mediaLinkUrl({ providerKey, workspaceId: ws, key, servedFromDisk: false }));
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("https://bucket.example.com/x.png?X-Amz-Signature=fresh");
+    expect(response.headers.get("cache-control")).toBe("private, max-age=300");
+    expect(getStorageProvider).toHaveBeenCalledWith({ workspaceId: ws, storageProviderKey: providerKey });
+    expect(resolveReadUrl).toHaveBeenCalledWith(key);
+  });
+
+  it("404s when the object or its connection is gone, and refuses tampered or non-media tokens", async () => {
+    expect((await get(mediaLinkUrl({ providerKey, workspaceId: ws, key, servedFromDisk: true }))).status).toBe(404);
+    getStorageProvider.mockRejectedValue(new Error("The storage connection recorded for this asset no longer exists"));
+    expect((await get(mediaLinkUrl({ providerKey, workspaceId: ws, key, servedFromDisk: false }))).status).toBe(404);
+    expect((await get(`${signedReadUrl(key)}`)).status).toBe(403);
+    const other = mediaLinkUrl({ providerKey, workspaceId: ws, key: `${ws}/general/other.png`, servedFromDisk: true });
+    const forged = other.replace(/media\/[^.]+/, `media/${Buffer.from(JSON.stringify({ v: 1, o: "media", p: providerKey, w: ws, k: key, d: "local" })).toString("base64url")}`);
+    expect((await get(forged)).status).toBe(403);
+  });
+
+  it("refuses a link whose key is outside its workspace", async () => {
+    const link = mediaLinkUrl({ providerKey, workspaceId: ws, key: "33333333-3333-4333-8333-333333333333/general/a.png", servedFromDisk: true });
+    expect((await get(link)).status).toBe(404);
   });
 });

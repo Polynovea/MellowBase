@@ -158,6 +158,29 @@ export class AzureBlobExistsError extends Error {
   }
 }
 
+/**
+ * Azure service errors carry the service's own text (account, container, request IDs, auth details).
+ * Callers return error messages to API clients, so every store operation replaces them with a generic
+ * error that keeps only the HTTP status; the original is logged under a reference.
+ */
+export class AzureStorageError extends Error {
+  constructor(readonly statusCode: number | undefined, readonly reference: string) {
+    super(`Azure Blob Storage request failed${statusCode ? ` (HTTP ${statusCode})` : ""} (ref ${reference})`);
+    this.name = "AzureStorageError";
+  }
+}
+
+async function azureCall<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof AzureBlobExistsError || !(error instanceof RestError)) throw error;
+    const reference = randomUUID().slice(0, 8);
+    console.error("[storage] Azure Blob %s failed (ref %s)", operation, reference, error);
+    throw new AzureStorageError(error.statusCode, reference);
+  }
+}
+
 function blobName(key: string) {
   keySegments(key);
   return key;
@@ -168,8 +191,9 @@ function blobName(key: string) {
  * Azure's DNS, so they may resolve to a private address (a Storage private endpoint in the VM's
  * network, the normal production setup) without opening a path to arbitrary internal services. The
  * generic outbound check would refuse a private endpoint, and the SDK's own HTTP stack is not the
- * guarded one, so an allowlist of hosts is the stronger rule here. Local environments (Azurite) use
- * the generic check, which allows local HTTP.
+ * guarded one, so an allowlist of hosts is the stronger rule here. Local environments use the generic
+ * check, which allows local HTTP. Development environments may also use Azurite on loopback, matching
+ * the connection-string rule (AZURE_DEV_ONLY_ENVIRONMENTS); staging and production may not.
  */
 export async function assertBlobEndpoint(raw: string, environmentKind: EnvironmentKind) {
   if (environmentKind === "local") {
@@ -182,8 +206,12 @@ export async function assertBlobEndpoint(raw: string, environmentKind: Environme
   } catch {
     throw new Error("Azure Blob endpoint is not a valid URL");
   }
-  const host = url.hostname.toLowerCase();
-  if (url.protocol !== "https:" || url.username || url.password || url.port || !AZURE_BLOB_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (url.username || url.password) throw new Error("Credentials must not be embedded in the Azure Blob endpoint");
+  // Development environments accept connection strings (AZURE_DEV_ONLY_ENVIRONMENTS), so they also
+  // accept the emulator a connection string points at: Azurite on this machine's loopback address.
+  if (AZURE_DEV_ONLY_ENVIRONMENTS.has(environmentKind) && ["127.0.0.1", "::1", "localhost"].includes(host) && (url.protocol === "http:" || url.protocol === "https:")) return;
+  if (url.protocol !== "https:" || url.port || !AZURE_BLOB_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
     throw new Error("Azure Blob endpoint must be https://<account>.blob.core.windows.net (or a sovereign-cloud blob host)");
   }
 }
@@ -224,28 +252,32 @@ export async function createAzureBlobStore(settings: AzureBlobSettings, environm
     async put(key, body, contentType) {
       const blob = container.getBlockBlobClient(blobName(key));
       const options = { blobHTTPHeaders: { blobContentType: contentType }, conditions: { ifNoneMatch: "*" } };
-      try {
-        if (Buffer.isBuffer(body)) await blob.uploadData(body, options);
-        else await blob.uploadStream(body, UPLOAD_BLOCK_BYTES, UPLOAD_CONCURRENCY, options);
-      } catch (error) {
-        if (error instanceof RestError && (error.statusCode === 409 || error.statusCode === 412)) throw new AzureBlobExistsError();
-        throw error;
-      }
+      await azureCall("upload", async () => {
+        try {
+          if (Buffer.isBuffer(body)) await blob.uploadData(body, options);
+          else await blob.uploadStream(body, UPLOAD_BLOCK_BYTES, UPLOAD_CONCURRENCY, options);
+        } catch (error) {
+          if (error instanceof RestError && (error.statusCode === 409 || error.statusCode === 412)) throw new AzureBlobExistsError();
+          throw error;
+        }
+      });
     },
     async remove(key) {
-      await container.getBlockBlobClient(blobName(key)).deleteIfExists({ deleteSnapshots: "include" });
+      const name = blobName(key);
+      await azureCall("delete", () => container.getBlockBlobClient(name).deleteIfExists({ deleteSnapshots: "include" }));
     },
     async readUrl(key) {
       const name = blobName(key);
       if (settings.publicUrl) return `${settings.publicUrl}/${encodeKey(name)}`;
-      const query = readSasQuery({ container: settings.container, blobName: name, signer: await signer(), allowHttp });
+      const query = readSasQuery({ container: settings.container, blobName: name, signer: await azureCall("delegation key", signer), allowHttp });
       return `${container.getBlockBlobClient(name).url}?${query}`;
     },
     async read(key) {
-      return container.getBlockBlobClient(blobName(key)).downloadToBuffer();
+      const name = blobName(key);
+      return azureCall("read", () => container.getBlockBlobClient(name).downloadToBuffer());
     },
     async checkSigning() {
-      await signer();
+      await azureCall("delegation key", signer);
     },
   };
 }
