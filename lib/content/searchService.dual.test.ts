@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import { deleteSavedSearch, listSavedSearches, saveSearch, searchContent } from "@/lib/content/searchService";
 import { createModel } from "@/lib/schema/modelService";
 
-const recorder = createRecorder();
-
-describeBothBackends(["content", "schema"], "content search and saved searches", (backend) => {
+describeWithDatabase("content search and saved searches", (backend) => {
   it("ranks and filters search results the same way", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const model = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Doc", apiKey: "doc", fields: [{ key: "title", label: "Title", type: "text", required: true }, { key: "body", label: "Body", type: "text" }] } });
@@ -24,7 +21,6 @@ describeBothBackends(["content", "schema"], "content search and saved searches",
     expect(await searchContent({ workspaceId, query: "tomatoes", status: "published" })).toEqual([]);
     const sorted = await searchContent({ workspaceId, sort: "updated_asc" });
     expect(sorted).toHaveLength(3);
-    recorder.record(backend.name, "search", { hits: hits.map((hit: Record<string, unknown>) => Object.keys(hit).sort()), count: sorted.length });
 
     const other = await backend.createWorkspace();
     expect(await searchContent({ workspaceId: other.workspaceId, query: "kubernetes" })).toEqual([]);
@@ -49,10 +45,5 @@ describeBothBackends(["content", "schema"], "content search and saved searches",
 
     const other = await backend.createWorkspace();
     expect(await listSavedSearches(other.workspaceId, colleague.id)).toEqual([]);
-    recorder.record(backend.name, "saved", { keys: Object.keys(mine).sort() });
   });
-});
-
-describe("search backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

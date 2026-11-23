@@ -1,16 +1,21 @@
-// Starts the local dual-backend databases, applies every migration to both, gives the plain
-// PostgreSQL database its least-privilege app role, and writes .env.test.local.
+// Starts the local test database (plain PostgreSQL) and Azurite, applies every migration, gives the
+// database its least-privilege app role, and writes .env.test.local.
 //
-// Usage: node scripts/dev-db/setup.mjs [--reset | --down]
-//   --reset  drops this checkout's database volumes first (all local test data is lost)
-//   --down   stops this checkout's stack and drops its volumes, then exits
+// Usage: node scripts/dev-db/setup.mjs [--pg=15|16|17] [--with-supabase] [--reset | --down]
+//   --pg=N           PostgreSQL major version for the test database (default 16). Switching versions
+//                    drops this checkout's volumes first, since a data directory belongs to one version.
+//   --with-supabase  also starts the Supabase compatibility services (Supabase's PostgreSQL, PostgREST,
+//                    GoTrue) and migrates them, for the tests that need them: Supabase installs still
+//                    upgrade with these migrations, and the built-in auth imports GoTrue users. Without
+//                    it, `npm run test:dual` leaves those tests out and says so.
+//   --reset          drops this checkout's database volumes first (all local test data is lost)
+//   --down           stops this checkout's stack (every service) and drops its volumes, then exits
 //
 // Each checkout (git worktree) runs its own stack: Compose project `polynovea-dev-<id>` and ports
 // derived from the checkout's path (override with POLYNOVEA_DEV_PORT_BASE before the first run), both
 // recorded in .env.test.local. Sessions in different worktrees used to share one stack, so a reset or
-// a PostgREST restart in one swapped the databases under the other's running tests. Setup also waits
-// until PostgREST serves the newest migration, and the dual tests refuse to start until both
-// databases are on it (lib/db/testing/dualGlobalSetup.ts).
+// a PostgREST restart in one swapped the databases under the other's running tests. The tests refuse
+// to start until the databases are on the newest migration (lib/db/testing/dualGlobalSetup.ts).
 //
 // Local test only. The generated passwords and JWT secret live in .env.test.local (gitignored)
 // and protect containers bound to 127.0.0.1. Never point this script at a real database.
@@ -26,6 +31,11 @@ const envFile = path.join(root, ".env.test.local");
 const composeFile = path.join(root, "scripts", "dev-db", "compose.yml");
 const reset = process.argv.includes("--reset");
 const down = process.argv.includes("--down");
+const withSupabase = process.argv.includes("--with-supabase");
+const SUPPORTED_PG = ["15", "16", "17"];
+const pgArg = process.argv.find((arg) => arg.startsWith("--pg="));
+const pgVersion = pgArg ? pgArg.slice("--pg=".length) : "16";
+if (!SUPPORTED_PG.includes(pgVersion)) throw new Error(`--pg must be one of ${SUPPORTED_PG.join(", ")} (got ${pgVersion})`);
 
 function readEnvFile(file) {
   const values = {};
@@ -56,6 +66,8 @@ const env = {
   POLYNOVEA_DEV_INSTALLER_PASSWORD: existing.POLYNOVEA_DEV_INSTALLER_PASSWORD || secret(),
   POLYNOVEA_DEV_SUPABASE_DB_PASSWORD: existing.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD || secret(),
   POLYNOVEA_DEV_JWT_SECRET: existing.POLYNOVEA_DEV_JWT_SECRET || randomBytes(32).toString("hex"),
+  // Azurite account key for this checkout (Azurite's well-known public key is never used).
+  POLYNOVEA_DEV_AZURITE_KEY: existing.POLYNOVEA_DEV_AZURITE_KEY || randomBytes(64).toString("base64"),
 };
 // This checkout's stack: a stable ID and port block from its path, kept once chosen.
 const checkoutHash = createHash("sha256").update(path.resolve(root).toLowerCase()).digest();
@@ -64,10 +76,12 @@ const portBase = Number(existing.POLYNOVEA_DEV_PORT_BASE || process.env.POLYNOVE
 if (!Number.isInteger(portBase) || portBase < 1024 || portBase > 65000) throw new Error("POLYNOVEA_DEV_PORT_BASE must be an integer between 1024 and 65000");
 const stack = {
   POLYNOVEA_DEV_STACK: stackId,
+  POLYNOVEA_DEV_PG_VERSION: pgVersion,
   POLYNOVEA_DEV_PORT_BASE: String(portBase),
   POLYNOVEA_DEV_PLAIN_PORT: String(portBase),
   POLYNOVEA_DEV_SUPABASE_PORT: String(portBase + 1),
   POLYNOVEA_DEV_GATEWAY_PORT: String(portBase + 2),
+  POLYNOVEA_DEV_AZURITE_PORT: String(portBase + 3),
 };
 const project = `polynovea-dev-${stackId}`;
 const plainHost = `127.0.0.1:${stack.POLYNOVEA_DEV_PLAIN_PORT}`;
@@ -89,14 +103,18 @@ const supabaseAdminUrl = `postgresql://supabase_admin:${env.POLYNOVEA_DEV_SUPABA
 const output = {
   ...env,
   ...stack,
-  // Direct ("postgres") backend: plain PostgreSQL 16, connected as the app role that cannot run DDL.
+  // The test database: plain PostgreSQL, connected as the app role that cannot run DDL.
   POLYNOVEA_TEST_POSTGRES_URL: appUrl,
   POLYNOVEA_TEST_POSTGRES_OWNER_URL: ownerUrl,
-  // Supabase backend: PostgREST over Supabase's PostgreSQL image.
-  POLYNOVEA_TEST_SUPABASE_URL: gatewayUrl,
-  POLYNOVEA_TEST_SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
-  POLYNOVEA_TEST_SUPABASE_ANON_KEY: anonKey,
-  POLYNOVEA_TEST_SUPABASE_DB_URL: supabaseDbUrl,
+  // Supabase compatibility services, only with --with-supabase.
+  ...(withSupabase ? {
+    POLYNOVEA_TEST_SUPABASE_URL: gatewayUrl,
+    POLYNOVEA_TEST_SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
+    POLYNOVEA_TEST_SUPABASE_ANON_KEY: anonKey,
+    POLYNOVEA_TEST_SUPABASE_DB_URL: supabaseDbUrl,
+  } : {}),
+  // Azure Blob adapter tests (lib/media/azureBlobStorage.azurite.test.ts) against Azurite.
+  POLYNOVEA_TEST_AZURITE_CONNECTION_STRING: `DefaultEndpointsProtocol=http;AccountName=polynoveadev;AccountKey=${env.POLYNOVEA_DEV_AZURITE_KEY};BlobEndpoint=http://127.0.0.1:${stack.POLYNOVEA_DEV_AZURITE_PORT}/polynoveadev;`,
 };
 writeFileSync(
   envFile,
@@ -105,18 +123,34 @@ writeFileSync(
   { mode: 0o600 },
 );
 
-const compose = (...args) => execFileSync("docker", ["compose", "-p", project, "-f", composeFile, "--env-file", envFile, ...args], { stdio: "inherit" });
+// Compose lets variables in the calling environment override --env-file, so a shell that sourced an
+// older .env.test.local would start the wrong PostgreSQL version or ports. This run's values win.
+const composeEnv = { ...process.env, ...env, ...stack };
+const compose = (...args) => execFileSync("docker", ["compose", "-p", project, "-f", composeFile, "--env-file", envFile, ...args], { stdio: "inherit", env: composeEnv });
+// Every profile, so --down and --reset also stop Supabase services started by an earlier run.
+const composeAll = (...args) => compose("--profile", "supabase", ...args);
 if (down) {
-  compose("down", "-v");
+  composeAll("down", "-v");
   console.log(`Stopped ${project} and removed its volumes.`);
   process.exit(0);
 }
-if (reset) compose("down", "-v");
-console.log(`Stack ${project}: plain PostgreSQL ${plainHost}, Supabase PostgreSQL ${supabaseHost}, gateway ${gatewayUrl}`);
+const previousVersion = existing.POLYNOVEA_DEV_PG_VERSION || "16";
+if (reset) {
+  composeAll("down", "-v");
+} else if (previousVersion !== pgVersion) {
+  // A PostgreSQL data directory belongs to one major version, and Compose would reuse the old one.
+  console.log(`Switching the test database from PostgreSQL ${previousVersion} to ${pgVersion}: dropping this checkout's volumes first.`);
+  composeAll("down", "-v");
+} else if (!withSupabase) {
+  // Stop Supabase services an earlier --with-supabase run left behind.
+  compose("--profile", "supabase", "stop", "supabase-db", "postgrest", "gotrue", "rest-gateway");
+}
+console.log(`Stack ${project}: PostgreSQL ${pgVersion} ${plainHost}, Azurite 127.0.0.1:${stack.POLYNOVEA_DEV_AZURITE_PORT}${withSupabase ? `, Supabase PostgreSQL ${supabaseHost}, gateway ${gatewayUrl}` : ""}`);
 try {
-  compose("up", "-d", "--wait");
+  if (withSupabase) composeAll("up", "-d", "--wait");
+  else compose("up", "-d", "--wait");
 } catch (error) {
-  throw new Error(`Could not start ${project}. If a port is taken, set POLYNOVEA_DEV_PORT_BASE to a free block of 3 ports and remove POLYNOVEA_DEV_PORT_BASE from .env.test.local.`, { cause: error });
+  throw new Error(`Could not start ${project}. If a port is taken, set POLYNOVEA_DEV_PORT_BASE to a free block of 4 ports and remove POLYNOVEA_DEV_PORT_BASE from .env.test.local.`, { cause: error });
 }
 
 function runMigrations(databaseUrl) {
@@ -176,19 +210,24 @@ await withClient(installerUrl, (client) => bootstrapInstallRoles(client, {
 }));
 runMigrations(ownerUrl);
 
-// Supabase-compatible database: PostgREST logs in as `authenticator` and GoTrue as
-// `supabase_auth_admin` (only supabase_admin may set their passwords).
-await withClient(supabaseAdminUrl, async (client) => {
-  const password = env.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD.replace(/'/g, "''");
-  await client.query(`alter role authenticator with login password '${password}'`);
-  await client.query(`alter role supabase_auth_admin with login password '${password}'`);
-});
-runMigrations(supabaseDbUrl);
-await withClient(supabaseDbUrl, (client) => client.query("notify pgrst, 'reload schema'"));
-compose("restart", "postgrest", "gotrue", "rest-gateway");
-await waitForPostgrest();
+// Supabase compatibility services (--with-supabase): PostgREST logs in as `authenticator` and GoTrue
+// as `supabase_auth_admin` (only supabase_admin may set their passwords).
+if (withSupabase) {
+  await withClient(supabaseAdminUrl, async (client) => {
+    const password = env.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD.replace(/'/g, "''");
+    await client.query(`alter role authenticator with login password '${password}'`);
+    await client.query(`alter role supabase_auth_admin with login password '${password}'`);
+  });
+  runMigrations(supabaseDbUrl);
+  await withClient(supabaseDbUrl, (client) => client.query("notify pgrst, 'reload schema'"));
+  composeAll("restart", "postgrest", "gotrue", "rest-gateway");
+  await waitForPostgrest();
+}
 
-console.log("\nLocal databases ready. Test settings written to .env.test.local.");
+// The version the server actually reports, so a run can never silently test another version.
+const serverVersion = await withClient(adminUrl, async (client) => (await client.query("select version() as version")).rows[0].version);
+if (!serverVersion.startsWith(`PostgreSQL ${pgVersion}.`)) throw new Error(`Asked for PostgreSQL ${pgVersion} but the server reports: ${serverVersion}`);
+console.log(`\nLocal test stack ready: ${serverVersion}${withSupabase ? ", with the Supabase compatibility services" : ""}. Test settings written to .env.test.local.`);
 
 // PostgREST reloads its schema cache asynchronously after a restart; a test that reads through it
 // before that finishes can see errors or stale tables. Wait until it serves the newest migration.

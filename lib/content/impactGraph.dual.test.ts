@@ -1,12 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import { getAssetUsageGraph, getDependencies, getDependents, getImpact } from "@/lib/content/impactGraphService";
 import { createRelease } from "@/lib/content/releaseService";
 import { createModel } from "@/lib/schema/modelService";
-
-const recorder = createRecorder();
 
 async function graph(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -38,7 +35,7 @@ async function graph(backend: BackendFixtures) {
   return { workspaceId, target, source, assetId: asset.id, menuId: menu.id, routeId: route.id, releaseId: (release.data as { id: string }).id };
 }
 
-describeBothBackends(["content", "schema"], "dependency, impact and asset usage graph", (backend) => {
+describeWithDatabase("dependency, impact and asset usage graph", (backend) => {
   it("reads dependencies, dependents, impact and asset usage within the workspace", async () => {
     const g = await graph(backend);
 
@@ -77,15 +74,5 @@ describeBothBackends(["content", "schema"], "dependency, impact and asset usage 
     expect(await getAssetUsageGraph(other.workspaceId, g.assetId)).toEqual([]);
 
     const sortEdges = <T extends { entryId: string; field: string }>(edges: T[] | null) => [...(edges ?? [])].map((e) => ({ ...e, entryId: e.entryId === g.menuId ? "menu" : e.entryId === g.source.id ? "source" : e.entryId === g.target.id ? "target" : e.entryId === g.assetId ? "asset" : "release", targetId: undefined })).sort((a, b) => `${a.entryId}${a.field}`.localeCompare(`${b.entryId}${b.field}`));
-    recorder.record(backend.name, "graph", {
-      dependencies: sortEdges(dependencies),
-      dependents: sortEdges(dependents),
-      impact: { sourceTypeCounts: impact?.sourceTypeCounts, publishedDependents: impact?.publishedDependents, totalImpact: impact?.totalImpact, destinations: impact?.destinations.length },
-      usage: usage.map((u) => ({ title: u.title, fieldKey: u.fieldKey, status: u.status, isPublished: u.isPublished })).sort((a, b) => a.title.localeCompare(b.title)),
-    });
   });
-});
-
-describe("impact graph backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

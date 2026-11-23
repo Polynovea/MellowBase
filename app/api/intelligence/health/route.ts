@@ -3,15 +3,14 @@ import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { createRemediationTask, getContentHealth, queueContentHealthScan, scanContentHealth, updateContentHealthProfile } from "@/lib/content/healthService";
 import { listModels } from "@/lib/schema/modelService";
 import { canActorOperateModel } from "@/lib/schema/modelAccess";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as routeData from "@/lib/http/routeData";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 async function visibleEntryIds(actor: any) {
   const models = await listModels(actor.workspaceId);
   const allowedModels = new Set((await Promise.all(models.map(async (model) => ({ id: model.id, access: await canActorOperateModel(actor, model, "read") })))).filter((item) => item.access.allowed).map((item) => item.id));
   if (!allowedModels.size) return new Set<string>();
-  const { data } = await createServiceRoleClient().from("content_entries").select("id, content_model_id").eq("workspace_id", actor.workspaceId).in("content_model_id", [...allowedModels]);
-  return new Set((data ?? []).map((entry) => entry.id));
+  return new Set(await routeData.entryIdsInModels(actor.workspaceId, [...allowedModels]));
 }
 
 export async function GET(req: Request) {
@@ -26,18 +25,13 @@ export async function GET(req: Request) {
     const tasks = health.tasks.filter(include);
     const profiles = health.profiles.filter((profile) => visible.has(profile.entry_id));
     const visibleIds = [...visible];
-    const db = createServiceRoleClient();
-    const { data: searchDocs } = visibleIds.length ? await db.from("content_search_documents").select("entry_id, search_text, status, locale").eq("workspace_id", auth.data!.actor.workspaceId).in("entry_id", visibleIds) : { data: [] as Array<{ entry_id: string; search_text: string; status: string; locale: string }> };
+    const searchDocs = await routeData.searchDocuments(auth.data!.actor.workspaceId, visibleIds);
     const profileByEntry = new Map(profiles.map((profile) => [profile.entry_id, profile]));
-    const searchByEntry = new Map((searchDocs ?? []).map((row) => [row.entry_id, row]));
+    const searchByEntry = new Map(searchDocs.map((row) => [row.entry_id, row]));
     const stewardship = visibleIds.map((entryId) => ({ entryId, search: searchByEntry.get(entryId) ?? null, profile: profileByEntry.get(entryId) ?? null }));
     const mayAssign = auth.data!.actor.permissions.has("content.entry.edit") || auth.data!.actor.permissions.has("workspace.manage");
     let members: Array<{ id: string; username: string; display_name: string | null; email: string }> = [];
-    if (mayAssign) {
-      const { data: memberRows } = await db.from("workspace_members").select("admin_user_id").eq("workspace_id", auth.data!.actor.workspaceId).eq("status", "active");
-      const ids = (memberRows ?? []).map((row) => row.admin_user_id);
-      if (ids.length) { const { data: users } = await db.from("admin_users").select("id, username, display_name, email").in("id", ids).eq("is_active", true); members = users ?? []; }
-    }
+    if (mayAssign) members = await routeData.activeMemberProfiles(auth.data!.actor.workspaceId);
     const open = findings.filter((item) => ["open", "acknowledged"].includes(item.state));
     const summary = {
       blocking: open.filter((item) => item.severity === "blocking").length,

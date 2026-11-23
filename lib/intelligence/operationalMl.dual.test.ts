@@ -1,13 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import {
   captureOperationalFeatureSnapshot, ensureOperationalModelRegistry, getOperationalLearningPolicy, listOperationalMlOverview, predictOperationalPlan,
   predictRemediationSuccess, recordPlanPredictionOutcomes, trainSupportedOperationalModels, updateOperationalLearningPolicy,
 } from "@/lib/intelligence/operationalMlService";
-
-const recorder = createRecorder();
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -36,7 +33,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, environmentId, planId: plan.id };
 }
 
-describeBothBackends(["intelligence"], "operational ML", (backend) => {
+describeWithDatabase("operational ML", (backend) => {
   it("keeps one learning policy and one registry per workspace", async () => {
     const s = await setup(backend);
     const policy = await getOperationalLearningPolicy(s.workspaceId);
@@ -50,7 +47,6 @@ describeBothBackends(["intelligence"], "operational ML", (backend) => {
     const other = await backend.createWorkspace();
     expect((await getOperationalLearningPolicy(other.workspaceId)).id).not.toBe(policy.id);
     expect(await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'operational.ml.policy.updated'", [s.workspaceId])).toHaveLength(1);
-    recorder.record(backend.name, "policy", { policy: Object.keys(updated).sort(), registry: registry.map((m) => m.model_key) });
   });
 
   it("trains, deploys, predicts and records outcomes from the workspace's own events", async () => {
@@ -88,10 +84,5 @@ describeBothBackends(["intelligence"], "operational ML", (backend) => {
     const other = await setup(backend);
     await expect(predictOperationalPlan({ workspaceId: other.workspaceId, environmentId: other.environmentId, planId: s.planId })).rejects.toThrow("Operational plan not found");
     expect((await listOperationalMlOverview(other.workspaceId, s.environmentId)).predictions).toEqual([]);
-    recorder.record(backend.name, "train", { first: first.status, second: second.status, predictionKeys: Object.keys(remediation).sort(), plan: plan.predictions.map((p: { status: string }) => p.status).sort() });
   });
-});
-
-describe("operational ML backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

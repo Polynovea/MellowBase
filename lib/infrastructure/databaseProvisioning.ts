@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as environmentData from "@/lib/infrastructure/environmentData";
 import { redactCredentials, resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
 import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
 import { ensureCompatibilityRoles } from "@/lib/db/roles.mjs";
@@ -57,13 +57,8 @@ export async function probePostgresUrl(connectionString: string) {
 }
 
 async function findDatabaseConnection(workspaceId: string, environmentId: string) {
-  const db = createServiceRoleClient();
-  const { data, error } = await db.from("workspace_connections")
-    .select("id,connector_type,name,status,active,created_at")
-    .eq("workspace_id", workspaceId).eq("environment_id", environmentId).eq("connector_family", "database")
-    .eq("active", true).order("created_at", { ascending: false });
-  if (error) throw new Error(error.message);
-  const connection = (data ?? []).find((row) => ["database.postgres", "database.supabase"].includes(row.connector_type)) ?? null;
+  const data = await environmentData.databaseConnections(workspaceId, environmentId);
+  const connection = data.find((row) => ["database.postgres", "database.supabase"].includes(row.connector_type)) ?? null;
   if (!connection) return { connection: null, connectionString: null, credentials: {} as Record<string,string> };
   const credentials = await resolveConnectionCredentials(workspaceId, connection.id);
   return { connection, connectionString: credentials.connection_url ?? null, credentials };

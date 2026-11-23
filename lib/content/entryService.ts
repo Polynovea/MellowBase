@@ -1,7 +1,7 @@
 // Content area: entries and versions. The rules (schema validation, uniqueness, relation integrity,
 // lifecycle checks) live here and are shared by both data paths; the queries and SQL function calls
-// are primitives in entryData.ts, chosen by the `content` switch in POLYNOVEA_DATA_BACKEND.
-import { logPlatformEventFor } from "@/lib/platform/audit";
+// are primitives in entryData.ts.
+import { logPlatformEvent } from "@/lib/platform/audit";
 import * as entryData from "@/lib/content/entryData";
 import { extractAssetReferences, extractEntryRelations, extractInternalPathReferences, validateEntryData } from "@/lib/content/entryValidation";
 import { getModel, getVersion, type ContentModelRow, type ContentModelVersionRow } from "@/lib/schema/modelService";
@@ -249,7 +249,7 @@ export async function restoreEntryVersion(params: { workspaceId: string; entryId
   const sourceVersion = await entryData.findEntryVersion(params.workspaceId, entry.id, params.versionId);
   if (!sourceVersion) return { ok: false, error: "Version not found for this entry", status: 404 };
   const result = await saveDraft({ workspaceId: params.workspaceId, entryId: entry.id, data: sourceVersion.data_jsonb, locale: sourceVersion.locale, actorAdminUserId: params.actorAdminUserId, changeSummary: `Restored from version ${sourceVersion.version_number}` });
-  if (result.ok) await logPlatformEventFor("content", { workspaceId: params.workspaceId, actorAdminUserId: params.actorAdminUserId, action: "content.entry.version_restored", entityType: "content_entry", entityId: entry.id, metadata: { sourceVersionId: params.versionId, sourceVersionNumber: sourceVersion.version_number, restoredVersionNumber: result.data.version.version_number } });
+  if (result.ok) await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorAdminUserId, action: "content.entry.version_restored", entityType: "content_entry", entityId: entry.id, metadata: { sourceVersionId: params.versionId, sourceVersionNumber: sourceVersion.version_number, restoredVersionNumber: result.data.version.version_number } });
   return result;
 }
 
@@ -373,7 +373,7 @@ export async function importEntries(params: { workspaceId: string; modelId: stri
     results.push(created.ok ? { index, ok: true, errors: [], entryId: created.data.entry.id } : { index, ok: false, errors: [created.error] });
   }
 
-  await logPlatformEventFor("content", {
+  await logPlatformEvent({
     workspaceId: params.workspaceId,
     actorAdminUserId: params.actorAdminUserId,
     action: params.dryRun ? "content.entry.import_dry_run" : "content.entry.imported",

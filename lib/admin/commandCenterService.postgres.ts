@@ -1,9 +1,8 @@
 // Direct PostgreSQL gatherer for the Command Center (phase 1, wave 2).
 //
-// Same result as commandCenterService.supabase.ts, which ran 26 separate count requests: here each
-// table is read once with `count(*) filter (...)` per figure, ten queries in all. Every query is
-// scoped by workspace_id. Analytics stays optional, as before: if its table cannot be read, its
-// count is 0 rather than failing the page.
+// which ran 26 separate count requests: here each table is read once with `count(*) filter (...)`
+// per figure, ten queries in all. Every query is scoped by workspace_id. Analytics stays optional,
+// as before: if its table cannot be read, its count is 0 rather than failing the page.
 import { sql } from "kysely";
 import { getDb } from "@/lib/db/index";
 import type { CommandCenterData } from "@/lib/admin/commandCenterService";

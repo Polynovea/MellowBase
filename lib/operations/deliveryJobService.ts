@@ -1,11 +1,7 @@
-// Operations area (delivery jobs): types and the backend dispatcher.
+// Operations area (delivery jobs): types.
 //
-// Each function runs on Supabase (deliveryJobService.supabase.ts) or directly on PostgreSQL
-// (deliveryJobService.postgres.ts), chosen per call by the `operations` switch in
-// POLYNOVEA_DATA_BACKEND. Both keep the same signatures and return shapes.
-import { usesDirectPostgres } from "@/lib/db/backend";
+// The queries run on PostgreSQL in deliveryJobService.postgres.ts.
 import * as postgres from "@/lib/operations/deliveryJobService.postgres";
-import * as supabase from "@/lib/operations/deliveryJobService.supabase";
 
 export type DeliveryJobKind =
   | "publish"
@@ -32,13 +28,10 @@ export interface EnqueueDeliveryJobInput {
   correlationId?: string | null;
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("operations") ? direct : supabase);
 
-export const enqueueDeliveryJob: typeof supabase.enqueueDeliveryJob = (...args) => impl().enqueueDeliveryJob(...args);
-export const listDeliveryJobs: typeof supabase.listDeliveryJobs = (...args) => impl().listDeliveryJobs(...args);
-export const getDeliveryJob: typeof supabase.getDeliveryJob = (...args) => impl().getDeliveryJob(...args);
-export const replayDeliveryJob: typeof supabase.replayDeliveryJob = (...args) => impl().replayDeliveryJob(...args);
-export const cancelDeliveryJob: typeof supabase.cancelDeliveryJob = (...args) => impl().cancelDeliveryJob(...args);
-export const listDestinationHealth: typeof supabase.listDestinationHealth = (...args) => impl().listDestinationHealth(...args);
+export const enqueueDeliveryJob = postgres.enqueueDeliveryJob;
+export const listDeliveryJobs = postgres.listDeliveryJobs;
+export const getDeliveryJob = postgres.getDeliveryJob;
+export const replayDeliveryJob = postgres.replayDeliveryJob;
+export const cancelDeliveryJob = postgres.cancelDeliveryJob;
+export const listDestinationHealth = postgres.listDestinationHealth;

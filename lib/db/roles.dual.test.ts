@@ -105,13 +105,28 @@ function catalogChecks(label: string, url: () => string | undefined) {
       await expect(db.query("update member_roles set role_id = $2 where workspace_member_id = $1", [member.id, foreign.id])).rejects.toMatchObject({ code: "23514" });
     });
 
-    it("every SECURITY DEFINER function pins its search_path", async () => {
+    it("every SECURITY DEFINER function in a Polynovea schema pins its search_path", async () => {
+      // public holds the CMS functions; polynovea_auth (0071) holds the built-in auth tables and must
+      // stay function-free or follow the same rule. Supabase's own schemas are not ours to audit.
       const { rows } = await db.query(`
         select p.oid::regprocedure::text as signature
         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-        where n.nspname = 'public' and p.prosecdef
+        where n.nspname in ('public', 'polynovea_auth') and p.prosecdef
           and not exists (select 1 from unnest(coalesce(p.proconfig, '{}')) setting where setting like 'search_path=%')`);
       expect(rows.map((row) => row.signature)).toEqual([]);
+    });
+
+    it("a pinned search_path never names a schema polynovea_app can create objects in", async () => {
+      const { rows } = await db.query(`
+        select p.oid::regprocedure::text as signature, s.schema_name
+        from pg_proc p join pg_namespace n on n.oid = p.pronamespace,
+          unnest(coalesce(p.proconfig, '{}')) setting,
+          unnest(string_to_array(replace(replace(substring(setting from 'search_path=(.*)'), '"', ''), ' ', ''), ',')) s(schema_name)
+        where n.nspname in ('public', 'polynovea_auth') and p.prosecdef and setting like 'search_path=%'
+          and s.schema_name not in ('', 'pg_temp', 'pg_catalog')
+          and to_regnamespace(s.schema_name) is not null
+          and has_schema_privilege('polynovea_app', s.schema_name, 'create')`);
+      expect(rows).toEqual([]);
     });
 
     it("nobody but the schema owner can create objects in public", async () => {
@@ -145,7 +160,8 @@ function catalogChecks(label: string, url: () => string | undefined) {
 }
 
 catalogChecks("plain PostgreSQL", () => process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL);
-catalogChecks("Supabase", () => process.env.POLYNOVEA_TEST_SUPABASE_DB_URL);
+// Supabase's database (setup.mjs --with-supabase): existing Supabase installs take the same migrations.
+if (process.env.POLYNOVEA_TEST_SUPABASE_DB_URL) catalogChecks("Supabase", () => process.env.POLYNOVEA_TEST_SUPABASE_DB_URL);
 
 describe("database roles on plain PostgreSQL, as the roles themselves", () => {
   let owner: pg.Client;
@@ -188,8 +204,27 @@ describe("database roles on plain PostgreSQL, as the roles themselves", () => {
     ["create role", "create role polynovea_ddl_probe"],
     ["write the migration ledger", "insert into public.polynovea_migration_ledger (filename, checksum_sha256, migration_id) values ('x', 'x', 'x')"],
     ["run the access helper", "select public.polynovea_apply_app_access()"],
+    ["replace a SQL function", "create or replace function public.cms_age_analytics_freshness() returns void language sql as ''"],
+    ["change a function's search_path", "alter function public.cms_age_analytics_freshness() set search_path = public"],
+    ["change a function's owner", "alter function public.cms_age_analytics_freshness() owner to polynovea_app"],
+    ["create a trigger", "create trigger polynovea_ddl_probe before insert on public.taxonomies for each row execute function public.polynovea_apply_app_access()"],
+    ["alter a sequence", "alter sequence public.live_metrics_id_seq restart with 1"],
+    ["drop a sequence", "drop sequence public.live_metrics_id_seq"],
+    ["comment on a table", "comment on table public.taxonomies is 'probe'"],
+    ["take ownership of schema public", "alter schema public owner to polynovea_app"],
+    ["drop the auth schema", "drop schema polynovea_auth cascade"],
+    ["alter an auth table", "alter table polynovea_auth.\"user\" add column probe int"],
+    ["drop an auth table", "drop table polynovea_auth.\"session\""],
+    ["become the owner", "set role polynovea_owner"],
   ])("polynovea_app cannot %s", async (_label, statement) => {
     await expect(app.query(statement)).rejects.toMatchObject({ code: "42501" });
+  });
+
+  it("polynovea_app cannot create extensions or schemas in the database", async () => {
+    // Trusted extensions (PostgreSQL 13+) need only CREATE on the database, so that privilege is the
+    // gate; a probe like "create extension if not exists" would pass vacuously when it is installed.
+    const { rows: [row] } = await owner.query("select has_database_privilege('polynovea_app', current_database(), 'create') as can_create");
+    expect(row.can_create).toBe(false);
   });
 
   it("nobody but the owner may create temporary tables", async () => {

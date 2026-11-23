@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as routeData from "@/lib/http/routeData";
+import { platformPatch } from "@/lib/http/platformInput";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { clientErrorMessage } from "@/lib/http/clientError";
@@ -12,16 +13,17 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   try {
     const { id } = await params;
-    const body = await req.json();
-    const db = createServiceRoleClient();
-    const { data, error } = await db
-      .from("platforms")
-      .update({ ...body, updated_at: new Date().toISOString() })
-      .eq("id", id)
-      .select()
-      .single();
-
-    if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
+    // Only the editable columns are taken from the body (it used to be spread into the update whole).
+    const parsed = platformPatch(await req.json());
+    if (!parsed.ok) return NextResponse.json({ success: false, data: null, error: parsed.error, timestamp: ts() }, { status: 400 });
+    const body = parsed.patch;
+    let data;
+    try {
+      data = await routeData.updatePlatform(id, body);
+    } catch (error) {
+      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
+    }
+    if (!data) return NextResponse.json({ success: false, data: null, error: "Platform not found", timestamp: ts() }, { status: 404 });
 
     await logAdminActivity({
       actor: auth.data!.profile,
@@ -44,9 +46,11 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
 
   try {
     const { id } = await params;
-    const db = createServiceRoleClient();
-    const { error } = await db.from("platforms").delete().eq("id", id);
-    if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
+    try {
+      await routeData.deletePlatform(id);
+    } catch (error) {
+      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
+    }
 
     await logAdminActivity({
       actor: auth.data!.profile,

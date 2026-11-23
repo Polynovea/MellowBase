@@ -4,7 +4,7 @@ import { ACCESS_MODULES, normalizeAdminUser } from "@/lib/admin/access";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { deleteAdminProfile, findAdminUser, updateAdminProfile } from "@/lib/admin/adminUserService";
-import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
+import { getServerIdentityProvider } from "@/lib/auth/server";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
@@ -23,11 +23,11 @@ export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireAdminRequest(req, { requireMaster: true, requiredModule: "cms.access", requiredWriteModule: "cms.access" });
+  const auth = await requireAdminRequest(req, { requireMaster: true, requiredModule: "cms.access", requiredWriteModule: "cms.access", stepUp: true });
   if (auth.error) return auth.error;
 
   const { id } = await params;
-  const identity = getSupabaseServerIdentityProvider();
+  const identity = getServerIdentityProvider();
 
   try {
     const parsed = updateUserSchema.parse(await req.json());
@@ -78,6 +78,11 @@ export async function PATCH(
       return NextResponse.json({ success: false, data: null, error: clientErrorMessage(updateError, "Failed to update the member profile"), timestamp: ts() }, { status: 500 });
     }
 
+    // A changed role or a deactivation takes effect now: the member signs in again (new session).
+    if (existing.auth_user_id && (existing.role !== data.role || (existing.is_active && !data.is_active))) {
+      await identity.revokeUserSessions(existing.auth_user_id);
+    }
+
     await logAdminActivity({
       actor: auth.data!.profile,
       action: parsed.password ? "member.update_with_password_reset" : "member.update",
@@ -109,11 +114,11 @@ export async function DELETE(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireAdminRequest(req, { requireMaster: true, requiredModule: "cms.access", requiredWriteModule: "cms.access" });
+  const auth = await requireAdminRequest(req, { requireMaster: true, requiredModule: "cms.access", requiredWriteModule: "cms.access", stepUp: true });
   if (auth.error) return auth.error;
 
   const { id } = await params;
-  const identity = getSupabaseServerIdentityProvider();
+  const identity = getServerIdentityProvider();
 
   const existing = await findAdminUser(id);
 

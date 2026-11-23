@@ -1,15 +1,15 @@
-// Direct PostgreSQL implementation of the schema area's database primitives (phase 1, wave 1).
+// PostgreSQL implementation of the schema area's database primitives (phase 1, wave 1).
 //
-// Same signatures and return shapes as modelService.supabase.ts; the validate → diff → apply rules
-// in modelService.ts are shared. Differences that are deliberate:
+// the validate → diff → apply rules in modelService.ts are shared. Deliberate differences from the
+// Supabase path it replaced in phase 1:
 // - Errors no longer leak database text. The Supabase path returned PostgREST's message as the
-//   result's `error`, which the routes send to the browser. Here a function's own `raise exception`
-//   text passes through (as it did), a unique violation becomes a fixed conflict message (409), and
-//   anything else becomes a generic message with a reference ID that is logged server-side.
+// result's `error`, which the routes send to the browser. Here a function's own `raise exception`
+// text passes through (as it did), a unique violation becomes a fixed conflict message (409), and
+// anything else becomes a generic message with a reference ID that is logged server-side.
 // - Rebuilding content_fields (delete, then insert) is one transaction.
 // - Malformed IDs in reads are "not found"; list queries have explicit limits. listVersions and
-//   getVersion take no workspace, as before: callers pass a model already read with getModel, which
-//   is workspace-scoped.
+// getVersion take no workspace, as before: callers pass a model already read with getModel, which
+// is workspace-scoped.
 import { callFunction, DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne, SqlFunctionError, withTransaction } from "@/lib/db/index";
 import { clientErrorMessage } from "@/lib/http/clientError";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";

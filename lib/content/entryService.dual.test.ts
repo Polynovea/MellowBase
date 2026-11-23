@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder, ISO_TIMESTAMP } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
+import { ISO_TIMESTAMP } from "@/lib/db/testing/http";
 import {
   archiveEntry,
   createEntry,
@@ -18,10 +18,6 @@ import {
 import { createModel } from "@/lib/schema/modelService";
 import { runGovernedImport } from "@/lib/developer/importService";
 import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
-
-// Entries read their model through the schema area, so content and schema switch together (and
-// developer, for the committed import at the end).
-const recorder = createRecorder();
 const ENTRY_KEYS = ["archived_at", "content_model_id", "created_at", "created_by", "current_draft_version_id", "id", "published_version_id", "status", "status_before_archive", "updated_at", "updated_by", "workspace_id"];
 const VERSION_KEYS = ["change_summary", "created_at", "created_by", "data_jsonb", "entry_id", "id", "locale", "model_schema_version", "state", "version_number"];
 
@@ -41,7 +37,7 @@ async function models(backend: BackendFixtures) {
   return { workspaceId, adminUserId, widgetModelId: widget.data.model.id, articleModelId: article.data.model.id };
 }
 
-describeBothBackends(["content", "schema", "developer"], "content entries and versions", (backend) => {
+describeWithDatabase("content entries and versions", (backend) => {
   it("creates, lists, drafts, publishes, archives and restores entries with identical shapes", async () => {
     const { workspaceId, adminUserId, articleModelId } = await models(backend);
     const created = await createEntry({ workspaceId, modelId: articleModelId, data: { title: "Hello", slug: "hello" }, actorAdminUserId: adminUserId });
@@ -82,7 +78,6 @@ describeBothBackends(["content", "schema", "developer"], "content entries and ve
 
     const events = await backend.query<{ action: string }>("select distinct action from platform_audit_events where workspace_id = $1 and entity_type = 'content_entry' order by action", [workspaceId]);
     expect(events.map((e) => e.action)).toContain("content.entry.version_restored");
-    recorder.record(backend.name, "entry lifecycle", { entry, version, saved: saved.data.version, published: published.ok && published.data });
   });
 
   it("enforces unique values and relation targets", async () => {
@@ -116,7 +111,6 @@ describeBothBackends(["content", "schema", "developer"], "content entries and ve
     const committed = await runGovernedImport({ context, modelApiKey: "article", format: "json", content: [{ title: "Three", slug: "three" }], commit: true });
     expect(committed).toMatchObject({ committed: true, status: "completed", succeeded: 1, failed: 0 });
     expect((await listEntries(workspaceId, articleModelId)).map((e) => e.data?.title).sort()).toEqual(["One", "Three", "Two"]);
-    recorder.record(backend.name, "export", exported.ok && exported.data.rows.map((row) => ({ ...row, id: "<id>", updatedAt: "<t>" })).sort((a, b) => String(a.data.title).localeCompare(String(b.data.title))));
   });
 
   it("keeps workspaces isolated", async () => {
@@ -136,8 +130,4 @@ describeBothBackends(["content", "schema", "developer"], "content entries and ve
     expect(await createEntry({ workspaceId: b.workspaceId, modelId: a.articleModelId, data: { title: "x" }, actorAdminUserId: b.adminUserId })).toMatchObject({ ok: false, status: 404 });
     expect(await exportEntries(b.workspaceId, a.articleModelId)).toMatchObject({ ok: false, status: 404 });
   });
-});
-
-describe("content entry backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

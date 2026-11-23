@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import { createRemediationTask, getContentHealth, scanContentHealth, updateContentHealthProfile, updateRemediationTask } from "@/lib/content/healthService";
 import { createModel } from "@/lib/schema/modelService";
-
-const recorder = createRecorder();
 const MISSING = "00000000-0000-4000-8000-000000000000";
 
 async function setup(backend: BackendFixtures) {
@@ -24,7 +21,7 @@ async function setup(backend: BackendFixtures) {
 
 const codes = (rows: Array<{ finding_code: string; state: string }>, state = "open") => rows.filter((row) => row.state === state).map((row) => row.finding_code).sort();
 
-describeBothBackends(["content", "schema"], "content health", (backend) => {
+describeWithDatabase("content health", (backend) => {
   it("scans, records and resolves findings, and keeps profiles in the workspace", async () => {
     const { workspaceId, adminUserId, entryId, assetId } = await setup(backend);
     const first = await scanContentHealth({ workspaceId, actorId: adminUserId });
@@ -56,7 +53,6 @@ describeBothBackends(["content", "schema"], "content health", (backend) => {
 
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and action = 'content_health.scan_completed'", [workspaceId]);
     expect(events).toHaveLength(2);
-    recorder.record(backend.name, "scan", { first, second, open: codes(after.findings), resolved: codes(after.findings, "resolved"), summary: after.summary, findingKeys: Object.keys(after.findings[0]).sort() });
   });
 
   it("creates and updates remediation tasks only against the workspace's own findings, entities and members", async () => {
@@ -94,10 +90,5 @@ describeBothBackends(["content", "schema"], "content health", (backend) => {
 
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and entity_type = 'content_remediation_task' order by created_at, action", [workspaceId]);
     expect(events.map((e) => e.action)).toEqual(["content_health.remediation_created", "content_health.remediation_created", "content_health.remediation_updated"]);
-    recorder.record(backend.name, "task", { keys: Object.keys(done).sort(), done: { status: done.status, priority: done.priority, title: done.title } });
   });
-});
-
-describe("content health backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

@@ -1,0 +1,94 @@
+"use client";
+
+/**
+ * Browser side of the built-in auth: Better Auth's client with the two-factor and passkey plugins,
+ * same-origin only. The session lives in an HttpOnly cookie the browser sends by itself; this
+ * module never sees the token. Pages use it for sign-in, MFA and passkey enrolment, and sessions.
+ */
+import { createAuthClient } from "better-auth/client";
+import { twoFactorClient } from "better-auth/client/plugins";
+import { passkeyClient } from "@better-auth/passkey/client";
+import type { BrowserIdentityProvider, Session, User } from "@/lib/auth/provider";
+
+let client: ReturnType<typeof makeClient> | null = null;
+
+function makeClient() {
+  return createAuthClient({
+    basePath: "/api/auth",
+    plugins: [twoFactorClient(), passkeyClient()],
+  });
+}
+
+export function builtinAuthClient() {
+  client ??= makeClient();
+  return client;
+}
+
+const SESSION_EVENT = "polynovea:session-changed";
+
+/**
+ * Session.accessToken for the built-in auth. The real token stays in the HttpOnly cookie; this is a
+ * non-secret marker that a session exists, so pages that check for a token keep working. The admin
+ * fetch wrapper strips any Authorization header for the built-in auth, so it never leaves the page.
+ */
+export const BUILTIN_SESSION_MARKER = "builtin-session";
+
+/** Tell every listener in this tab (and useAdminAccess) that the session changed. */
+export function announceSessionChange(): void {
+  window.dispatchEvent(new Event(SESSION_EVENT));
+}
+
+type RawSession = { session: { expiresAt: string | Date }; user: { id: string; email: string; emailVerified: boolean; updatedAt: string | Date; metadata?: unknown } };
+
+function toSession(raw: RawSession | null | undefined): Session | null {
+  if (!raw?.user) return null;
+  const metadata = typeof raw.user.metadata === "string" ? safeJson(raw.user.metadata) : raw.user.metadata;
+  const user: User = {
+    id: raw.user.id,
+    email: raw.user.email ?? null,
+    emailConfirmedAt: raw.user.emailVerified ? new Date(raw.user.updatedAt).toISOString() : null,
+    metadata: metadata && typeof metadata === "object" ? { ...(metadata as Record<string, unknown>) } : {},
+  };
+  return { accessToken: BUILTIN_SESSION_MARKER, expiresAt: Math.floor(new Date(raw.session.expiresAt).getTime() / 1000), user };
+}
+
+function safeJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+export function getBuiltinBrowserIdentityProvider(): BrowserIdentityProvider {
+  const auth = builtinAuthClient();
+  return {
+    async signInWithPassword({ email, password }) {
+      const { data, error } = await auth.signIn.email({ email, password });
+      if (error) return { session: null, error: new Error(error.message || "Sign-in failed") };
+      if (data && "twoFactorRedirect" in data && data.twoFactorRedirect) return { session: null, error: new Error("TWO_FACTOR_REQUIRED") };
+      announceSessionChange();
+      return this.getSession();
+    },
+    async getSession() {
+      const { data, error } = await auth.getSession({ query: { disableCookieCache: true } });
+      if (error) return { session: null, error: new Error(error.message || "Could not read the session") };
+      return { session: toSession(data as RawSession | null), error: null };
+    },
+    async refreshSession() {
+      return this.getSession();
+    },
+    async signOut() {
+      const { error } = await auth.signOut();
+      announceSessionChange();
+      return { error: error ? new Error(error.message || "Sign-out failed") : null };
+    },
+    onSessionChange(listener) {
+      const handler = () => {
+        void this.getSession().then(({ session }) => listener(session));
+      };
+      window.addEventListener(SESSION_EVENT, handler);
+      return { unsubscribe: () => window.removeEventListener(SESSION_EVENT, handler) };
+    },
+  };
+}

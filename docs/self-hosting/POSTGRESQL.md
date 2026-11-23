@@ -15,7 +15,7 @@ Supported components:
 | Authentication | GoTrue-compatible Supabase Auth |
 | Application | Node.js 22+ Next.js server |
 | Jobs | Persistent `npm run worker:delivery` process |
-| Media | Optional S3-compatible storage; R2 is the supplied reference adapter |
+| Media | Server disk, Azure Blob, S3-compatible storage (S3, R2, MinIO) or Supabase Storage; see [STORAGE.md](STORAGE.md) |
 
 A managed Supabase project is the simplest reference backend. Self-hosted Supabase-compatible infrastructure is also valid when it provides the same required API/auth semantics.
 
@@ -64,7 +64,7 @@ If a connection fails with `self-signed certificate in certificate chain` or `un
 
 ## Authentication and permissions
 
-GoTrue authenticates identities. Polynovea CMS then maps the authenticated email to an active `admin_users` profile and resolves workspace membership, roles and permission keys server-side.
+GoTrue authenticates identities, or the built-in auth with `AUTH_PROVIDER=builtin` (see [BUILT_IN_AUTH.md](BUILT_IN_AUTH.md)). Polynovea CMS then maps the authenticated email to an active `admin_users` profile and resolves workspace membership, roles and permission keys server-side.
 
 The `master` role is a normal auditable profile role. It is **not** granted by a hardcoded email or client-side self-provisioning bypass. Use `npm run bootstrap:admin` for the first owner, then use the Access administration surface for subsequent users.
 

@@ -88,7 +88,7 @@ describe("requirePlatformAccess", () => {
   });
 
   it("denies access when the admin user has no workspace membership", async () => {
-    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile } });
+    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile, identity: {} as never } });
     mockResolveActor.mockResolvedValue(null);
 
     const result = await requirePlatformAccess(reqFor(), { permission: "schema.read" });
@@ -96,7 +96,7 @@ describe("requirePlatformAccess", () => {
   });
 
   it("denies access when the actor lacks the required permission", async () => {
-    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile } });
+    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile, identity: {} as never } });
     mockResolveActor.mockResolvedValue(actorWith(["content.entry.read"]));
 
     const result = await requirePlatformAccess(reqFor(), { permission: "schema.manage" });
@@ -104,7 +104,7 @@ describe("requirePlatformAccess", () => {
   });
 
   it("grants access when the actor has at least one of several accepted permissions", async () => {
-    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile } });
+    mockRequireAdminRequest.mockResolvedValue({ data: { user: {} as never, profile: adminProfile, identity: {} as never } });
     mockResolveActor.mockResolvedValue(actorWith(["schema.read"]));
 
     const result = await requirePlatformAccess(reqFor(), { permission: ["schema.manage", "schema.read"] });

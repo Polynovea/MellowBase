@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 
 // The autonomy policy and desired state belong to planning and reconciliation, which move in later
 // wave 4 PRs; here they are fixed so the remediation reads and writes are what is compared.
@@ -22,8 +21,6 @@ vi.mock("@/lib/intelligence/worldModelService", async (importOriginal) => ({
 
 const { executeDeterministicRemediation, listRemediationRegistry, runPolicyAutoRepair } = await import("@/lib/intelligence/remediationService");
 
-const recorder = createRecorder();
-
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
   const [environment] = await backend.query<{ id: string }>("insert into workspace_environments (workspace_id, key, name, kind) values ($1, 'staging', 'Staging', 'staging') returning id", [workspaceId]);
@@ -38,7 +35,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, environmentId: environment.id, revisionId: revision.id, driftId: drift.id };
 }
 
-describeBothBackends(["intelligence"], "deterministic remediation", (backend) => {
+describeWithDatabase("deterministic remediation", (backend) => {
   it("lists the registry, refuses foreign drift items and records a failed run with its outcome event", async () => {
     const s = await setup(backend);
     const registry = await listRemediationRegistry();
@@ -58,7 +55,6 @@ describeBothBackends(["intelligence"], "deterministic remediation", (backend) =>
     expect(runs).toEqual([{ id: expect.any(String), status: "failed", error_code: "REMEDIATION_FAILED", source_drift_item_id: s.driftId, safe_input_json: { remediationKey: "delivery.replay", targetType: "workspace_environment", targetId: null } }]);
     const events = await backend.query<{ source_id: string; outcome_json: unknown; features_json: unknown }>("select source_id, outcome_json, features_json from operational_events where workspace_id = $1 and event_type = 'remediation.outcome'", [s.workspaceId]);
     expect(events).toEqual([{ source_id: runs[0].id, outcome_json: { status: "failed", errorClass: "REMEDIATION_FAILED" }, features_json: { remediationKey: "delivery.replay", classification: "safe", executionMode: "manual", environmentKind: "staging", targetType: "workspace_environment" } }]);
-    recorder.record(backend.name, "registry", { keys: Object.keys(registry[0]).sort() });
   });
 
   it("auto-repairs only the environment's own open safe drift", async () => {
@@ -71,10 +67,5 @@ describeBothBackends(["intelligence"], "deterministic remediation", (backend) =>
     desired.id = other.revisionId; // another workspace's desired state finds none of this environment's drift
     expect(await runPolicyAutoRepair({ workspaceId: s.workspaceId, environmentId: s.environmentId, actorId: s.adminUserId })).toEqual({ attempted: 0, candidates: 0, results: [] });
     desired.id = null;
-    recorder.record(backend.name, "auto-repair", { candidates: result.candidates, attempted: result.attempted });
   });
-});
-
-describe("remediation backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

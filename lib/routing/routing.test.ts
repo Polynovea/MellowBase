@@ -1,14 +1,18 @@
 import { describe, it, expect, vi } from "vitest";
 import { normalizePath, updateRoutePath } from "@/lib/routing/routeService";
 import { detectRedirectLoop } from "@/lib/routing/redirectService";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { callFunction } from "@/lib/db/index";
 
 vi.mock("@/lib/platform/audit", () => ({
   logPlatformEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/admin/serviceRole", () => ({
-  createServiceRoleClient: vi.fn(),
+// Route writes are calls to SQL functions inside one transaction; the database itself is faked here.
+vi.mock("@/lib/db/index", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/db/index")>()),
+  callFunction: vi.fn(),
+  getDb: vi.fn(() => ({})),
+  withTransaction: vi.fn((fn: (trx: unknown) => unknown) => fn({})),
 }));
 
 describe("Routing & Path Normalization Invariants", () => {
@@ -67,12 +71,8 @@ describe("Routing & Path Normalization Invariants", () => {
 
   describe("syncRouteRelations", () => {
     it("synchronizes route dependency edges across entry, term, asset, route, and menu targets via cms_replace_source_relations", async () => {
-      const mockRpc = vi.fn().mockResolvedValue({ error: null });
-
-      const { createServiceRoleClient } = await import("@/lib/admin/serviceRole");
-      vi.mocked(createServiceRoleClient).mockReturnValue({
-        rpc: mockRpc,
-      } as any);
+      const mockRpc = vi.mocked(callFunction);
+      mockRpc.mockReset().mockResolvedValue(null as never);
 
       const { syncRouteRelations } = await import("@/lib/routing/routeService");
 
@@ -87,9 +87,9 @@ describe("Routing & Path Normalization Invariants", () => {
         p_workspace_id: "ws-1",
         p_source_type: "route",
         p_source_id: "route-root",
-      }));
+      }), expect.anything());
 
-      const relationsArg = mockRpc.mock.calls[0][1].p_relations;
+      const relationsArg = JSON.parse((mockRpc.mock.calls[0][1] as { p_relations: string }).p_relations);
       expect(relationsArg).toHaveLength(5);
       expect(relationsArg).toEqual(
         expect.arrayContaining([
@@ -128,49 +128,35 @@ describe("Routing & Path Normalization Invariants", () => {
     });
 
     it("syncRouteRelations throws an error when cms_replace_source_relations fails", async () => {
-      const mockRpc = vi.fn().mockResolvedValue({ error: { message: "check constraint violation" } });
-      const { createServiceRoleClient } = await import("@/lib/admin/serviceRole");
-      vi.mocked(createServiceRoleClient).mockReturnValue({
-        rpc: mockRpc,
-      } as any);
+      vi.mocked(callFunction).mockReset().mockRejectedValue(new Error("check constraint violation"));
 
       const { syncRouteRelations } = await import("@/lib/routing/routeService");
 
       await expect(
         syncRouteRelations("ws-1", "route-root", "entry-1")
-      ).rejects.toThrow("Failed to replace route relations: check constraint violation");
+      ).rejects.toThrow("check constraint violation");
     });
   });
 
   describe("updateRoutePath", () => {
     it("preserves route dependency relations when updating route path", async () => {
-      const mockRpc = vi.fn().mockImplementation((fn: string) => {
+      const mockRpc = vi.mocked(callFunction);
+      mockRpc.mockReset().mockImplementation((async (fn: string) => {
         if (fn === "cms_update_route_path") {
-          return Promise.resolve({
-            data: {
-              route: {
-                id: "route-123",
-                workspace_id: "ws-1",
-                entry_id: "entry-999",
-                path: "/new-path",
-                locale: "en",
-                metadata_json: { targetTermId: "term-888" },
-              },
-              redirectCreated: true,
+          return {
+            route: {
+              id: "route-123",
+              workspace_id: "ws-1",
+              entry_id: "entry-999",
+              path: "/new-path",
+              locale: "en",
+              metadata_json: { targetTermId: "term-888" },
             },
-            error: null,
-          });
+            redirectCreated: true,
+          };
         }
-        if (fn === "cms_replace_source_relations") {
-          return Promise.resolve({ error: null });
-        }
-        return Promise.resolve({ error: null });
-      });
-
-      const { createServiceRoleClient } = await import("@/lib/admin/serviceRole");
-      vi.mocked(createServiceRoleClient).mockReturnValue({
-        rpc: mockRpc,
-      } as any);
+        return null;
+      }) as never);
 
       const res = await updateRoutePath({
         workspaceId: "ws-1",
@@ -180,12 +166,12 @@ describe("Routing & Path Normalization Invariants", () => {
       });
 
       expect(res.route.path).toBe("/new-path");
-      expect(mockRpc).toHaveBeenCalledWith("cms_update_route_path", expect.anything());
+      expect(mockRpc).toHaveBeenCalledWith("cms_update_route_path", expect.anything(), expect.anything());
       expect(mockRpc).toHaveBeenCalledWith("cms_replace_source_relations", expect.objectContaining({
         p_workspace_id: "ws-1",
         p_source_type: "route",
         p_source_id: "route-123",
-      }));
+      }), expect.anything());
     });
   });
 });

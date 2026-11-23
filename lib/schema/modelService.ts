@@ -1,14 +1,11 @@
-// Schema area: types, the shared validate → diff → apply rules, and the backend dispatcher.
+// Schema area: types, the shared validate → diff → apply rules.
 //
-// The database primitives run on Supabase (modelService.supabase.ts) or directly on PostgreSQL
-// (modelService.postgres.ts), chosen per call by the `schema` switch in POLYNOVEA_DATA_BACKEND.
-// Everything that decides what is allowed (canonical schema validation, apiKey immutability, diff
-// classification, the acknowledge-unsafe gate) stays here, so both paths enforce identical rules.
+// The database primitives come from PostgreSQL in modelService.postgres.ts. Everything that decides
+// what is allowed (canonical schema validation, apiKey immutability, diff classification, the
+// acknowledge-unsafe gate) stays here.
 import { createHash } from "node:crypto";
-import { usesDirectPostgres } from "@/lib/db/backend";
-import { logPlatformEventFor } from "@/lib/platform/audit";
+import { logPlatformEvent } from "@/lib/platform/audit";
 import * as postgres from "@/lib/schema/modelService.postgres";
-import * as supabase from "@/lib/schema/modelService.supabase";
 import { validateCanonicalSchema } from "@/lib/schema/canonicalSchema";
 import { computeSchemaDiff, type SchemaDiff } from "@/lib/schema/diff";
 import { resolveModelCapability, type CanonicalSchema, type ModelCapability } from "@/lib/schema/fields/types";
@@ -66,7 +63,7 @@ export async function createModel(params: {
   }
   const schema = validation.schema;
 
-  return impl().createModelRecord({
+  return postgres.createModelRecord({
     workspaceId: params.workspaceId,
     actorId: params.createdBy,
     schema,
@@ -77,7 +74,7 @@ export async function createModel(params: {
   });
 }
 
-/** The content_fields rows a canonical schema projects to (shared by both paths). */
+/** The content_fields rows a canonical schema projects to. */
 export function contentFieldRows(contentModelId: string, schema: CanonicalSchema) {
   return schema.fields.map((field, index) => ({
     content_model_id: contentModelId,
@@ -100,16 +97,13 @@ export function contentFieldRows(contentModelId: string, schema: CanonicalSchema
   }));
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("schema") ? direct : supabase);
 
-export const rebuildContentFields: typeof supabase.rebuildContentFields = (...args) => impl().rebuildContentFields(...args);
-export const getModel: typeof supabase.getModel = (...args) => impl().getModel(...args);
-export const listModels: typeof supabase.listModels = (...args) => impl().listModels(...args);
-export const listVersions: typeof supabase.listVersions = (...args) => impl().listVersions(...args);
-export const getVersion: typeof supabase.getVersion = (...args) => impl().getVersion(...args);
-export const updateModelMetadata: typeof supabase.updateModelMetadata = (...args) => impl().updateModelMetadata(...args);
+export const rebuildContentFields = postgres.rebuildContentFields;
+export const getModel = postgres.getModel;
+export const listModels = postgres.listModels;
+export const listVersions = postgres.listVersions;
+export const getVersion = postgres.getVersion;
+export const updateModelMetadata = postgres.updateModelMetadata;
 
 export async function diffVersions(
   modelId: string,
@@ -194,7 +188,7 @@ export async function applyChange(params: {
     };
   }
 
-  await logPlatformEventFor("schema", {
+  await logPlatformEvent({
     workspaceId: params.model.workspace_id,
     actorAdminUserId: params.actorAdminUserId,
     action: "schema.migration.started",
@@ -203,7 +197,7 @@ export async function applyChange(params: {
     metadata: { fromVersion: currentVersion.version_number, toVersion: currentVersion.version_number + 1 },
   });
 
-  const applied = await impl().applySchemaVersion({
+  const applied = await postgres.applySchemaVersion({
     model: params.model,
     actorId: params.actorAdminUserId,
     schema: proposedSchema,
@@ -213,7 +207,7 @@ export async function applyChange(params: {
   });
 
   if (!applied.ok) {
-    await logPlatformEventFor("schema", {
+    await logPlatformEvent({
       workspaceId: params.model.workspace_id,
       actorAdminUserId: params.actorAdminUserId,
       action: "schema.migration.failed",

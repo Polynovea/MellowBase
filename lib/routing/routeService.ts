@@ -1,11 +1,7 @@
-// Routing area, route service: types and the backend dispatcher.
+// Routing area, route service: types.
 //
-// Each function runs on Supabase (routeService.supabase.ts) or directly on PostgreSQL
-// (routeService.postgres.ts), chosen per call by the `routing` switch in POLYNOVEA_DATA_BACKEND.
-// Both implementations keep the same signatures and return shapes, so the routes do not change.
-import { usesDirectPostgres } from "@/lib/db/backend";
+// The queries run on PostgreSQL in routeService.postgres.ts.
 import * as postgres from "@/lib/routing/routeService.postgres";
-import * as supabase from "@/lib/routing/routeService.supabase";
 
 export { normalizePath } from "@/lib/routing/routePaths";
 
@@ -43,16 +39,13 @@ export interface RouteHistoryRow {
   created_at: string;
 }
 
-// Compile-time check that the direct implementation matches the Supabase one exactly.
-const direct: typeof supabase = postgres;
-const impl = (): typeof supabase => (usesDirectPostgres("routing") ? direct : supabase);
 
-export const checkPathCollision: typeof supabase.checkPathCollision = (...args) => impl().checkPathCollision(...args);
-export const listRoutes: typeof supabase.listRoutes = (...args) => impl().listRoutes(...args);
-export const getSiteTree: typeof supabase.getSiteTree = (...args) => impl().getSiteTree(...args);
-export const registerRoute: typeof supabase.registerRoute = (...args) => impl().registerRoute(...args);
-export const syncRouteRelations: typeof supabase.syncRouteRelations = (...args) => impl().syncRouteRelations(...args);
-export const updateRoutePath: typeof supabase.updateRoutePath = (...args) => impl().updateRoutePath(...args);
-export const updateRouteDiscoverability: typeof supabase.updateRouteDiscoverability = (...args) => impl().updateRouteDiscoverability(...args);
-export const deleteRoute: typeof supabase.deleteRoute = (...args) => impl().deleteRoute(...args);
-export const getRoute: typeof supabase.getRoute = (...args) => impl().getRoute(...args);
+export const checkPathCollision = postgres.checkPathCollision;
+export const listRoutes = postgres.listRoutes;
+export const getSiteTree = postgres.getSiteTree;
+export const registerRoute = postgres.registerRoute;
+export const syncRouteRelations = postgres.syncRouteRelations;
+export const updateRoutePath = postgres.updateRoutePath;
+export const updateRouteDiscoverability = postgres.updateRouteDiscoverability;
+export const deleteRoute = postgres.deleteRoute;
+export const getRoute = postgres.getRoute;

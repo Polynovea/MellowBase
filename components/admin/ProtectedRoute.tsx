@@ -4,13 +4,22 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ArrowRight, Lock, User } from "lucide-react";
-import { getSupabaseBrowserIdentityProvider } from "@/lib/auth/supabaseProvider";
+import { getBrowserIdentityProvider, usesBuiltinAuth } from "@/lib/auth/browser";
+import { installAdminFetch } from "@/lib/auth/adminFetch";
+import BuiltinSignInForm from "@/components/admin/auth/BuiltinSignInForm";
+import StepUpDialog from "@/components/admin/auth/StepUpDialog";
+
+// The admin API client: installed before any admin page's effects run, so every /api/ call carries
+// the right credential (and, for the built-in auth, the CSRF token).
+if (typeof window !== "undefined") installAdminFetch();
 import { canAccessPath } from "@/lib/admin/access";
 import { useAdminAccess } from "@/lib/admin/useAdminAccess";
 
 function LoginScreen({
-  identifier, setIdentifier, password, setPassword, error, loading, onSubmit,
+  identifier, setIdentifier, password, setPassword, error, loading, onSubmit, form,
 }: {
+  /** Replaces the password form (the built-in auth's own sign-in flow). */
+  form?: React.ReactNode;
   identifier: string;
   setIdentifier: (v: string) => void;
   password: string;
@@ -84,6 +93,12 @@ function LoginScreen({
             </div>
 
             {/* Form */}
+            {form ? (
+              <>
+                {form}
+                {error && <p role="alert" className="mt-4 rounded-xl border border-danger bg-danger-muted px-3 py-2.5 text-xs text-danger">{error}</p>}
+              </>
+            ) : (
             <form onSubmit={onSubmit} aria-busy={loading} className="flex flex-col gap-5">
               <div className="flex flex-col gap-1.5">
                 <label htmlFor="login-email" className="font-body text-[10px] font-semibold uppercase tracking-[0.1em] text-fg-muted">
@@ -148,6 +163,7 @@ function LoginScreen({
                 </button>
               </div>
             </form>
+            )}
 
             {/* Footer */}
             <div className="mt-8 flex flex-col items-center gap-3">
@@ -203,7 +219,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
 
     const resolvedEmail = identifier.trim().toLowerCase();
 
-    const { error } = await getSupabaseBrowserIdentityProvider().signInWithPassword({ email: resolvedEmail, password });
+    const { error } = await getBrowserIdentityProvider().signInWithPassword({ email: resolvedEmail, password });
     if (error) setError(error.message);
 
     setLoading(false);
@@ -218,7 +234,13 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
   }
 
   if (!session || !allowed) {
-    return <LoginScreen identifier={identifier} setIdentifier={setIdentifier} password={password} setPassword={setPassword} error={error || accessError} loading={loading} onSubmit={handleLogin} />;
+    return (
+      <LoginScreen
+        identifier={identifier} setIdentifier={setIdentifier} password={password} setPassword={setPassword}
+        error={error || accessError} loading={loading} onSubmit={handleLogin}
+        form={usesBuiltinAuth() ? <BuiltinSignInForm /> : undefined}
+      />
+    );
   }
 
   if (!canAccessPath(profile, pathname)) {
@@ -241,7 +263,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
             </Link>
             <button
               type="button"
-              onClick={() => void getSupabaseBrowserIdentityProvider().signOut()}
+              onClick={() => void getBrowserIdentityProvider().signOut()}
               className="inline-flex items-center justify-center rounded-xl border border-outline px-5 py-3 font-body text-[12px] font-bold uppercase tracking-[0.08em] text-on-surface-variant bg-transparent cursor-pointer"
             >
               Log Out
@@ -252,5 +274,10 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
     );
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      <StepUpDialog email={session.user.email} />
+    </>
+  );
 }

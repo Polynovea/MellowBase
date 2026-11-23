@@ -1,15 +1,14 @@
-// Direct PostgreSQL implementation of the routing area's route service (phase 1, wave 1).
+// PostgreSQL implementation of the routing area's route service (phase 1, wave 1).
 //
-// Same signatures and return shapes as routeService.supabase.ts; the dispatcher in routeService.ts
-// picks one per the `routing` switch. Differences that are deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Registering a route (un-canonicalizing the entry's other routes, the insert, its dependency
-//   edges and the audit row) is one transaction. The Supabase path cleared the old canonical flag
-//   first and could then fail the insert, leaving the entry with no canonical route.
+// edges and the audit row) is one transaction. The Supabase path cleared the old canonical flag
+// first and could then fail the insert, leaving the entry with no canonical route.
 // - A path change and its dependency edges commit together, as does a delete and its audit row.
 // - A collision check that finds more than one conflicting route reports a collision. The Supabase
-//   path's .maybeSingle() errored on two rows and that error read as "no collision".
+// path's .maybeSingle() errored on two rows and that error read as "no collision".
 // - Malformed IDs in reads behave as "not found", as they did over PostgREST; every list query
-//   has an explicit limit and every statement is scoped by workspace_id.
+// has an explicit limit and every statement is scoped by workspace_id.
 import { callFunction, DEFAULT_LIST_LIMIT, expectOne, getDb, withTransaction, type DbExecutor } from "@/lib/db/index";
 import { recordPlatformEvent } from "@/lib/platform/audit.postgres";
 import { buildRouteTree, collectRouteRelations, normalizePath } from "@/lib/routing/routePaths";

@@ -11,6 +11,13 @@ import { allowsPrivateNetwork, assertSafeOutboundUrl } from "@/lib/infrastructur
 import type { EnvironmentKind } from "@/lib/infrastructure/types";
 import { deleteObject, resolveObjectUrl, uploadObject, createPresignedUpload as createLegacyR2PresignedUpload } from "@/lib/r2Storage";
 import { guardedFetchFor, guardedS3RequestHandler } from "@/lib/infrastructure/guardedNetwork";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdir } from "node:fs/promises";
+import type { Readable } from "node:stream";
+import { isWorkspaceStorageKey } from "@/lib/media/storageKeys";
+import { localStorageRoot, removeLocalObject, writeLocalObject } from "@/lib/media/localDiskStorage";
+import { azureSettingsFrom, createAzureBlobStore } from "@/lib/media/azureBlobStorage";
+import { cmsBaseUrl, mediaLinkUrl, signedReadUrl, signedUploadUrl } from "@/lib/media/signedStorageUrls";
 import { activeStorageConnections, defaultEnvironment, environmentKind as environmentKindOf, exactStorageConnection, findEnvironment, type EnvironmentRow, type StorageConnectionRow } from "@/lib/media/mediaData";
 
 export interface StorageProvider {
@@ -20,9 +27,22 @@ export interface StorageProvider {
   readonly environmentId: string | null;
   upload(input: { body: Buffer; key: string; contentType: string }): Promise<{ key: string; url: string }>;
   remove(key: string): Promise<void>;
+  /** Short-lived (or public) URL for reading now: admin previews and API read URLs. */
   resolveReadUrl(key: string): Promise<string>;
+  /**
+   * URL to store in content (image fields, rich text). It never expires: the bucket's public/CDN URL
+   * when one is configured, otherwise the CMS's permanent media link (/api/storage/media), which signs a
+   * fresh read on every request. createPresignedUpload's readUrl and upload's url are this URL.
+   */
+  contentUrl(key: string): Promise<string>;
   /** contentLength is signed into the URL, so the provider rejects a body of any other size. */
   createPresignedUpload?(key: string, contentType: string, contentLength: number): Promise<{ uploadUrl: string; readUrl: string }>;
+  /**
+   * Stores a body streamed through the app's signed upload route (adapters whose own URL signing cannot
+   * bind size and type). The body is already limited to the signed length and type; the adapter must
+   * only make the object visible once the stream ends without error, and never replace an existing one.
+   */
+  writeStream?(input: { key: string; contentType: string; contentLength: number; body: Readable }): Promise<void>;
 }
 
 function configText(config: Record<string, unknown>, key: string) {
@@ -53,6 +73,8 @@ function aliasesFor(type: string) {
   if (type === "storage.s3") return new Set(["s3", "aws-s3", "aws_s3", type]);
   if (type === "storage.minio") return new Set(["minio", type]);
   if (type === "storage.supabase") return new Set(["supabase", "supabase-storage", "supabase_storage", type]);
+  if (type === "storage.azure-blob") return new Set(["azure", "azure-blob", "azure_blob", "blob", type]);
+  if (type === "storage.local") return new Set(["local", "local-disk", "local_disk", "disk", "filesystem", type]);
   return new Set([type]);
 }
 
@@ -67,6 +89,9 @@ function legacyR2Provider(): StorageProvider {
     },
     remove: deleteObject,
     async resolveReadUrl(key) {
+      return resolveObjectUrl(key);
+    },
+    async contentUrl(key) {
       return resolveObjectUrl(key);
     },
     createPresignedUpload: createLegacyR2PresignedUpload,
@@ -112,6 +137,11 @@ async function s3Provider(connection: StorageConnectionRow, credentials: Record<
     return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: 3600 });
   };
 
+  // A private bucket's presigned GET expires; content gets the permanent CMS media link instead.
+  const contentUrl = async (key: string) => publicUrl
+    ? `${publicUrl}/${encodeStorageKey(key)}`
+    : mediaLinkUrl({ providerKey: connectionKey(connection.id), workspaceId: connection.workspace_id, key, servedFromDisk: false }, cmsBaseUrl(configText(config, "appUrl")));
+
   return {
     key: connectionKey(connection.id),
     kind: type,
@@ -119,15 +149,16 @@ async function s3Provider(connection: StorageConnectionRow, credentials: Record<
     environmentId: connection.environment_id,
     async upload(input) {
       await client.send(new PutObjectCommand({ Bucket: bucket, Key: input.key, Body: input.body, ContentType: input.contentType }));
-      return { key: input.key, url: await resolveReadUrl(input.key) };
+      return { key: input.key, url: await contentUrl(input.key) };
     },
+    contentUrl,
     async remove(key) {
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     },
     resolveReadUrl,
     async createPresignedUpload(key, contentType, contentLength) {
       const uploadUrl = await getSignedUrl(client, new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType, ContentLength: contentLength }), { expiresIn: 900, signableHeaders: new Set(["content-type", "content-length"]) });
-      return { uploadUrl, readUrl: await resolveReadUrl(key) };
+      return { uploadUrl, readUrl: await contentUrl(key) };
     },
   };
 }
@@ -151,6 +182,11 @@ async function supabaseStorageProvider(connection: StorageConnectionRow, credent
     return data.signedUrl;
   };
 
+  // Public and CDN URLs are permanent; a private bucket's signed URL is not, so content gets the media link.
+  const contentUrl = async (path: string) => configuredPublicUrl || visibility === "public"
+    ? resolveReadUrl(path)
+    : mediaLinkUrl({ providerKey: connectionKey(connection.id), workspaceId: connection.workspace_id, key: path, servedFromDisk: false }, cmsBaseUrl(configText(config, "appUrl")));
+
   return {
     key: connectionKey(connection.id),
     kind: connection.connector_type,
@@ -159,13 +195,112 @@ async function supabaseStorageProvider(connection: StorageConnectionRow, credent
     async upload(input) {
       const { error } = await client.storage.from(bucket).upload(input.key, input.body, { contentType: input.contentType, upsert: false });
       if (error) throw new Error(error.message);
-      return { key: input.key, url: await resolveReadUrl(input.key) };
+      return { key: input.key, url: await contentUrl(input.key) };
     },
     async remove(path) {
       const { error } = await client.storage.from(bucket).remove([path]);
       if (error) throw new Error(error.message);
     },
     resolveReadUrl,
+    contentUrl,
+  };
+}
+
+/** Provider key recorded on assets stored by the server's default local disk (no storage connection). */
+export const SERVER_LOCAL_PROVIDER_KEY = "local";
+
+function localDiskProvider(input: { key: string; workspaceId: string; connectionId: string | null; environmentId: string | null; appUrl?: string }): StorageProvider {
+  const root = localStorageRoot();
+  const baseUrl = cmsBaseUrl(input.appUrl);
+  const key = input.key;
+  // Keys are always "<workspaceId>/...": this provider never touches another workspace's files.
+  const own = (path: string) => {
+    if (!isWorkspaceStorageKey(input.workspaceId, path)) throw new Error("Storage key is outside this workspace");
+    return path;
+  };
+  const contentUrl = async (path: string) => mediaLinkUrl({ providerKey: key, workspaceId: input.workspaceId, key: own(path), servedFromDisk: true }, baseUrl);
+  return {
+    key,
+    kind: "storage.local",
+    connectionId: input.connectionId,
+    environmentId: input.environmentId,
+    async upload(upload) {
+      await writeLocalObject(root, own(upload.key), upload.body);
+      return { key: upload.key, url: await contentUrl(upload.key) };
+    },
+    remove: (path) => removeLocalObject(root, own(path)),
+    async resolveReadUrl(path) {
+      return signedReadUrl(own(path), baseUrl);
+    },
+    contentUrl,
+    async createPresignedUpload(path, contentType, contentLength) {
+      return {
+        uploadUrl: signedUploadUrl({ providerKey: key, workspaceId: input.workspaceId, key: own(path), contentType, contentLength }, baseUrl),
+        readUrl: await contentUrl(path),
+      };
+    },
+    async writeStream(upload) {
+      await writeLocalObject(root, own(upload.key), upload.body, { expectedBytes: upload.contentLength });
+    },
+  };
+}
+
+function connectionLocalDiskProvider(connection: StorageConnectionRow): StorageProvider {
+  return localDiskProvider({ key: connectionKey(connection.id), workspaceId: connection.workspace_id, connectionId: connection.id, environmentId: connection.environment_id, appUrl: configText(connection.config_json ?? {}, "appUrl") });
+}
+
+/** True when every variable the legacy R2 provider needs is set. */
+export function legacyR2Configured(env: Record<string, string | undefined> = process.env) {
+  return Boolean(env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && (env.R2_ACCOUNT_ID || env.R2_S3_ENDPOINT));
+}
+
+/**
+ * The server's own disk, for a workspace with no storage connection on a self-hosted install. Checks
+ * the directory is usable first, so a misconfigured install fails with a message naming the setting.
+ */
+async function serverLocalDiskProvider(workspaceId: string, environmentId: string | null): Promise<StorageProvider> {
+  let root: string;
+  try {
+    root = localStorageRoot();
+    await mkdir(root, { recursive: true, mode: 0o750 });
+    await access(root, fsConstants.R_OK | fsConstants.W_OK);
+  } catch {
+    throw new Error("No storage connection is configured, and the server storage directory (POLYNOVEA_STORAGE_DIR, default /var/lib/polynovea/storage) is not a writable directory. Set POLYNOVEA_STORAGE_DIR to a writable absolute path, or add a storage connection.");
+  }
+  return localDiskProvider({ key: SERVER_LOCAL_PROVIDER_KEY, workspaceId, connectionId: null, environmentId });
+}
+
+async function azureBlobProvider(connection: StorageConnectionRow, credentials: Record<string, string>, environmentKind: EnvironmentKind): Promise<StorageProvider> {
+  const config = connection.config_json ?? {};
+  const settings = azureSettingsFrom(config, credentials, environmentKind);
+  const store = await createAzureBlobStore(settings, environmentKind);
+  const baseUrl = cmsBaseUrl(configText(config, "appUrl"));
+  const key = connectionKey(connection.id);
+  const contentUrl = async (path: string) => settings.publicUrl
+    ? store.readUrl(path)
+    : mediaLinkUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, servedFromDisk: false }, baseUrl);
+  return {
+    key,
+    kind: connection.connector_type,
+    connectionId: connection.id,
+    environmentId: connection.environment_id,
+    async upload(input) {
+      await store.put(input.key, input.body, input.contentType);
+      return { key: input.key, url: await contentUrl(input.key) };
+    },
+    remove: (path) => store.remove(path),
+    resolveReadUrl: (path) => store.readUrl(path),
+    contentUrl,
+    async createPresignedUpload(path, contentType, contentLength) {
+      // A SAS cannot bind the upload size, so the browser uploads through the app's signed URL instead.
+      return {
+        uploadUrl: signedUploadUrl({ providerKey: key, workspaceId: connection.workspace_id, key: path, contentType, contentLength }, baseUrl),
+        readUrl: await contentUrl(path),
+      };
+    },
+    async writeStream(input) {
+      await store.put(input.key, input.body, input.contentType);
+    },
   };
 }
 
@@ -178,6 +313,8 @@ async function providerFromConnection(workspaceId: string, connection: StorageCo
   const credentials = await resolveConnectionCredentials(workspaceId, connection.id);
   if (["storage.r2", "storage.s3", "storage.minio"].includes(connection.connector_type)) return s3Provider(connection, credentials, environmentKind);
   if (connection.connector_type === "storage.supabase") return supabaseStorageProvider(connection, credentials, environmentKind);
+  if (connection.connector_type === "storage.azure-blob") return azureBlobProvider(connection, credentials, environmentKind);
+  if (connection.connector_type === "storage.local") return connectionLocalDiskProvider(connection);
   throw new Error(`Storage connector ${connection.connector_type} has no media data-plane adapter`);
 }
 
@@ -218,15 +355,23 @@ export async function getStorageProvider(params: {
     return providerFromConnection(workspaceId, connection);
   }
 
+  // Assets keep reading from where they were written: "r2" from R2, "local" from the server's disk.
   if (storedKey === "r2" && !params.environmentId) return legacyR2Provider();
-  if (!workspaceId) return legacyR2Provider();
+  if (storedKey === SERVER_LOCAL_PROVIDER_KEY && !params.environmentId) {
+    if (!workspaceId) throw new Error("Workspace ID is required to resolve a server-disk asset");
+    return serverLocalDiskProvider(workspaceId, null);
+  }
+  if (!workspaceId) {
+    if (legacyR2Configured()) return legacyR2Provider();
+    throw new Error("Workspace ID is required to choose a storage provider");
+  }
 
   const environment = await selectEnvironment(workspaceId, params.environmentId);
   const connection = await selectActiveStorageConnection(workspaceId, environment);
   if (connection) return providerFromConnection(workspaceId, connection);
 
-  // Preserve Polynovea's existing deployment while OSS/environment installs move to first-class Connections.
-  if (process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && (process.env.R2_ACCOUNT_ID || process.env.R2_S3_ENDPOINT)) return legacyR2Provider();
-
-  throw new Error("No active storage connection is configured for this environment. Open Connections, add/verify storage, then retry.");
+  // No storage connection: an existing R2 deployment keeps R2; otherwise the server's own disk, so a
+  // self-hosted install stores media with no setup.
+  if (legacyR2Configured()) return legacyR2Provider();
+  return serverLocalDiskProvider(workspaceId, environment?.id ?? null);
 }

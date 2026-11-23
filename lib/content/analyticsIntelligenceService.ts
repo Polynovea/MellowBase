@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as analyticsData from "@/lib/content/analyticsData";
 import { getPagesForPeriod, getPagesForPeriodWithCredentials } from "@/lib/admin/ga4";
 import { enqueueDeliveryJob } from "@/lib/operations/deliveryJobService";
-import { logPlatformEventFor } from "@/lib/platform/audit";
+import { logPlatformEvent } from "@/lib/platform/audit";
 import { resolveConnectionCredentials } from "@/lib/infrastructure/credentialProvider";
 
 const DAY = 86_400_000;
@@ -49,7 +49,7 @@ export async function queueAnalyticsSync(params: { workspaceId: string; actorId:
     correlation_id: correlationId,
     updated_at: new Date().toISOString(),
   });
-  await logPlatformEventFor("content", { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "analytics.sync_queued", entityType: "analytics_connector", entityId: connector.id, metadata: { correlationId, freshThrough } });
+  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "analytics.sync_queued", entityType: "analytics_connector", entityId: connector.id, metadata: { correlationId, freshThrough } });
   return job;
 }
 

@@ -8,7 +8,7 @@ const response = (success: boolean, data: unknown, error: string | null, status 
   NextResponse.json({ success, data, error, timestamp: new Date().toISOString() }, { status });
 
 export async function GET(req: Request) {
-  const auth = await requirePlatformAccess(req, { permission: "content.entry.read" });
+  const auth = await requirePlatformAccess(req, { permission: "content.entry.read", stepUp: true });
   if (auth.error) return auth.error;
 
   const modelId = new URL(req.url).searchParams.get("modelId");

@@ -1,14 +1,13 @@
-// Direct PostgreSQL implementation of the content collaboration service (phase 1, wave 3).
+// PostgreSQL implementation of the content collaboration service (phase 1, wave 3).
 //
-// Same signatures and return shapes as collaborationService.supabase.ts. Differences that are
-// deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Embeds become explicit joins scoped by workspace: comment mentions are read through their comment
-//   (content_comment_mentions has no workspace_id), the queue's entry and model are joined on
-//   (id, workspace_id), and its release on (id, workspace_id).
+// (content_comment_mentions has no workspace_id), the queue's entry and model are joined on
+// (id, workspace_id), and its release on (id, workspace_id).
 // - Assigning (assignment, notification, audit) and commenting (comment, mentions, notifications,
-//   audit) each commit in one transaction; the Supabase path ignored errors from the follow-up writes.
-// - Only active workspace members can be mentioned (on both paths): a mention notifies its recipient
-//   about the entry.
+// audit) each commit in one transaction; the Supabase path ignored errors from the follow-up writes.
+// - Only active workspace members can be mentioned: a mention notifies its recipient
+// about the entry.
 // - Database text never reaches the caller; lists have explicit limits and id tie-breaks.
 import { sql } from "kysely";
 import { DEFAULT_LIST_LIMIT, getDb, maybeOne, withTransaction } from "@/lib/db/index";

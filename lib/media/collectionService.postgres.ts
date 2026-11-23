@@ -1,12 +1,12 @@
-// Direct PostgreSQL implementation of the media area's collection service (phase 1, wave 2).
+// PostgreSQL implementation of the media area's collection service (phase 1, wave 2).
 //
-// Same signatures and return shapes as collectionService.supabase.ts. Differences that are deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Create, update and delete commit with their audit rows in one transaction.
 // - Asset counts are counted in SQL (the Supabase path loaded one row per collection membership and
-//   counted in memory, capped at 1000 by PostgREST).
+// counted in memory, capped at 1000 by PostgREST).
 // - Malformed IDs in reads are "not found"; explicit limits; every statement scoped by workspace_id.
 // The composite foreign keys on media_collection_assets ((collection_id, workspace_id) and
-// (asset_id, workspace_id)) keep a collection and its assets in one workspace on both paths.
+// (asset_id, workspace_id)) keep a collection and its assets in one workspace.
 import { DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne, withTransaction } from "@/lib/db/index";
 import { recordPlatformEvent } from "@/lib/platform/audit.postgres";
 import type { AssetRow } from "@/lib/media/assetService";

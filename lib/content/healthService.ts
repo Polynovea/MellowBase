@@ -5,7 +5,7 @@ import { runEntryPreflight } from "@/lib/content/preflightService";
 import { getAssetUsageGraph, getImpact } from "@/lib/content/impactGraphService";
 import { getEntryPerformanceComparison } from "@/lib/content/analyticsIntelligenceService";
 import { enqueueDeliveryJob } from "@/lib/operations/deliveryJobService";
-import { logPlatformEventFor } from "@/lib/platform/audit";
+import { logPlatformEvent } from "@/lib/platform/audit";
 import * as healthData from "@/lib/content/healthData";
 
 const DAY = 86_400_000;
@@ -13,7 +13,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TASK_STATUSES = new Set(["open", "in_progress", "done", "dismissed"]);
 const TASK_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
 
-/** Input checks shared by both paths: malformed ids read as "not found", unknown values are refused. */
+/** Input checks: malformed ids read as "not found", unknown values are refused. */
 function checkTaskInput(params: { findingId?: string | null; entityType?: "entry" | "asset"; entityId?: string; assignedTo?: string | null; status?: string; priority?: string; dueAt?: string | null }) {
   if (params.findingId && !UUID.test(params.findingId)) throw new Error("Health finding not found in workspace");
   if (params.entityId !== undefined && !UUID.test(params.entityId)) throw new Error(params.entityType === "asset" ? "Asset not found in workspace" : "Entry not found in workspace");
@@ -105,7 +105,7 @@ export async function scanContentHealth(params: { workspaceId: string; actorId?:
 
   const resolved = await healthData.resolveUndetected(params.workspaceId, detected);
 
-  if (params.actorId) await logPlatformEventFor("content", { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "content_health.scan_completed", entityType: "workspace", entityId: params.workspaceId, metadata: { entries: entries.length, assets: assets.length, findingsWritten, resolved } });
+  if (params.actorId) await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "content_health.scan_completed", entityType: "workspace", entityId: params.workspaceId, metadata: { entries: entries.length, assets: assets.length, findingsWritten, resolved } });
   return { entries: entries.length, assets: assets.length, findingsWritten, resolved };
 }
 

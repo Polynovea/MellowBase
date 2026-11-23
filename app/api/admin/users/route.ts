@@ -5,7 +5,7 @@ import { ACCESS_MODULES, normalizeAdminUser, SURFACE_LABELS } from "@/lib/admin/
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { hasServiceRoleKey } from "@/lib/admin/serviceRole";
-import { getSupabaseServerIdentityProvider } from "@/lib/auth/supabaseProvider";
+import { getServerIdentityProvider } from "@/lib/auth/server";
 import { createAdminProfile, findProfileIdByAuthUserId, listAdminUsersWithActivity } from "@/lib/admin/adminUserService";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
@@ -50,7 +50,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const auth = await requireAdminRequest(req, { requireMaster: true, requiredModule: "cms.access", requiredWriteModule: "cms.access" });
+  const auth = await requireAdminRequest(req, { requireMaster: true, requiredModule: "cms.access", requiredWriteModule: "cms.access", stepUp: true });
   if (auth.error) return auth.error;
 
   try {
@@ -61,7 +61,7 @@ export async function POST(req: Request) {
 
     const normalizedEmail = parsed.email.toLowerCase();
     const normalizedUsername = parsed.username.toLowerCase();
-    const identity = getSupabaseServerIdentityProvider();
+    const identity = getServerIdentityProvider();
 
     const allowedModules = new Set(ACCESS_MODULES.map((module) => module.key));
     const filteredModules = parsed.module_access.filter((module) => allowedModules.has(module as any));

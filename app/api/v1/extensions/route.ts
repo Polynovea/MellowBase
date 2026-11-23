@@ -1,15 +1,17 @@
 import { apiError, apiSuccess } from "@/lib/developer/apiContract";
 import { requireDeveloperApi } from "@/lib/developer/apiAuth";
 import { installExtension, registerExtensionManifest } from "@/lib/developer/extensionGovernanceService";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as routeData from "@/lib/http/routeData";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 export async function GET(req: Request) {
   const auth = await requireDeveloperApi(req, { scope: "extension.read" });
   if (auth.error) return auth.error;
-  const { data, error } = await createServiceRoleClient().from("extension_installations").select("*,extension_manifests(extension_key,name,version,publisher,manifest_sha256)").eq("workspace_id", auth.data!.workspaceId).order("created_at", { ascending: false });
-  if (error) return apiError("EXTENSION_LIST_FAILED", clientErrorMessage(error), 500, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
-  return apiSuccess(data ?? [], { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
+  try {
+    return apiSuccess(await routeData.extensionInstallations(auth.data!.workspaceId), { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
+  } catch (error) {
+    return apiError("EXTENSION_LIST_FAILED", clientErrorMessage(error), 500, { requestId: auth.data!.requestId, rateLimit: auth.data!.rateLimit });
+  }
 }
 
 export async function POST(req: Request) {

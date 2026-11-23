@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import {
   createAdminProfile,
   deleteAdminProfile,
@@ -11,10 +10,6 @@ import {
   updateOwnDisplayName,
   type NewAdminProfile,
 } from "@/lib/admin/adminUserService";
-
-// The admin user profile writes behind /api/admin/users and /api/admin/me. Profiles join the seeded
-// default workspace ("polynovea") with the system role that matches their global role.
-const recorder = createRecorder();
 
 function payload(suffix: string, overrides: Partial<NewAdminProfile> = {}): NewAdminProfile {
   return {
@@ -34,7 +29,7 @@ async function membership(backend: BackendFixtures, profileId: string) {
   );
 }
 
-describeBothBackends("admin", "admin user profiles", (backend) => {
+describeWithDatabase("admin user profiles", (backend) => {
   afterEach(() => { delete process.env.POLYNOVEA_DEFAULT_WORKSPACE_SLUG; });
 
   it("creates a profile with its default workspace membership, and updates both together", async () => {
@@ -58,7 +53,6 @@ describeBothBackends("admin", "admin user profiles", (backend) => {
 
     expect((await updateOwnDisplayName(created.id, "Me")).display_name).toBe("Me");
     expect((await findAdminUser(created.id))?.display_name).toBe("Me");
-    recorder.record(backend.name, "profile keys", Object.keys(created).sort());
   });
 
   it("takes over the profile the auth trigger provisioned", async () => {
@@ -97,8 +91,4 @@ describeBothBackends("admin", "admin user profiles", (backend) => {
     expect(await membership(backend, created.id)).toEqual([]);
     expect(await findAdminUser("not-a-uuid")).toBeNull();
   });
-});
-
-describe("admin user profile backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

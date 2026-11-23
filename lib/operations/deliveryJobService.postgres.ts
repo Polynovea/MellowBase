@@ -1,15 +1,15 @@
-// Direct PostgreSQL implementation of the operations area: delivery jobs (phase 1, wave 1).
+// PostgreSQL implementation of the operations area: delivery jobs (phase 1, wave 1).
 //
-// Same signatures and return shapes as deliveryJobService.supabase.ts. The state changes (enqueue,
-// replay, cancel) stay in their SQL functions, which audit and enforce the workspace themselves.
-// Differences that are deliberate:
+// The state changes (enqueue, replay, cancel) stay in their SQL functions, which audit and enforce
+// the workspace themselves. Deliberate differences from the Supabase path it replaced in phase 1:
 // - A job's attempts and audit trail are read only after the job is found in the workspace (the
-//   Supabase path queried attempts by job ID alone, in parallel, and discarded them if the job was
-//   in another workspace), and both have explicit limits.
+// Supabase path queried attempts by job ID alone, in parallel, and discarded them if the job was
+// in another workspace), and both have explicit limits.
 // - Malformed IDs: getDeliveryJob answers "not found", the others throw a fixed message, as the
-//   Supabase path's errors did after clientErrorMessage.
+// Supabase path's errors did after clientErrorMessage.
 // - jsonb arguments are serialized explicitly.
-import { callFunction, DEFAULT_LIST_LIMIT, getDb, maybeOne } from "@/lib/db/index";
+import type { Selectable } from "kysely";
+import { callFunction, DEFAULT_LIST_LIMIT, getDb, maybeOne, type Database } from "@/lib/db/index";
 import type { DeliveryJobKind, DeliveryJobStatus, EnqueueDeliveryJobInput } from "@/lib/operations/deliveryJobService";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -30,7 +30,8 @@ export async function enqueueDeliveryJob(input: EnqueueDeliveryJobInput) {
     p_correlation_id: input.correlationId ?? null,
   });
   if (!data) throw new Error("Could not enqueue delivery job");
-  return data;
+  // cms_enqueue_delivery_job returns the job row as jsonb.
+  return data as unknown as Selectable<Database["delivery_jobs"]>;
 }
 
 export async function listDeliveryJobs(params: {

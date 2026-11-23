@@ -1,6 +1,6 @@
-// Direct PostgreSQL implementation of saved entry views (phase 1, wave 3). Same signatures and
-// shapes as savedViewService.supabase.ts; create and delete commit with their audit events, and a
-// failed create returns a fixed message (409 for a duplicate name) instead of database text.
+// PostgreSQL implementation of saved entry views (phase 1, wave 3). create and delete commit with
+// their audit events, and a failed create returns a fixed message (409 for a duplicate name)
+// instead of database text.
 import { DEFAULT_LIST_LIMIT, getDb, maybeOne, withTransaction } from "@/lib/db/index";
 import { recordPlatformEvent } from "@/lib/platform/audit.postgres";
 import { normalizeFilters, type SavedEntryView } from "@/lib/content/savedViewService";

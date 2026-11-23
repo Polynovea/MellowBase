@@ -155,17 +155,20 @@ async function seedMlEvidence(workspaceId, environmentId) {
 }
 
 async function sourceCertification() {
+  // An area's rules live in its service and its queries in the area's data modules (moved there in
+  // phase 1), so each area is checked as the service plus its data modules.
+  const area = (...paths) => paths.map((path) => readFileSync(path, 'utf8')).join('\n');
   const files = {
-    world: readFileSync('lib/intelligence/worldModelService.ts', 'utf8'),
+    world: area('lib/intelligence/worldModelService.ts', 'lib/intelligence/worldData.ts'),
     discovery: readFileSync('lib/intelligence/deepDiscoveryService.ts', 'utf8'),
     providerDiscovery: readFileSync('lib/intelligence/providerCapabilityDiscoveryService.ts', 'utf8'),
-    reconciliation: readFileSync('lib/intelligence/reconciliationService.ts', 'utf8'),
-    migration: readFileSync('lib/intelligence/migrationIntelligenceService.ts', 'utf8'),
-    strategy: readFileSync('lib/intelligence/migrationStrategyService.ts', 'utf8'),
-    planning: readFileSync('lib/intelligence/planningService.ts', 'utf8'),
-    remediation: readFileSync('lib/intelligence/remediationService.ts', 'utf8'),
-    ml: readFileSync('lib/intelligence/operationalMlService.ts', 'utf8'),
-    mlGovernance: readFileSync('lib/intelligence/operationalMlGovernanceService.ts', 'utf8'),
+    reconciliation: area('lib/intelligence/reconciliationService.ts', 'lib/intelligence/reconciliationData.ts'),
+    migration: area('lib/intelligence/migrationIntelligenceService.ts', 'lib/intelligence/migrationIntelData.ts'),
+    strategy: area('lib/intelligence/migrationStrategyService.ts', 'lib/intelligence/migrationRunData.ts'),
+    planning: area('lib/intelligence/planningService.ts', 'lib/intelligence/planData.ts', 'lib/intelligence/planExecData.ts'),
+    remediation: area('lib/intelligence/remediationService.ts', 'lib/intelligence/remediationData.ts'),
+    ml: area('lib/intelligence/operationalMlService.ts', 'lib/intelligence/mlData.ts'),
+    mlGovernance: area('lib/intelligence/operationalMlGovernanceService.ts', 'lib/intelligence/mlGovernanceData.ts'),
     predictive: readFileSync('lib/intelligence/predictivePlanningService.ts', 'utf8'),
     adminApi: readFileSync('app/api/operational-intelligence/route.ts', 'utf8'),
     v1Api: readFileSync('app/api/v1/operational-intelligence/route.ts', 'utf8'),

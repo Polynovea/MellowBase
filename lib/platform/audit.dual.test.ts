@@ -1,11 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
+import { expect, it, vi } from "vitest";
+import { describeWithDatabase } from "@/lib/db/testing/database";
 import { logPlatformEvent } from "@/lib/platform/audit";
 
 // The shared audit logger (phase 1, wave 1): every area writes through it, so on both backends an
 // event must land as an audit row plus one webhook delivery and delivery job per matching
 // subscription, and a failure must never reach the caller.
-describeBothBackends("platform", "shared platform audit logger", (backend) => {
+describeWithDatabase("shared platform audit logger", (backend) => {
   async function subscribe(workspaceId: string, filters: string[], active = true) {
     const [row] = await backend.query<{ id: string }>(
       `insert into webhook_subscriptions (workspace_id, name, endpoint_url, event_filters, signing_secret_hash, signing_secret_encrypted, active)
@@ -101,21 +101,5 @@ describeBothBackends("platform", "shared platform audit logger", (backend) => {
       [workspaceId],
     );
     expect(deliveries).toEqual([]);
-  });
-});
-
-describe("shared platform audit logger dispatch", () => {
-  it("does not throw on a malformed backend setting, and logs it", async () => {
-    const previous = process.env.POLYNOVEA_DATA_BACKEND;
-    process.env.POLYNOVEA_DATA_BACKEND = "supabase,platform=mysql";
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    try {
-      await expect(logPlatformEvent({ workspaceId: "x", actorAdminUserId: "x", action: "x", entityType: "x" })).resolves.toBeUndefined();
-      expect(error).toHaveBeenCalledWith(expect.stringContaining('unknown backend "mysql"'));
-    } finally {
-      error.mockRestore();
-      if (previous === undefined) delete process.env.POLYNOVEA_DATA_BACKEND;
-      else process.env.POLYNOVEA_DATA_BACKEND = previous;
-    }
   });
 });

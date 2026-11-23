@@ -1,18 +1,17 @@
-// Direct PostgreSQL implementation of the navigation area (phase 1, wave 1).
+// PostgreSQL implementation of the navigation area (phase 1, wave 1).
 //
-// Same signatures and return shapes as navigationService.supabase.ts; the dispatcher in
-// navigationService.ts picks one per POLYNOVEA_DATA_BACKEND. Differences that are deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Creating a menu, saving a draft and publishing each run in one transaction, together with the
-//   dependency-graph edges and the audit row. The Supabase path ignored errors from its follow-up
-//   writes, so a failure could leave a menu pointing at no draft, or edges out of date.
+// dependency-graph edges and the audit row. The Supabase path ignored errors from its follow-up
+// writes, so a failure could leave a menu pointing at no draft, or edges out of date.
 // - Saving a draft locks the menu row, so two concurrent saves get consecutive version numbers
-//   instead of one failing on the unique version number.
+// instead of one failing on the unique version number.
 // - saveMenuDraft accepts a menu key as well as an ID (the Supabase path looked the menu up by key
-//   but then wrote the key into menu_id, which failed).
+// but then wrote the key into menu_id, which failed).
 // - Tree resolution loads only the routes the tree links to, not every route in the workspace
-//   (PostgREST capped that at 1000 rows, so large workspaces could resolve links to /entry/<id>).
-//   Several routes for one entry resolve deterministically: a route in the requested locale wins,
-//   and among equals the canonical route.
+// (PostgREST capped that at 1000 rows, so large workspaces could resolve links to /entry/<id>).
+// Several routes for one entry resolve deterministically: a route in the requested locale wins,
+// and among equals the canonical route.
 // - "Where used" searches the version JSON in SQL instead of loading every version into memory.
 // - Every list query has an explicit limit, and every statement is scoped by workspace_id.
 import { sql } from "kysely";

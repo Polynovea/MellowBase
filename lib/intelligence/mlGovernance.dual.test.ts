@@ -1,12 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { predictOperationalPlan, recordPlanPredictionOutcomes, trainSupportedOperationalModels, updateOperationalLearningPolicy } from "@/lib/intelligence/operationalMlService";
 import { enforceOperationalLearningRetention, listOperationalMlFeedback, recordPredictionFeedback, refreshOnlineModelEvaluations } from "@/lib/intelligence/operationalMlGovernanceService";
 import { compareOperationalPlanScenarios, listOperationalPlanComparisons, selectOperationalPlanScenario } from "@/lib/intelligence/predictivePlanningService";
-
-const recorder = createRecorder();
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
@@ -29,7 +26,7 @@ async function setup(backend: BackendFixtures) {
   return { workspaceId, adminUserId, environmentId, planId: plan.id };
 }
 
-describeBothBackends(["intelligence"], "ML governance and predictive plan comparison", (backend) => {
+describeWithDatabase("ML governance and predictive plan comparison", (backend) => {
   it("evaluates predictions online, records feedback and applies retention inside the workspace", async () => {
     const s = await setup(backend);
     const { predictions } = await predictOperationalPlan({ workspaceId: s.workspaceId, environmentId: s.environmentId, planId: s.planId });
@@ -57,7 +54,6 @@ describeBothBackends(["intelligence"], "ML governance and predictive plan compar
     expect(retention).toMatchObject({ retentionDays: 7, deleted: { featureSnapshots: 0, predictions: 0, operationalEvents: 2, evaluations: 0 } });
     expect(await backend.query("select 1 from operational_events where workspace_id = $1 and event_type = 'old'", [other.workspaceId])).toHaveLength(2);
     expect(await backend.query("select 1 from operational_events where workspace_id = $1 and event_type = 'plan.execution'", [s.workspaceId])).toHaveLength(30);
-    recorder.record(backend.name, "governance", { evaluation: Object.keys(evaluations[0]).sort(), feedback: Object.keys(feedback).sort(), retention: retention.deleted });
   });
 
   it("compares plan scenarios, records the selected one and lists comparisons per workspace", async () => {
@@ -77,10 +73,5 @@ describeBothBackends(["intelligence"], "ML governance and predictive plan compar
     expect(await listOperationalPlanComparisons(other.workspaceId, s.environmentId)).toEqual([]);
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and action like 'operational.plan.%' order by action", [s.workspaceId]);
     expect(events.map((e) => e.action)).toEqual(["operational.plan.compared", "operational.plan.scenario_selected"]);
-    recorder.record(backend.name, "comparison", { keys: Object.keys(selected).sort(), scenarios: comparison.comparison_json.scenarios.map((x: { key: string; predictions: unknown[] }) => `${x.key}:${x.predictions.length}`) });
   });
-});
-
-describe("ML governance backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

@@ -1,11 +1,10 @@
-// Direct PostgreSQL implementation of preview tokens and release previews (phase 1, wave 3).
+// PostgreSQL implementation of preview tokens and release previews (phase 1, wave 3).
 //
-// Same signatures and return shapes as previewService.supabase.ts. The embeds become explicit joins,
-// each scoped to the token's or release's workspace:
+// The embeds become explicit joins, each scoped to the token's or release's workspace:
 // - a token's version must belong to its entry (v.entry_id = t.entry_id), its entry to the token's
-//   workspace, and the entry's model to the same workspace;
+// workspace, and the entry's model to the same workspace;
 // - a release preview reads items through the release, each pinned version through its entry in the
-//   workspace, and the entry's model in the same workspace.
+// workspace, and the entry's model in the same workspace.
 // Creating a token commits with its audit event. The public preview page looks a token up by its
 // SHA-256 hash only, as before; an expired or revoked token resolves to nothing.
 import { randomBytes } from "node:crypto";

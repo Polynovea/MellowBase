@@ -1,39 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
-import { assertDataBackendSetting, dataBackendFor, parseDataBackendSetting, usesDirectPostgres } from "@/lib/db/backend";
+import { describe, expect, it } from "vitest";
 import { databaseUrlFromEnv, poolConfigFromEnv, postgresTimestampToIso } from "@/lib/db/pool";
 import { expectOne, maybeOne, NotFoundError } from "@/lib/db/rows";
 import { callFunction } from "@/lib/db/functions";
 import { isClientSafeError } from "@/lib/http/clientError";
-
-describe("data backend switch", () => {
-  it("defaults every area to supabase", () => {
-    expect(dataBackendFor("taxonomy", {})).toBe("supabase");
-    expect(dataBackendFor("content", { POLYNOVEA_DATA_BACKEND: "" })).toBe("supabase");
-  });
-
-  it("applies a bare default and per-area overrides", () => {
-    const env = { POLYNOVEA_DATA_BACKEND: "supabase, taxonomy=postgres" };
-    expect(dataBackendFor("taxonomy", env)).toBe("postgres");
-    expect(dataBackendFor("content", env)).toBe("supabase");
-    expect(usesDirectPostgres("taxonomy", env)).toBe(true);
-    expect(dataBackendFor("content", { POLYNOVEA_DATA_BACKEND: "postgres,content=supabase" })).toBe("supabase");
-    expect(dataBackendFor("media", { POLYNOVEA_DATA_BACKEND: "POSTGRES" })).toBe("postgres");
-  });
-
-  it("rejects unknown areas and backends instead of guessing", () => {
-    expect(() => parseDataBackendSetting("mysql")).toThrow(/unknown backend/);
-    expect(() => parseDataBackendSetting("taxonomy=mysql")).toThrow(/unknown backend/);
-    expect(() => parseDataBackendSetting("taxonmy=postgres")).toThrow(/unknown area/);
-    expect(() => assertDataBackendSetting({ POLYNOVEA_DATA_BACKEND: "taxonmy=postgres" })).toThrow(/unknown area/);
-  });
-
-  it("keeps the detail out of the request-time error", () => {
-    const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(() => dataBackendFor("taxonomy", { POLYNOVEA_DATA_BACKEND: "taxonmy=postgres" })).toThrow(/^Server configuration error$/);
-    expect(log).toHaveBeenCalledWith(expect.stringMatching(/unknown area/));
-    log.mockRestore();
-  });
-});
 
 describe("pool configuration", () => {
   it("prefers the runtime role URL over DATABASE_URL", () => {

@@ -1,5 +1,5 @@
 import { findWorkspaceConnection } from "@/lib/developer/governanceData";
-import { logPlatformEventFor } from "@/lib/platform/audit";
+import { logPlatformEvent } from "@/lib/platform/audit";
 import { getActiveExtensionPrivileges } from "@/lib/developer/extensionGovernanceService";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -62,7 +62,7 @@ export async function extensionFetch(params: { workspaceId: string; installation
   // guardedFetch re-checks the addresses at connect time, so DNS cannot be rebound between the check above and the request.
   const response = await (params.fetchImpl ?? ((url, init) => guardedFetch(url, init)))(outbound, { method: params.method, body: params.body, redirect: "manual" });
   if (response.status >= 300 && response.status < 400) throw Object.assign(new Error("Extension redirects are blocked; declare and request the final exact origin"), { status: 409 });
-  await logPlatformEventFor("developer", { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "extension.network.invoked", entityType: "extension_installation", entityId: params.installationId, metadata: { origin, method: params.method, status: response.status } });
+  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "extension.network.invoked", entityType: "extension_installation", entityId: params.installationId, metadata: { origin, method: params.method, status: response.status } });
   return { status: response.status, headers: Object.fromEntries([...response.headers].filter(([key]) => ["content-type", "content-length"].includes(key))), body: await response.text() };
 }
 
@@ -78,6 +78,6 @@ export async function resolveExtensionConnection(params: { workspaceId: string; 
 export async function emitExtensionEvent(params: { workspaceId: string; installationId: string; actorId: string; eventType: string; payload: Record<string, unknown> }) {
   const state = await active(params.workspaceId, params.installationId);
   if (!params.eventType.startsWith(`extension.${state.extensionKey}.`) || !(state.manifest.events?.emit ?? []).includes(params.eventType)) throw Object.assign(new Error("Extension may emit only its declared namespaced events"), { status: 403 });
-  await logPlatformEventFor("developer", { workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "extension.event.emitted", entityType: "extension_installation", entityId: params.installationId, metadata: { eventType: params.eventType, payloadKeys: Object.keys(params.payload).sort() } });
+  await logPlatformEvent({ workspaceId: params.workspaceId, actorAdminUserId: params.actorId, action: "extension.event.emitted", entityType: "extension_installation", entityId: params.installationId, metadata: { eventType: params.eventType, payloadKeys: Object.keys(params.payload).sort() } });
   return { eventType: params.eventType, extensionKey: state.extensionKey, accepted: true };
 }

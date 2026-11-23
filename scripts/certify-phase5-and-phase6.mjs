@@ -9,16 +9,11 @@
  *            deep repeater validation, and protocol-relative URL rejection.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import pg from "pg";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
+import { loadLocalEnv } from "./lib/loadLocalEnv.mjs";
 
-for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
-  const match = raw.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-  if (match && !process.env[match[1]]) {
-    process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, "");
-  }
-}
+loadLocalEnv();
 
 const connectionString =
   process.env.Database_URL ||

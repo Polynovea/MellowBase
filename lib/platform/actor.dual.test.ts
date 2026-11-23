@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
-import { getWorkspaceById, listWorkspaceCollaborators, listWorkspaceRoles, resolveActor } from "@/lib/platform/actor";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
+import { getDefaultWorkspace, getWorkspaceById, listWorkspaceCollaborators, listWorkspaceRoles, resolveActor } from "@/lib/platform/actor";
 import type { Workspace } from "@/lib/platform/types";
-
-// The permission resolver behind every platform route (ADR-018): it must fail closed on both backends.
-const recorder = createRecorder();
 
 async function role(backend: BackendFixtures, workspaceId: string, key: string, permissionKeys: string[]) {
   const [row] = await backend.query<{ id: string }>(
@@ -26,7 +22,7 @@ async function member(backend: BackendFixtures, workspaceId: string, adminUserId
   return row.id;
 }
 
-describeBothBackends("platform", "platform actor resolver", (backend) => {
+describeWithDatabase("platform actor resolver", (backend) => {
   async function setup() {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const permissions = (await backend.query<{ key: string }>("select key from permissions order by key limit 3")).map((p) => p.key);
@@ -34,6 +30,12 @@ describeBothBackends("platform", "platform actor resolver", (backend) => {
     const workspace = (await getWorkspaceById(workspaceId)) as Workspace;
     return { workspaceId, adminUserId, permissions, workspace };
   }
+
+  it("resolves the seeded default workspace by its slug", async () => {
+    const workspace = await getDefaultWorkspace();
+    expect(workspace.slug).toBe("polynovea");
+    expect((await getWorkspaceById(workspace.id))?.id).toBe(workspace.id);
+  });
 
   it("resolves an active member's roles and permissions", async () => {
     const { workspaceId, adminUserId, permissions, workspace } = await setup();
@@ -46,7 +48,6 @@ describeBothBackends("platform", "platform actor resolver", (backend) => {
     expect(actor).toMatchObject({ adminUserId, workspaceId, workspaceMemberId: memberId, isMasterBypass: false });
     expect([...actor!.roleKeys].sort()).toEqual(["editor", "reviewer"]);
     expect([...actor!.permissions].sort()).toEqual([...permissions].sort());
-    recorder.record(backend.name, "actor", { ...actor, roleKeys: [...actor!.roleKeys].sort(), permissions: [...actor!.permissions].sort() });
   });
 
   it("returns an actor with no permissions for a member with no roles", async () => {
@@ -131,10 +132,5 @@ describeBothBackends("platform", "platform actor resolver", (backend) => {
     expect(collaborators).toEqual([{ id: adminUserId, displayName: expect.any(String), email: expect.stringContaining("@example.test") }]);
     expect(await getWorkspaceById("not-a-uuid")).toBeNull();
     expect(workspace.id).toBe(workspaceId);
-    recorder.record(backend.name, "lists", { roles: await listWorkspaceRoles(workspaceId), collaborators: collaborators.map((c) => ({ ...c, displayName: "<random>", email: "<random>" })) });
   });
-});
-
-describe("platform actor backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

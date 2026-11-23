@@ -3,15 +3,14 @@ import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { ensureWorkspaceGa4Connector, getAnalyticsOverview, queueAnalyticsSync, runGa4AnalyticsSync } from "@/lib/content/analyticsIntelligenceService";
 import { listModels } from "@/lib/schema/modelService";
 import { canActorOperateModel } from "@/lib/schema/modelAccess";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as routeData from "@/lib/http/routeData";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 async function allowedEntryIds(actor: NonNullable<Awaited<ReturnType<typeof requirePlatformAccess>>["data"]>["actor"]) {
   const models = await listModels(actor.workspaceId);
   const allowedModelIds = new Set((await Promise.all(models.map(async (model) => ({ id: model.id, access: await canActorOperateModel(actor, model, "read") })))).filter((item) => item.access.allowed).map((item) => item.id));
   if (!allowedModelIds.size) return new Set<string>();
-  const { data } = await createServiceRoleClient().from("content_entries").select("id, content_model_id").eq("workspace_id", actor.workspaceId).in("content_model_id", [...allowedModelIds]);
-  return new Set((data ?? []).map((entry) => entry.id));
+  return new Set(await routeData.entryIdsInModels(actor.workspaceId, [...allowedModelIds]));
 }
 
 export async function GET(req: Request) {

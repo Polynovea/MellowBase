@@ -1,15 +1,15 @@
-// Direct PostgreSQL implementation of the content entry primitives (phase 1, wave 3).
+// PostgreSQL implementation of the content entry primitives (phase 1, wave 3).
 //
-// Same signatures and return shapes as entryData.supabase.ts. Differences that are deliberate:
+// Deliberate differences from the Supabase path it replaced in phase 1:
 // - Every read of content_entry_versions joins content_entries and requires the entry's workspace
-//   (the versions table has no workspace_id column: see ContentEntryVersions in
-//   lib/db/generated/database.ts), so a version of another workspace can never be read, whatever ID a
-//   caller passes. listEntryVersions and findEntryVersion take the workspace for the same reason.
+// (the versions table has no workspace_id column: see ContentEntryVersions in
+// lib/db/generated/database.ts), so a version of another workspace can never be read, whatever ID a
+// caller passes. listEntryVersions and findEntryVersion take the workspace for the same reason.
 // - The uniqueness check reads the model's current versions in one join, without PostgREST's
-//   1000-row cap (which let a duplicate slip past in a model with more than 1000 entries).
+// 1000-row cap (which let a duplicate slip past in a model with more than 1000 entries).
 // - Lists have explicit limits and id tie-breaks; malformed IDs are "not found".
 // - A lifecycle function's own message passes through with its SQLSTATE; any other error becomes a
-//   generic message with a logged reference instead of database text.
+// generic message with a logged reference instead of database text.
 import { sql } from "kysely";
 import { callFunction, DEFAULT_LIST_LIMIT, getDb, maybeOne, SqlFunctionError } from "@/lib/db/index";
 import { clientErrorMessage } from "@/lib/http/clientError";

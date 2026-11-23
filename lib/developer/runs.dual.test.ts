@@ -1,18 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
 import { dryRunSchemaPromotion, exportSchemaBundle, promoteSchemaBundle } from "@/lib/developer/schemaDeliveryService";
 import { runGovernedImport } from "@/lib/developer/importService";
 import { createModel } from "@/lib/schema/modelService";
 import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
-
-// Schema delivery and import runs point at schema models, so the developer and schema areas switch
-// together. A committed import also creates entries (content area, moved in wave 3); only the paths
-// that create no entry are dual-tested here.
-const recorder = createRecorder();
 const schemaV1 = { name: "Note", apiKey: "note", fields: [{ key: "title", label: "Title", type: "text", required: true }] };
 
-describeBothBackends(["developer", "schema"], "developer schema delivery and import runs", (backend) => {
+describeWithDatabase("developer schema delivery and import runs", (backend) => {
   it("records schema delivery dry runs and promotions with their audit events", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: schemaV1 });
@@ -36,7 +30,6 @@ describeBothBackends(["developer", "schema"], "developer schema delivery and imp
     expect(runs.every((r) => r.actor_admin_user_id === adminUserId && r.completed_at)).toBe(true);
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and entity_type = 'developer_schema_run' order by created_at, action", [workspaceId]);
     expect(events.map((e) => e.action)).toEqual(["schema.schema.dry_run", "schema.schema.dry_run", "schema.schema.promotion"]);
-    recorder.record(backend.name, "schema runs", { runs: runs.map((r) => ({ ...r, completed_at: "<t>" })), results: "results" in promoted ? promoted.results : null });
   });
 
   it("records import dry runs and refuses a commit with invalid rows", async () => {
@@ -59,7 +52,6 @@ describeBothBackends(["developer", "schema"], "developer schema delivery and imp
       { mode: "commit", status: "failed", total_rows: 2, failed_rows: 1, source_name: null, result_json: { reason: "validation_failed_before_commit" } },
     ]);
     await expect(runGovernedImport({ context, modelApiKey: "missing", format: "json", content: [] })).rejects.toThrow("Active content model not found");
-    recorder.record(backend.name, "import runs", runs);
   });
 
   it("keeps runs in their own workspace", async () => {
@@ -70,8 +62,4 @@ describeBothBackends(["developer", "schema"], "developer schema delivery and imp
     await expect(runGovernedImport({ context: { workspaceId: b.workspaceId, actorAdminUserId: b.adminUserId } as unknown as DeveloperApiContext, modelApiKey: "note", format: "json", content: [] })).rejects.toThrow("Active content model not found");
     expect(await backend.query("select 1 from developer_import_runs where workspace_id = $1", [b.workspaceId])).toEqual([]);
   });
-});
-
-describe("developer run backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

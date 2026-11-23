@@ -1,6 +1,6 @@
-// Direct PostgreSQL implementation of the developer entry list (phase 1, wave 2). Same shape as
-// resourceService.supabase.ts: each entry row plus its current version (draft, else published).
-// Versions are reached only through the workspace's entries; the page has an id tie-break.
+// PostgreSQL implementation of the developer entry list (phase 1, wave 2). Same shape as the
+// Supabase path: each entry row plus its current version (draft, else published). Versions are
+// reached only through the workspace's entries; the page has an id tie-break.
 import { getDb, maybeOne } from "@/lib/db/index";
 import type { ContentModelRow } from "@/lib/schema/modelService";
 

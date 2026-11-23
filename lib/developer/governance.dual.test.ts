@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder, ISO_TIMESTAMP } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
+import { ISO_TIMESTAMP } from "@/lib/db/testing/http";
 import { createDeveloperApiToken, revokeDeveloperApiToken } from "@/lib/developer/apiTokenService";
 import {
   authorizeBoundAgentTool,
@@ -12,8 +12,6 @@ import {
 } from "@/lib/developer/agentGovernanceService";
 import { getActiveExtensionPrivileges, installExtension, registerExtensionManifest } from "@/lib/developer/extensionGovernanceService";
 import { requireDeveloperApi } from "@/lib/developer/apiAuth";
-
-const recorder = createRecorder();
 const AGENT_KEYS = ["agent_key", "created_at", "created_by", "default_mode", "id", "metadata_json", "model", "name", "provider", "status", "updated_at", "updated_by", "workspace_id"];
 
 const manifest = (version = "1.0.0") => ({
@@ -32,7 +30,7 @@ const manifest = (version = "1.0.0") => ({
   requestedConnections: [{ connectorFamily: "analytics", connectorTypes: ["analytics.ga4"], scopes: ["analytics.read"] }],
 });
 
-describeBothBackends("developer", "agent and extension governance", (backend) => {
+describeWithDatabase("agent and extension governance", (backend) => {
   it("creates agents, binds a token, resolves and authorizes the bound agent, and records provenance", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const agent = await createAgentIdentity({ workspaceId, actorId: adminUserId, agentKey: " Writer.Bot ", name: " Writer ", provider: " anthropic ", metadata: { tier: 1 } });
@@ -63,7 +61,6 @@ describeBothBackends("developer", "agent and extension governance", (backend) =>
 
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and entity_type = 'agent_identity' order by action", [workspaceId]);
     expect(events.map((e) => e.action)).toEqual(["agent.identity.created", "agent.token.bound"]);
-    recorder.record(backend.name, "agent", { agent, bound, provenanceKeys: Object.keys(provenance).sort() });
   });
 
   it("never binds a revoked token or a suspended agent, nor across workspaces", async () => {
@@ -112,10 +109,5 @@ describeBothBackends("developer", "agent and extension governance", (backend) =>
     const other = await backend.createWorkspace();
     await expect(installExtension({ workspaceId: other.workspaceId, actorId: other.adminUserId, manifestId: registered.id })).rejects.toMatchObject({ status: 404 });
     await expect(getActiveExtensionPrivileges(other.workspaceId, installed.id)).rejects.toMatchObject({ status: 403 });
-    recorder.record(backend.name, "extension", { installed: { ...installed, installed_at: "<t>" }, activeKeys: Object.keys(active).sort() });
   });
-});
-
-describe("governance backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { describeBothBackends, type BackendFixtures } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { createEntry } from "@/lib/content/entryService";
 import { createModel } from "@/lib/schema/modelService";
 
@@ -19,8 +18,6 @@ vi.mock("@/lib/admin/ga4", () => ({
 const { getEntryAnalytics, recordContentAnalytics } = await import("@/lib/content/analyticsService");
 const { ensureWorkspaceGa4Connector, getAnalyticsOverview, getEntryPerformanceComparison, queueAnalyticsSync, runGa4AnalyticsSync } = await import("@/lib/content/analyticsIntelligenceService");
 
-const recorder = createRecorder();
-
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
   const model = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Page", apiKey: "page", fields: [{ key: "title", label: "Title", type: "text", required: true }] } });
@@ -35,7 +32,7 @@ async function setup(backend: BackendFixtures) {
 
 const snapshotRow = { destinationUrl: "/page", periodStart: "2026-10-01", periodEnd: "2026-10-28" };
 
-describeBothBackends(["content", "schema", "operations"], "content analytics", (backend) => {
+describeWithDatabase("content analytics", (backend) => {
   it("records snapshots once per key (also without a version) and only for the workspace's own entries and versions", async () => {
     const { workspaceId, make } = await setup(backend);
     const entry = await make("Tracked");
@@ -53,7 +50,6 @@ describeBothBackends(["content", "schema", "operations"], "content analytics", (
     await expect(recordContentAnalytics({ workspaceId, entryId: entry.id, ...snapshotRow, periodStart: "2026-11-01" })).rejects.toThrow("start not after end");
     await expect(recordContentAnalytics({ workspaceId, entryId: entry.id, ...snapshotRow, pageViews: -1 })).rejects.toThrow("Page views must be a non-negative number");
     expect(await getEntryAnalytics(other.workspaceId, entry.id)).toEqual([]);
-    recorder.record(backend.name, "snapshot", { keys: Object.keys(second).sort(), second: { page_views: second.page_views, users_count: second.users_count, engagement_seconds: second.engagement_seconds, source: second.source, period_start: second.period_start } });
   });
 
   it("creates one GA4 connector, queues and runs a sync, and compares the two windows", async () => {
@@ -93,14 +89,5 @@ describeBothBackends(["content", "schema", "operations"], "content analytics", (
 
     const events = await backend.query<{ action: string }>("select action from platform_audit_events where workspace_id = $1 and action = 'analytics.sync_queued'", [workspaceId]);
     expect(events).toHaveLength(1);
-    recorder.record(backend.name, "sync", {
-      connector: Object.keys(connector).sort(),
-      overview: { connectors: Object.keys(overview.connectors[0]).sort(), states: Object.keys(overview.syncStates[0]).sort(), snapshots: Object.keys(overview.snapshots[0]).sort() },
-      delta: comparison.delta,
-    });
   });
-});
-
-describe("analytics backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

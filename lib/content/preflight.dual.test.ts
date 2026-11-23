@@ -1,17 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { describeBothBackends } from "@/lib/db/testing/dualBackend";
-import { createRecorder } from "@/lib/db/testing/compare";
+import { describeWithDatabase } from "@/lib/db/testing/database";
 import { createEntry, saveDraft } from "@/lib/content/entryService";
 import { runEntryPreflight, runVersionPreflight } from "@/lib/content/preflightService";
 import { getLocalizationStatus, listLocales } from "@/lib/content/localizationService";
 import { getWebQualityPolicy } from "@/lib/content/webQualityService";
 import { createModel } from "@/lib/schema/modelService";
 
-// Preflight and destination assurance read entries, routes, redirects, locales, translations and
-// policies; content and schema switch together (preflight reads the model's schema version).
-const recorder = createRecorder();
-
-describeBothBackends(["content", "schema"], "preflight and destination assurance", (backend) => {
+describeWithDatabase("preflight and destination assurance", (backend) => {
   it("produces the same readiness report from the same rows", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     const model = await createModel({
@@ -57,7 +52,6 @@ describeBothBackends(["content", "schema"], "preflight and destination assurance
     expect((await listLocales(workspaceId, false)).map((l) => l.locale)).toEqual(["en", "fr"]);
     expect((await getLocalizationStatus(workspaceId, entryId))?.map((l) => [l.locale, l.status])).toEqual([["en", "current"], ["fr", "missing"]]);
     expect((await getWebQualityPolicy(workspaceId)).workspace_id).toBe(workspaceId);
-    recorder.record(backend.name, "report", { report, old });
   });
 
   it("never reads another workspace's entries, versions or routes", async () => {
@@ -71,8 +65,4 @@ describeBothBackends(["content", "schema"], "preflight and destination assurance
     expect(await runVersionPreflight({ workspaceId: b.workspaceId, entryId: entry.data.entry.id, versionId: entry.data.version.id })).toBeNull();
     expect(await getLocalizationStatus(b.workspaceId, entry.data.entry.id)).toBeNull();
   });
-});
-
-describe("preflight backends agree", () => {
-  it("returns identical shapes and values on supabase and postgres", () => recorder.expectAgreement());
 });

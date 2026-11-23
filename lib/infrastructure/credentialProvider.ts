@@ -1,5 +1,5 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
 import { decryptConfig, encryptConfig } from "@/lib/content/secureConfig";
+import * as environmentData from "@/lib/infrastructure/environmentData";
 import type { SecretProviderKind } from "@/lib/infrastructure/types";
 
 export interface PreparedCredentialInput {
@@ -53,20 +53,9 @@ export function prepareCredentialForProvider(params: {
 }
 
 export async function resolveCredentialRef(refId: string, workspaceId: string): Promise<string> {
-  const db = createServiceRoleClient();
-  const { data: ref, error } = await db
-    .from("workspace_secret_refs")
-    .select("id,workspace_id,locator,encrypted_value,state,provider_id")
-    .eq("id", refId)
-    .eq("workspace_id", workspaceId)
-    .maybeSingle();
-  if (error || !ref) throw new Error("Credential reference is unavailable");
-  const { data: provider } = await db
-    .from("workspace_secret_providers")
-    .select("provider_kind,status")
-    .eq("id", ref.provider_id)
-    .eq("workspace_id", workspaceId)
-    .maybeSingle();
+  const ref = await environmentData.secretRef(refId, workspaceId);
+  if (!ref) throw new Error("Credential reference is unavailable");
+  const provider = await environmentData.secretProvider(ref.provider_id, workspaceId);
   if (!provider || provider.status !== "active") throw new Error("Credential provider is unavailable");
   if (provider.provider_kind === "environment") {
     const value = process.env[ref.locator];
@@ -83,15 +72,9 @@ export async function resolveCredentialRef(refId: string, workspaceId: string): 
 }
 
 export async function resolveConnectionCredentials(workspaceId: string, connectionId: string) {
-  const db = createServiceRoleClient();
-  const { data: bindings, error } = await db
-    .from("connection_secret_bindings")
-    .select("purpose,secret_ref_id")
-    .eq("workspace_id", workspaceId)
-    .eq("connection_id", connectionId);
-  if (error) throw new Error(error.message);
+  const bindings = await environmentData.secretBindings(workspaceId, connectionId);
   const resolved: Record<string, string> = {};
-  for (const binding of bindings ?? []) resolved[binding.purpose] = await resolveCredentialRef(binding.secret_ref_id, workspaceId);
+  for (const binding of bindings) resolved[binding.purpose] = await resolveCredentialRef(binding.secret_ref_id, workspaceId);
   return resolved;
 }
 

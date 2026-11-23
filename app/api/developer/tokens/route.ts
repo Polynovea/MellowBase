@@ -16,7 +16,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const auth = await requirePlatformAccess(req, { permission: "workspace.manage" });
+  const auth = await requirePlatformAccess(req, { permission: "workspace.manage", stepUp: true });
   if (auth.error) return auth.error;
   try {
     const body = await req.json();
