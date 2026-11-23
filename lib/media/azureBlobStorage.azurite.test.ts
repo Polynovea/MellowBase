@@ -7,8 +7,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AzureBlobExistsError, createAzureBlobStore, verifyAzureBlobConnection, type AzureBlobStore } from "@/lib/media/azureBlobStorage";
 import { enforceUploadRules } from "@/lib/media/uploadStream";
 
-// Runs against the Azurite container that `node scripts/dev-db/setup.mjs` starts for this checkout.
-// Skipped when .env.test.local has no Azurite connection string (stack not set up).
+// Runs against the Azurite container that `node scripts/dev-db/setup.mjs` starts for this checkout,
+// as part of `npm run test:dual` (the plain unit run excludes *.azurite.test.ts). Skipped, with a
+// note, when .env.test.local has no Azurite connection string or Azurite does not answer: a stale
+// connection string from an earlier setup must not fail the run when the container is stopped.
 
 function azuriteConnectionString() {
   if (process.env.POLYNOVEA_TEST_AZURITE_CONNECTION_STRING) return process.env.POLYNOVEA_TEST_AZURITE_CONNECTION_STRING;
@@ -18,7 +20,22 @@ function azuriteConnectionString() {
   return line ? line.slice(line.indexOf("=") + 1).trim() : "";
 }
 
-const connectionString = azuriteConnectionString();
+/** True when the blob endpoint answers HTTP at all (Azurite replies 400 to a bare GET, which is fine). */
+async function azuriteReachable(value: string) {
+  const endpoint = /(?:^|;)BlobEndpoint=([^;]+)/i.exec(value)?.[1];
+  if (!endpoint) return false;
+  try {
+    await fetch(endpoint, { signal: AbortSignal.timeout(2_000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const configured = azuriteConnectionString();
+const reachable = configured ? await azuriteReachable(configured) : false;
+if (configured && !reachable) console.warn("[azurite] POLYNOVEA_TEST_AZURITE_CONNECTION_STRING is set but Azurite is not reachable; skipping. Start it with: node scripts/dev-db/setup.mjs");
+const connectionString = reachable ? configured : "";
 const container = `test-${randomUUID().slice(0, 8)}`;
 const ws = "11111111-1111-4111-8111-111111111111";
 const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), randomBytes(5 * 1024 * 1024)]);
