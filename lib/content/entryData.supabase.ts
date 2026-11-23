@@ -74,14 +74,24 @@ export async function getEntry(workspaceId: string, entryId: string): Promise<Co
   return data ?? null;
 }
 
-export async function listEntryVersions(entryId: string): Promise<ContentEntryVersionRow[]> {
-  const { data } = await createServiceRoleClient().from("content_entry_versions").select("*").eq("entry_id", entryId).order("version_number", { ascending: false });
-  return data ?? [];
+// Version reads require the entry's workspace (content_entry_versions has no workspace_id of its
+// own): an inner embed on the entry_id foreign key, filtered by workspace, then stripped.
+const VERSION_IN_WORKSPACE = "*, content_entries!content_entry_versions_entry_id_fkey!inner(workspace_id)";
+function withoutEntry<T extends { content_entries?: unknown }>(row: T): Omit<T, "content_entries"> {
+  const { content_entries: _entry, ...version } = row;
+  return version;
 }
 
-export async function findEntryVersion(entryId: string, versionId: string): Promise<ContentEntryVersionRow | null> {
-  const { data: sourceVersion } = await createServiceRoleClient().from("content_entry_versions").select("*").eq("id", versionId).eq("entry_id", entryId).maybeSingle();
-  return sourceVersion ?? null;
+export async function listEntryVersions(workspaceId: string, entryId: string): Promise<ContentEntryVersionRow[]> {
+  const { data } = await createServiceRoleClient().from("content_entry_versions").select(VERSION_IN_WORKSPACE)
+    .eq("entry_id", entryId).eq("content_entries.workspace_id", workspaceId).order("version_number", { ascending: false });
+  return (data ?? []).map(withoutEntry) as ContentEntryVersionRow[];
+}
+
+export async function findEntryVersion(workspaceId: string, entryId: string, versionId: string): Promise<ContentEntryVersionRow | null> {
+  const { data: sourceVersion } = await createServiceRoleClient().from("content_entry_versions").select(VERSION_IN_WORKSPACE)
+    .eq("id", versionId).eq("entry_id", entryId).eq("content_entries.workspace_id", workspaceId).maybeSingle();
+  return sourceVersion ? withoutEntry(sourceVersion) as ContentEntryVersionRow : null;
 }
 
 /** data_jsonb by version ID, for versions of the workspace's entries. */

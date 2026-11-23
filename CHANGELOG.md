@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Content preflight and destination assurance (with the web-quality policy, locale and localization-status reads they use) can run on the direct PostgreSQL path (`content=postgres`). Entry version reads now always take the workspace on both paths, so a future caller cannot skip the workspace check.
 - Content entries and versions can run on the direct PostgreSQL path (`content=postgres`). Validation, uniqueness and relation rules are shared by both paths. On the direct path, every version read requires the entry's workspace, the uniqueness check sees every entry of the model (no 1000-row cap), and database errors from the entry SQL functions no longer reach the browser.
 - Admin user profiles (`/api/admin/users`, `/api/admin/me`) can run on the direct PostgreSQL path (`admin=postgres`): creating or updating a member writes the profile and its default workspace membership in one transaction. `/api/admin/me` no longer returns raw database error text.
 - Developer schema-delivery and import runs can run on the direct PostgreSQL path (`developer=postgres`). The developer area's audit events now follow the area's own backend switch, and import-run updates are scoped by workspace on both paths.

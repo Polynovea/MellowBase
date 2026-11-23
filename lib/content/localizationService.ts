@@ -1,4 +1,5 @@
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { localizationRows, workspaceLocales } from "@/lib/content/assuranceData";
 import { getEntry } from "@/lib/content/entryService";
 import { logPlatformEvent } from "@/lib/platform/audit";
 
@@ -31,16 +32,7 @@ export interface LocalizationStatusRow {
 }
 
 export async function listLocales(workspaceId: string, includeDisabled = true): Promise<WorkspaceLocaleRow[]> {
-  let query = createServiceRoleClient()
-    .from("workspace_locales")
-    .select("*")
-    .eq("workspace_id", workspaceId)
-    .order("is_default", { ascending: false })
-    .order("locale");
-  if (!includeDisabled) query = query.eq("enabled", true);
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
-  return (data ?? []) as WorkspaceLocaleRow[];
+  return (await workspaceLocales(workspaceId, includeDisabled)) as WorkspaceLocaleRow[];
 }
 
 export async function configureLocale(params: {
@@ -184,19 +176,13 @@ export async function reviewTranslation(params: {
 export async function getLocalizationStatus(workspaceId: string, sourceEntryId: string): Promise<LocalizationStatusRow[] | null> {
   const source = await getEntry(workspaceId, sourceEntryId);
   if (!source?.current_draft_version_id) return null;
-  const db = createServiceRoleClient();
-  const [{ data: sourceVersion }, locales, translationsRes] = await Promise.all([
-    db.from("content_entry_versions").select("locale").eq("id", source.current_draft_version_id).maybeSingle(),
+  const [rows, locales] = await Promise.all([
+    localizationRows(workspaceId, source.id, source.current_draft_version_id),
     listLocales(workspaceId, false),
-    db.from("content_entry_translations").select("*").eq("workspace_id", workspaceId).eq("source_entry_id", source.id),
   ]);
-  const sourceLocale = sourceVersion?.locale ?? "en";
-  const translations = translationsRes.data ?? [];
-  const translatedIds = translations.map((item) => item.translated_entry_id).filter((id): id is string => Boolean(id));
-  const { data: translatedEntries } = translatedIds.length
-    ? await db.from("content_entries").select("id,status,current_draft_version_id,published_version_id").eq("workspace_id", workspaceId).in("id", translatedIds)
-    : { data: [] as Array<{ id: string; status: string; current_draft_version_id: string | null; published_version_id: string | null }> };
-  const byId = new Map((translatedEntries ?? []).map((item) => [item.id, item]));
+  const sourceLocale = rows.sourceLocale ?? "en";
+  const translations = rows.translations;
+  const byId = new Map(rows.translatedEntries.map((item) => [item.id, item]));
 
   return locales.map((locale): LocalizationStatusRow => {
     if (locale.locale === sourceLocale) {

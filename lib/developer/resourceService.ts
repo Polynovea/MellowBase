@@ -8,7 +8,7 @@ export async function getModelByApiKey(workspaceId:string,apiKey:string){return 
 export async function getEntryDeveloperView(workspaceId:string,entryId:string){
   const entry=await getEntry(workspaceId,entryId);if(!entry)return null;
   const model=await getModel(workspaceId,entry.content_model_id);if(!model)return null;
-  const versions=await listEntryVersions(entry.id);
+  const versions=await listEntryVersions(workspaceId,entry.id);
   return {entry,model:{id:model.id,apiKey:model.api_key,name:model.name,currentSchemaVersion:model.current_schema_version,capability:model.settings_json?.capability??"publishable"},versions};
 }
 // Compile-time check that the direct implementation matches the Supabase one exactly.

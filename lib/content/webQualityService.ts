@@ -1,4 +1,5 @@
 import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import { webQualityPolicyRow } from "@/lib/content/assuranceData";
 
 export interface WebQualityPolicy {
   workspace_id: string;
@@ -63,12 +64,8 @@ function policyDefaults(workspaceId: string, siteName?: string | null): WebQuali
 }
 
 export async function getWebQualityPolicy(workspaceId: string): Promise<WebQualityPolicy> {
-  const db = createServiceRoleClient();
-  const [{ data }, { data: workspace }] = await Promise.all([
-    db.from("web_quality_policies").select("*").eq("workspace_id", workspaceId).maybeSingle(),
-    db.from("workspaces").select("name").eq("id", workspaceId).maybeSingle(),
-  ]);
-  const base = policyDefaults(workspaceId, workspace?.name ?? null);
+  const { policy: data, workspaceName } = await webQualityPolicyRow(workspaceId);
+  const base = policyDefaults(workspaceId, workspaceName);
   return data ? {
     ...base,
     ...data,

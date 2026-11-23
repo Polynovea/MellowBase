@@ -66,7 +66,7 @@ describeBothBackends(["content", "schema", "developer"], "content entries and ve
 
     const listed = await listEntries(workspaceId, articleModelId);
     expect(listed.map((e) => [e.id, e.data])).toEqual([[entry.id, { title: "Hello again", slug: "hello" }]]);
-    expect((await listEntryVersions(entry.id)).map((v) => v.version_number)).toEqual([2, 1]);
+    expect((await listEntryVersions(workspaceId, entry.id)).map((v) => v.version_number)).toEqual([2, 1]);
 
     const restored = await restoreEntryVersion({ workspaceId, entryId: entry.id, versionId: version.id, actorAdminUserId: adminUserId });
     expect(restored).toMatchObject({ ok: true, data: { version: { version_number: 3, data_jsonb: { title: "Hello", slug: "hello" }, change_summary: "Restored from version 1" } } });
@@ -126,6 +126,9 @@ describeBothBackends(["content", "schema", "developer"], "content entries and ve
     if (!created.ok) throw new Error(created.error);
     const id = created.data.entry.id;
     expect(await getEntry(b.workspaceId, id)).toBeNull();
+    // Version reads take the workspace and go through the entry: another workspace sees none.
+    expect(await listEntryVersions(b.workspaceId, id)).toEqual([]);
+    expect((await listEntryVersions(a.workspaceId, id)).map((v) => v.id)).toEqual([created.data.version.id]);
     expect(await listEntries(b.workspaceId, a.articleModelId)).toEqual([]);
     expect(await saveDraft({ workspaceId: b.workspaceId, entryId: id, data: { title: "Stolen" }, actorAdminUserId: b.adminUserId })).toMatchObject({ ok: false, status: 404 });
     expect(await archiveEntry({ workspaceId: b.workspaceId, entryId: id, actorAdminUserId: b.adminUserId })).toMatchObject({ ok: false, status: 404 });
