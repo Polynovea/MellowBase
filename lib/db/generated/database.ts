@@ -1817,6 +1817,42 @@ export interface Roles {
   workspace_id: string;
 }
 
+export interface SchemaExpandContractTasks {
+  backfill_cursor: Json | null;
+  backfilled_rows: Generated<number>;
+  content_model_id: string | null;
+  contract_after: string | null;
+  contract_min_at: string | null;
+  contracted_at: string | null;
+  created_at: Generated<string>;
+  error_ref: string | null;
+  id: Generated<string>;
+  kind: string;
+  ledger_id: string;
+  new_column: string;
+  old_column: string;
+  phase: Generated<string>;
+  phase_statement: Generated<number>;
+  release_id: string | null;
+  retired_column: string | null;
+  status: string;
+  step_index: number;
+  switched_at: string | null;
+  table_name: string;
+  trigger_name: string;
+  updated_at: Generated<string>;
+  workspace_id: string;
+}
+
+export interface SchemaMigrationConfirmations {
+  confirmed_by: string | null;
+  created_at: Generated<string>;
+  id: Generated<string>;
+  ledger_id: string;
+  typed_api_key: string;
+  workspace_id: string;
+}
+
 export interface SchemaMigrationLedger {
   attempts: Generated<number>;
   base_shape_hash: string | null;
@@ -1830,12 +1866,32 @@ export interface SchemaMigrationLedger {
   model_api_key: string;
   plan_hash: string;
   plan_json: Json;
+  renames: Generated<Json>;
   requested_by: string | null;
   stage: string;
   started_at: string | null;
   status: string;
   table_name: string;
   target_schema_hash: string | null;
+  target_version_id: string | null;
+  workspace_id: string;
+}
+
+export interface SchemaMigrationRuns {
+  content_model_id: string | null;
+  error_ref: string | null;
+  finished_at: string | null;
+  id: Generated<string>;
+  ledger_id: string;
+  lock_retries: Generated<number>;
+  next_statement: Generated<number>;
+  next_step: Generated<number>;
+  stage: string;
+  started_at: Generated<string>;
+  status: string;
+  step_log: Generated<Json>;
+  updated_at: Generated<string>;
+  worker_id: string;
   workspace_id: string;
 }
 
@@ -2324,7 +2380,10 @@ export interface DB {
   releases: Releases;
   role_permissions: RolePermissions;
   roles: Roles;
+  schema_expand_contract_tasks: SchemaExpandContractTasks;
+  schema_migration_confirmations: SchemaMigrationConfirmations;
   schema_migration_ledger: SchemaMigrationLedger;
+  schema_migration_runs: SchemaMigrationRuns;
   schema_name_reservations: SchemaNameReservations;
   social_posts: SocialPosts;
   system_doctor_runs: SystemDoctorRuns;
