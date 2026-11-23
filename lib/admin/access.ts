@@ -182,7 +182,8 @@ export function getRequiredSurfaceForPath(pathname: string): AdminSurface | null
 
 export function canAccessPath(user: AdminUser | null | undefined, pathname: string): boolean {
   if (!user || !user.is_active) return false;
-  if (pathname === "/admin/profile" || pathname.startsWith("/admin/profile/")) {
+  // Every signed-in member manages their own profile and sign-in security.
+  if (pathname === "/admin/profile" || pathname.startsWith("/admin/profile/") || pathname === "/admin/security") {
     return true;
   }
   if (pathname === "/admin") {
