@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as routeData from "@/lib/http/routeData";
 import { logAdminActivity } from "@/lib/admin/audit";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 import { clientErrorMessage } from "@/lib/http/clientError";
@@ -10,15 +10,12 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const forCategory = searchParams.get("for");
 
-  const db = createServiceRoleClient();
-  let query = db.from("platforms").select("*").order("sort_order", { ascending: true });
-
-  if (forCategory === "social") query = query.eq("is_active", true).eq("for_social", true);
-  if (forCategory === "ads") query = query.eq("is_active", true).eq("for_ads", true);
-
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
-  return NextResponse.json({ success: true, data, error: null, timestamp: ts() });
+  try {
+    const data = await routeData.listPlatforms(forCategory === "social" || forCategory === "ads" ? forCategory : null);
+    return NextResponse.json({ success: true, data, error: null, timestamp: ts() });
+  } catch (error) {
+    return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
+  }
 }
 
 export async function POST(req: Request) {
@@ -32,28 +29,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, data: null, error: "Name is required", timestamp: ts() }, { status: 400 });
     }
 
-    const db = createServiceRoleClient();
-    const { data: maxRow } = await db
-      .from("platforms")
-      .select("sort_order")
-      .order("sort_order", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    const nextSort = (maxRow?.sort_order ?? -1) + 1;
-
-    const { data, error } = await db
-      .from("platforms")
-      .insert({
-        name,
-        for_social: body.for_social ?? true,
-        for_ads: body.for_ads ?? false,
-        is_active: true,
-        sort_order: nextSort,
-      })
-      .select()
-      .single();
-
-    if (error) return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
+    let data;
+    try {
+      data = await routeData.createPlatform({ name, for_social: body.for_social === undefined ? true : Boolean(body.for_social), for_ads: Boolean(body.for_ads) });
+    } catch (error) {
+      return NextResponse.json({ success: false, data: null, error: clientErrorMessage(error), timestamp: ts() }, { status: 500 });
+    }
 
     await logAdminActivity({
       actor: auth.data!.profile,
