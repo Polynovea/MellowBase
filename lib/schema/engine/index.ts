@@ -2,3 +2,14 @@
 // See plan.ts for the contract the migration runner builds on.
 export * from "@/lib/schema/engine/plan";
 export { canonicalJson, hashCanonical, hashModelSchema, hashShape } from "@/lib/schema/engine/hash";
+export { NAME_PATTERN, nameProblem, POSTGRES_RESERVED_WORDS, tableNameCandidates, derivedName, assertIdentifier } from "@/lib/schema/engine/names";
+export { DEFAULT_SCHEMA_LIMITS, SCHEMA_LIMIT_ENV, schemaLimitsFromEnv, type SchemaLimits } from "@/lib/schema/engine/limits";
+export { columnForField, shapeForSchema, isLosslessTypeChange, FOREIGN_KEY_ACTIONS } from "@/lib/schema/engine/columns";
+export { buildMigrationPlan, applyStepToShape, recomputePlanHash, type FieldRename, type PlanInput } from "@/lib/schema/engine/planner";
+export { describeStep, describePlan, type DescribeContext } from "@/lib/schema/engine/describe";
+export { renderStep, CONTENT_SCHEMA, type RenderOptions } from "@/lib/schema/engine/render";
+export { countDestructiveImpact } from "@/lib/schema/engine/impact";
+export {
+  applyDestructiveStage, applyExpandStage, chooseTableName, loadModelTable, loadReservedNames, prepareMigrationPlan,
+  NAME_RESERVATION_DAYS, SchemaEngineError, type SchemaEngineErrorCode, type ExpandResult, type ModelTableState, type PrepareInput,
+} from "@/lib/schema/engine/apply";

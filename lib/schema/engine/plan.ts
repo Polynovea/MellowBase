@@ -67,8 +67,18 @@ export type PlanStep = StepBase & (
   /** Adds the column only (nullable, no constraints); constraints follow as their own steps. */
   | { kind: "add_column"; table: string; column: ColumnShape }
   | { kind: "drop_column"; table: string; column: string; affectedValues?: number }
-  /** Metadata-only rename. The runner may implement it as expand and contract. */
-  | { kind: "rename_column"; table: string; from: string; to: string }
+  /**
+   * Renames the column and its index/constraint names (they derive from the column name). `column` is
+   * the shape before the rename. The runner may implement it as expand and contract.
+   */
+  | { kind: "rename_column"; table: string; from: string; to: string; column: ColumnShape }
+  /** Fills empty values with the field's default (parameterised UPDATE), so a new required field can be validated. */
+  | { kind: "backfill_column"; table: string; column: string; pgType: PgColumnType; value: unknown }
+  /**
+   * A field without a column (a to-many relation) left the schema: no DDL, but its permission rows go
+   * and its name is reserved, exactly as for a dropped column.
+   */
+  | { kind: "drop_field_metadata"; table: string; field: string }
   /** Same column, new type, every value kept (e.g. bigint to numeric, anything to text). */
   | { kind: "change_type"; table: string; column: string; from: PgColumnType; to: PgColumnType; fromField: FieldType; toField: FieldType }
   /** Field type changed but the column type did not (e.g. text to email): no DDL, shape only. */
