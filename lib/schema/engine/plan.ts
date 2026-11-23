@@ -118,6 +118,12 @@ export interface MigrationPlan {
   targetShapeHash: SchemaHash;
   /** Canonical hash of the target model schema (null when the plan deletes the model). */
   targetSchemaHash: SchemaHash | null;
+  /**
+   * The content_model_versions row the plan builds toward (null for a preview of an unsaved schema, or
+   * when the plan deletes the model). The worker rebuilds the plan from this version and the table's
+   * recorded state (buildPlanFromTrustedState) and never executes a plan it was handed.
+   */
+  targetVersionId: string | null;
   /** Hash over everything above and the steps: the ledger's identity for this plan. */
   planHash: SchemaHash;
   baseShape: TableShape | null;

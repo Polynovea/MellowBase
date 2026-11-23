@@ -464,6 +464,7 @@ export interface ContentModels {
 export interface ContentModelTables {
   applied_shape: Json;
   applied_shape_hash: string;
+  applied_version_id: string | null;
   content_model_id: string;
   created_at: Generated<string>;
   table_name: string;

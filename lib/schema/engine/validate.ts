@@ -66,6 +66,7 @@ export function validatePlan(plan: MigrationPlan, options: { limits?: SchemaLimi
   if (!UUID.test(String(plan.workspaceId)) || !UUID.test(String(plan.modelId))) throw invalid("it names no valid model");
   if (typeof plan.table !== "string" || !TABLE_NAME_PATTERN.test(plan.table)) throw invalid("its table name is not a model table");
   if (nameProblem(plan.modelApiKey, "model")) throw invalid("its model API key breaks the name rules");
+  if (plan.targetVersionId !== null && plan.targetVersionId !== undefined && !UUID.test(String(plan.targetVersionId))) throw invalid("it names no valid schema version");
   if (computePlanHash(plan) !== plan.planHash) throw invalid("it was altered after it was made");
 
   let stage: PlanStage = "expand";

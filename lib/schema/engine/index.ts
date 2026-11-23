@@ -14,5 +14,6 @@ export { validatePlan, DATA_DELETING_STEPS } from "@/lib/schema/engine/validate"
 export { SchemaEngineError, type SchemaEngineErrorCode } from "@/lib/schema/engine/errors";
 export {
   applyDestructiveStage, applyExpandStage, applyStageBookkeeping, assertStageCurrent, chooseTableName, loadModelTable, loadReservedNames,
-  prepareMigrationPlan, NAME_RESERVATION_DAYS, type ExpandResult, type ModelTableState, type PrepareInput,
+  prepareMigrationPlan, expectedConfirmation, NAME_RESERVATION_DAYS, type ExpandResult, type ModelTableState, type PrepareInput,
 } from "@/lib/schema/engine/apply";
+export { buildPlanFromTrustedState, assertRequestedPlan, type TrustedPlanInput } from "@/lib/schema/engine/trusted";

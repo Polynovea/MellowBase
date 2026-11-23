@@ -37,12 +37,14 @@ export interface ModelTableState {
   table: string;
   shape: TableShape;
   hash: string;
+  /** The schema version the table was last planned to (null before the first saved version). */
+  appliedVersionId: string | null;
 }
 
 export async function loadModelTable(db: Executor, modelId: string): Promise<ModelTableState | null> {
-  const row = await db.selectFrom("content_model_tables").select(["table_name", "applied_shape", "applied_shape_hash"])
+  const row = await db.selectFrom("content_model_tables").select(["table_name", "applied_shape", "applied_shape_hash", "applied_version_id"])
     .where("content_model_id", "=", modelId).executeTakeFirst();
-  return row ? { table: row.table_name, shape: row.applied_shape as unknown as TableShape, hash: row.applied_shape_hash } : null;
+  return row ? { table: row.table_name, shape: row.applied_shape as unknown as TableShape, hash: row.applied_shape_hash, appliedVersionId: row.applied_version_id } : null;
 }
 
 /** The first free table-name candidate for a new model. The unique constraint settles races. */
@@ -108,6 +110,16 @@ export async function prepareMigrationPlan(db: Executor, input: PrepareInput): P
   return { ok: true, plan: await countDestructiveImpact(db, result.plan, context) };
 }
 
+/**
+ * What the user must type to confirm a destructive stage: the model's API key, read from the model row
+ * (never from a plan, which may come from the app-writable ledger).
+ */
+export async function expectedConfirmation(db: Executor, contentModelId: string): Promise<string> {
+  const model = await db.selectFrom("content_models").select("api_key").where("id", "=", contentModelId).executeTakeFirst();
+  if (!model) throw new SchemaEngineError("not_found", "This model no longer exists.");
+  return model.api_key;
+}
+
 const stageSteps = (plan: MigrationPlan, stage: PlanStage) => plan.steps.filter((step) => step.stage === stage);
 
 /** The shape hash the table must be at before `stage` runs. */
@@ -156,7 +168,7 @@ export async function assertStageCurrent(
   })[0];
   if (clash) throw new SchemaEngineError("reserved_name", `The field key "${clash}" was deleted or renamed in the last 30 days and cannot be reused yet.`);
 
-  return row ? { table: row.table_name, shape: row.applied_shape as unknown as TableShape, hash: row.applied_shape_hash } : null;
+  return row ? { table: row.table_name, shape: row.applied_shape as unknown as TableShape, hash: row.applied_shape_hash, appliedVersionId: row.applied_version_id } : null;
 }
 
 async function reserveName(trx: Transaction<DB>, plan: MigrationPlan, kind: "field" | "model", name: string, reason: "deleted" | "renamed") {
@@ -217,10 +229,11 @@ export async function applyStageBookkeeping(trx: Transaction<DB>, plan: Migratio
     await trx.deleteFrom("content_model_tables").where("content_model_id", "=", plan.modelId).execute();
     return;
   }
+  const version = plan.targetVersionId ? { applied_version_id: plan.targetVersionId } : {};
   await trx.insertInto("content_model_tables").values({
-    content_model_id: plan.modelId, workspace_id: plan.workspaceId, table_name: plan.table, applied_shape: JSON.stringify(after), applied_shape_hash: hash,
+    content_model_id: plan.modelId, workspace_id: plan.workspaceId, table_name: plan.table, applied_shape: JSON.stringify(after), applied_shape_hash: hash, ...version,
   }).onConflict((oc) => oc.column("content_model_id").doUpdateSet({
-    applied_shape: JSON.stringify(after), applied_shape_hash: hash, updated_at: sql<string>`now()`,
+    applied_shape: JSON.stringify(after), applied_shape_hash: hash, updated_at: sql<string>`now()`, ...version,
   })).execute();
 }
 
@@ -309,8 +322,9 @@ export async function applyDestructiveStage(
       if (plan?.planHash !== row.plan_hash || plan?.modelId !== row.content_model_id) {
         throw new SchemaEngineError("invalid_plan", "This change plan was altered after it was made. Review the change again.");
       }
-      if (typeof args.confirmation !== "string" || args.confirmation.trim() !== plan.modelApiKey) {
-        throw new SchemaEngineError("confirmation_mismatch", `Type the model's API key, ${plan.modelApiKey}, to confirm the deletion.`);
+      const expected = await expectedConfirmation(trx, row.content_model_id ?? "");
+      if (typeof args.confirmation !== "string" || args.confirmation.trim() !== expected) {
+        throw new SchemaEngineError("confirmation_mismatch", `Type the model's API key (${expected}) to confirm the deletion.`);
       }
       await assertStageCurrent(trx, plan, "destructive", { limits: args.limits });
       await runStage(trx, plan, "destructive");

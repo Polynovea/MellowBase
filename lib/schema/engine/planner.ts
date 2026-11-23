@@ -26,6 +26,8 @@ export interface PlanInput {
   currentSchema?: CanonicalSchema | null;
   /** The schema wanted; null deletes the model's table. */
   targetSchema: CanonicalSchema | null;
+  /** The saved version `targetSchema` came from (null for an unsaved preview or a deletion). */
+  targetVersionId?: string | null;
   /** Explicit renames. Without one, a changed key is a drop (destructive) plus an add. */
   renames?: FieldRename[];
   limits?: SchemaLimits;
@@ -327,6 +329,7 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
     expandedShapeHash: hashShape(expandedShape),
     targetShapeHash: hashShape(targetShape),
     targetSchemaHash: target ? hashModelSchema(target) : null,
+    targetVersionId: input.targetVersionId ?? null,
   };
   const plan: MigrationPlan = {
     ...base,
@@ -353,5 +356,6 @@ export function stepIdentity(step: PlanStep): Record<string, unknown> {
 /** Recomputes a plan's hash from its contents (the runner checks a stored plan was not altered). */
 export function computePlanHash(plan: MigrationPlan): string {
   const { formatVersion, workspaceId, modelId, modelApiKey, table, baseShapeHash, expandedShapeHash, targetShapeHash, targetSchemaHash } = plan;
-  return hashCanonical({ formatVersion, workspaceId, modelId, modelApiKey, table, baseShapeHash, expandedShapeHash, targetShapeHash, targetSchemaHash, steps: plan.steps.map(stepIdentity) });
+  const targetVersionId = plan.targetVersionId ?? null;
+  return hashCanonical({ formatVersion, workspaceId, modelId, modelApiKey, table, baseShapeHash, expandedShapeHash, targetShapeHash, targetSchemaHash, targetVersionId, steps: plan.steps.map(stepIdentity) });
 }
