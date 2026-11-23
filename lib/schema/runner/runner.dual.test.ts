@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { computeStageHash } from "@/lib/schema/engine/planner";
+import { renderStep } from "@/lib/schema/engine/render";
 import { derivedName } from "@/lib/schema/engine/names";
 import { assertOwnerSession } from "@/lib/schema/runner/ownerPool";
 import { claimNextStage, RUNNER_LOCK_CLASS, lockKey, tryLockModel, unlockModel } from "@/lib/schema/runner/ledger";
@@ -63,7 +64,9 @@ describe("the ledger", () => {
     expect(ledger.finished_at.getTime()).toBeGreaterThanOrEqual(ledger.started_at.getTime());
     const run = await h.runRow(ledgerId);
     expect(run).toMatchObject({ status: "succeeded", worker_id: "test-worker", next_step: 1, next_statement: 0, lock_retries: 0 });
-    expect(run.step_log).toEqual([expect.objectContaining({ step: 0, planIndex: 0, kind: "create_table", statements: 4, lockRetries: 0 })]);
+    // As many statements as the engine renders for it (the table, its grant, RLS, policy, then the entry FK NOT VALID and VALIDATE).
+    expect(run.step_log).toEqual([expect.objectContaining({ step: 0, planIndex: 0, kind: "create_table", statements: renderStep(plan.steps[0]).length, lockRetries: 0 })]);
+    expect(renderStep(plan.steps[0]).length).toBe(6);
     expect(Date.parse(run.step_log[0].finishedAt)).toBeGreaterThanOrEqual(Date.parse(run.step_log[0].startedAt));
 
     const { rows: [table] } = await h.owner.query("select table_name, applied_shape_hash from content_model_tables where content_model_id = $1", [model.modelId]);
