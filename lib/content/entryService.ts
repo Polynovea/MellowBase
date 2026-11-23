@@ -100,8 +100,9 @@ export async function getEntry(workspaceId: string, entryId: string): Promise<Co
   return entryData.getEntry(workspaceId, entryId);
 }
 
-export async function listEntryVersions(entryId: string): Promise<ContentEntryVersionRow[]> {
-  return entryData.listEntryVersions(entryId);
+/** An entry's versions, newest first. The workspace is required: versions are read through their entry. */
+export async function listEntryVersions(workspaceId: string, entryId: string): Promise<ContentEntryVersionRow[]> {
+  return entryData.listEntryVersions(workspaceId, entryId);
 }
 
 function extractUniqueReservations(schema: CanonicalSchema, data: Record<string, unknown>): Array<{ fieldKey: string; normalizedValue: string }> {
@@ -163,7 +164,7 @@ export async function saveDraft(params: { workspaceId: string; entryId: string; 
   if (entry.status === "archived") return { ok: false, error: "Archived entries cannot be edited", status: 409 };
   const model = await getModel(params.workspaceId, entry.content_model_id); if (!model) return { ok: false, error: "Content model not found", status: 500 };
   const schemaResult = await currentSchema(model); if (!schemaResult.ok) return schemaResult;
-  const existing = await listEntryVersions(entry.id);
+  const existing = await listEntryVersions(params.workspaceId, entry.id);
   if (params.expectedVersionNumber !== undefined && (existing[0]?.version_number ?? 0) !== params.expectedVersionNumber) {
     return {
       ok: false,
@@ -197,7 +198,7 @@ export async function saveDraft(params: { workspaceId: string; entryId: string; 
   if (!called.ok) {
     const rpcError = called;
     if (rpcError.code === "P0002" || rpcError.message?.includes("Version conflict")) {
-      const latestList = await listEntryVersions(entry.id);
+      const latestList = await listEntryVersions(params.workspaceId, entry.id);
       return {
         ok: false,
         error: "This entry was changed by someone else since you started editing — review the latest version before saving",
@@ -245,7 +246,7 @@ export async function publishEntry(params: { workspaceId: string; entryId: strin
 /** Restoring never mutates history: it creates a fresh draft from the selected version. */
 export async function restoreEntryVersion(params: { workspaceId: string; entryId: string; versionId: string; actorAdminUserId: string }): Promise<EntryResult<{ entry: ContentEntryRow; version: ContentEntryVersionRow }>> {
   const entry = await getEntry(params.workspaceId, params.entryId); if (!entry) return { ok: false, error: "Entry not found", status: 404 };
-  const sourceVersion = await entryData.findEntryVersion(entry.id, params.versionId);
+  const sourceVersion = await entryData.findEntryVersion(params.workspaceId, entry.id, params.versionId);
   if (!sourceVersion) return { ok: false, error: "Version not found for this entry", status: 404 };
   const result = await saveDraft({ workspaceId: params.workspaceId, entryId: entry.id, data: sourceVersion.data_jsonb, locale: sourceVersion.locale, actorAdminUserId: params.actorAdminUserId, changeSummary: `Restored from version ${sourceVersion.version_number}` });
   if (result.ok) await logPlatformEventFor("content", { workspaceId: params.workspaceId, actorAdminUserId: params.actorAdminUserId, action: "content.entry.version_restored", entityType: "content_entry", entityId: entry.id, metadata: { sourceVersionId: params.versionId, sourceVersionNumber: sourceVersion.version_number, restoredVersionNumber: result.data.version.version_number } });

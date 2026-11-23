@@ -1,4 +1,4 @@
-import { createServiceRoleClient } from "@/lib/admin/serviceRole";
+import * as readiness from "@/lib/content/assuranceData";
 import { extractEntryRelations } from "@/lib/content/entryValidation";
 import { getEntry, listEntryVersions } from "@/lib/content/entryService";
 import { getModel, getVersion } from "@/lib/schema/modelService";
@@ -25,45 +25,31 @@ async function evaluateEntryVersion(params: {
   if (!entry) return null;
   const [model, versions] = await Promise.all([
     getModel(params.workspaceId, entry.content_model_id),
-    listEntryVersions(entry.id),
+    listEntryVersions(params.workspaceId, entry.id),
   ]);
   if (!model) return null;
   const version = versions.find((item) => item.id === params.versionId);
   if (!version) return null;
 
-  const [schemaVersion, siblingEntries] = await Promise.all([
+  const [schemaVersion, siblingVersions] = await Promise.all([
     getVersion(model.id, version.model_schema_version),
-    createServiceRoleClient()
-      .from("content_entries")
-      .select("id, current_draft_version_id")
-      .eq("workspace_id", params.workspaceId)
-      .eq("content_model_id", model.id)
-      .neq("id", entry.id),
+    readiness.siblingDraftData(params.workspaceId, model.id, entry.id),
   ]);
   if (!schemaVersion) return null;
   const schema = schemaVersion.schema_json;
-  const db = createServiceRoleClient();
-  const siblingVersionIds = (siblingEntries.data ?? [])
-    .map((item) => item.current_draft_version_id)
-    .filter((id): id is string => Boolean(id));
-  const { data: siblingVersions } = siblingVersionIds.length
-    ? await db.from("content_entry_versions").select("data_jsonb").in("id", siblingVersionIds)
-    : { data: [] as Array<{ data_jsonb: Record<string, unknown> }> };
   const duplicateFields = schema.fields
     .filter(
       (field) =>
         field.unique &&
         version.data_jsonb[field.key] !== undefined &&
-        (siblingVersions ?? []).some((candidate) => candidate.data_jsonb[field.key] === version.data_jsonb[field.key])
+        siblingVersions.some((candidate) => candidate.data_jsonb[field.key] === version.data_jsonb[field.key])
     )
     .map((field) => field.key);
 
   const relations = extractEntryRelations(schema, version.data_jsonb);
   const ids = [...new Set(relations.map((item) => item.targetEntryId))];
-  const { data: targets } = ids.length
-    ? await db.from("content_entries").select("id, status").eq("workspace_id", params.workspaceId).in("id", ids)
-    : { data: [] as Array<{ id: string; status: string }> };
-  const targetById = new Map((targets ?? []).map((target) => [target.id, target]));
+  const targets = await readiness.entryStatuses(params.workspaceId, ids);
+  const targetById = new Map(targets.map((target) => [target.id, target]));
   const coordinated = new Set(params.coordinatedEntryIds ?? []);
   const missingRelations = relations
     .filter((item) => !targetById.has(item.targetEntryId))
@@ -77,16 +63,7 @@ async function evaluateEntryVersion(params: {
 
   let effectiveStatus = entry.status;
   if (entry.current_draft_version_id !== version.id || !["approved", "published"].includes(entry.status)) {
-    const { data: approval } = await db
-      .from("workflow_instances")
-      .select("id")
-      .eq("entry_id", entry.id)
-      .eq("version_id", version.id)
-      .eq("current_state", "approved")
-      .not("completed_at", "is", null)
-      .limit(1)
-      .maybeSingle();
-    if (approval) effectiveStatus = "approved";
+    if (await readiness.hasApprovedWorkflow(params.workspaceId, entry.id, version.id)) effectiveStatus = "approved";
   }
 
   const baseResults = evaluatePreflight({

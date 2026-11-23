@@ -2,8 +2,9 @@
 //
 // Same signatures and return shapes as entryData.supabase.ts. Differences that are deliberate:
 // - Every read of content_entry_versions joins content_entries and requires the entry's workspace
-//   (the versions table has no workspace_id of its own), so a version of another workspace can never
-//   be read, whatever ID a caller passes.
+//   (the versions table has no workspace_id column: see ContentEntryVersions in
+//   lib/db/generated/database.ts), so a version of another workspace can never be read, whatever ID a
+//   caller passes. listEntryVersions and findEntryVersion take the workspace for the same reason.
 // - The uniqueness check reads the model's current versions in one join, without PostgREST's
 //   1000-row cap (which let a duplicate slip past in a model with more than 1000 entries).
 // - Lists have explicit limits and id tie-breaks; malformed IDs are "not found".
@@ -79,16 +80,16 @@ export async function getEntry(workspaceId: string, entryId: string): Promise<Co
   return maybeOne(await getDb().selectFrom("content_entries").selectAll().where("workspace_id", "=", workspaceId).where("id", "=", entryId).execute()) as ContentEntryRow | null;
 }
 
-export async function listEntryVersions(entryId: string): Promise<ContentEntryVersionRow[]> {
+export async function listEntryVersions(workspaceId: string, entryId: string): Promise<ContentEntryVersionRow[]> {
   if (!isUuid(entryId)) return [];
-  const rows = await getDb().selectFrom("content_entry_versions").selectAll().where("entry_id", "=", entryId)
-    .orderBy("version_number", "desc").limit(DEFAULT_LIST_LIMIT).execute();
+  const rows = await versionsOfWorkspace(workspaceId).selectAll("v").where("v.entry_id", "=", entryId)
+    .orderBy("v.version_number", "desc").limit(DEFAULT_LIST_LIMIT).execute();
   return rows as unknown as ContentEntryVersionRow[];
 }
 
-export async function findEntryVersion(entryId: string, versionId: string): Promise<ContentEntryVersionRow | null> {
+export async function findEntryVersion(workspaceId: string, entryId: string, versionId: string): Promise<ContentEntryVersionRow | null> {
   if (!isUuid(entryId) || !isUuid(versionId)) return null;
-  return maybeOne(await getDb().selectFrom("content_entry_versions").selectAll().where("id", "=", versionId).where("entry_id", "=", entryId).execute()) as ContentEntryVersionRow | null;
+  return maybeOne(await versionsOfWorkspace(workspaceId).selectAll("v").where("v.id", "=", versionId).where("v.entry_id", "=", entryId).execute()) as ContentEntryVersionRow | null;
 }
 
 export async function versionDataByIds(workspaceId: string, versionIds: string[]): Promise<Map<string, Record<string, unknown>>> {

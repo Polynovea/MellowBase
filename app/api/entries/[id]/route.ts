@@ -17,7 +17,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (!model) return response(false, null, "Model not found", 404);
   const access = await canActorOperateModel(auth.data!.actor, model, "read");
   if (!access.allowed) return response(false, null, access.error, access.status);
-  return response(true, { entry, versions: await listEntryVersions(id) }, null);
+  return response(true, { entry, versions: await listEntryVersions(auth.data!.actor.workspaceId, id) }, null);
 }
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
