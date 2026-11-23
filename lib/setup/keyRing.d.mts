@@ -1,10 +1,11 @@
 export type KeyPurpose = "config" | "secure-config" | "storage-signing";
 export type MasterKey = { kid: string; key: Buffer };
-export type KeyRing = { source: "env" | "file"; keys: MasterKey[] };
+export type KeyRing = { source: "env" | "legacy" | "file"; keys: MasterKey[] };
 export type PurposeKeys = { primary: { kid: string; key: Buffer }; all: { kid: string; key: Buffer }[]; byKid(kid: string): Buffer | undefined };
 type Env = Record<string, string | undefined>;
 
 export const DEFAULT_CONFIG_DIR: string;
+export const LEGACY_KID: "legacy";
 export class KeyRingError extends Error {
   constructor(message: string);
 }

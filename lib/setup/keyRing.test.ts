@@ -67,6 +67,28 @@ describe("master key ring", () => {
     expect(() => loadKeyRing({ POLYNOVEA_CONFIG_DIR: dir })).toThrow(/chmod 600/);
   });
 
+  it("legacy key only: the ring is that key under the `legacy` ID, and no file is ever created", () => {
+    const dir = path.join(tempDir(), "config");
+    const legacy = randomBytes(32).toString("base64");
+    const ring = loadKeyRing({ CMS_CONFIG_ENCRYPTION_KEY: legacy, POLYNOVEA_CONFIG_DIR: dir }, { generate: true });
+    expect(ring).toMatchObject({ source: "legacy", keys: [{ kid: "legacy" }] });
+    expect(ring!.keys[0].key.equals(Buffer.from(legacy, "base64"))).toBe(true);
+    expect(() => statSync(dir)).toThrow();
+    expect(masterKeyForOwner({ CMS_CONFIG_ENCRYPTION_KEY: legacy, POLYNOVEA_CONFIG_DIR: dir })).toBeNull();
+    resetKeyRingCache();
+    expect(() => loadKeyRing({ CMS_CONFIG_ENCRYPTION_KEY: randomBytes(16).toString("base64"), POLYNOVEA_CONFIG_DIR: dir })).toThrow(/32-byte/);
+  });
+
+  it("both keys set: CMS_MASTER_KEY is primary and the legacy key is appended for reading", () => {
+    const legacy = randomBytes(32).toString("base64");
+    const ring = requireKeyRing({ CMS_MASTER_KEY: entry("k1"), CMS_CONFIG_ENCRYPTION_KEY: legacy });
+    expect(ring.keys.map((key) => key.kid)).toEqual(["k1", "legacy"]);
+    resetKeyRingCache();
+    // An operator who lists `legacy` explicitly keeps exactly their ring.
+    const explicit = `k2:${randomBytes(32).toString("base64")},legacy:${randomBytes(32).toString("base64")}`;
+    expect(requireKeyRing({ CMS_MASTER_KEY: explicit, CMS_CONFIG_ENCRYPTION_KEY: legacy }).keys.map((key) => key.kid)).toEqual(["k2", "legacy"]);
+  });
+
   it("derives a different key per purpose and never returns the master key itself", () => {
     const [master] = parseMasterKeyRing(entry("k1"));
     const derived = (["config", "secure-config", "storage-signing"] as const).map((purpose) => deriveKey(master, purpose));

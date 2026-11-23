@@ -43,6 +43,18 @@ describe("secure config encryption", () => {
     expect(() => decryptConfig(encrypted, { CMS_MASTER_KEY: entry("new"), POLYNOVEA_CONFIG_DIR: noKeyFile })).toThrow(/not in the key ring/);
   });
 
+  it("adding CMS_MASTER_KEY later: new values use it, legacy and pv2.legacy values stay readable", () => {
+    const legacyKey = randomBytes(32).toString("base64");
+    const before = { CMS_CONFIG_ENCRYPTION_KEY: legacyKey, POLYNOVEA_CONFIG_DIR: noKeyFile };
+    const written = encryptConfig({ value: "pv2-legacy" }, before);
+    const unprefixed = legacyEncrypt({ value: "unprefixed" }, legacyKey);
+    resetKeyRingCache();
+    const after = { ...before, CMS_MASTER_KEY: entry("k1") };
+    expect(ciphertextKid(encryptConfig({ value: "new" }, after))).toBe("k1");
+    expect(decryptConfig(written, after)).toEqual({ value: "pv2-legacy" });
+    expect(decryptConfig(unprefixed, after)).toEqual({ value: "unprefixed" });
+  });
+
   it("reads legacy CMS_CONFIG_ENCRYPTION_KEY ciphertext for one release", () => {
     const legacyKey = randomBytes(32).toString("base64");
     const legacy = legacyEncrypt({ value: "token" }, legacyKey);
@@ -63,14 +75,18 @@ describe("secure config encryption", () => {
     expect(() => decryptConfig(`pv2.k1.${legacyEncrypt({ value: "x" }, legacyKey)}`, { ...env, CMS_CONFIG_ENCRYPTION_KEY: legacyKey })).toThrow();
   });
 
-  it("before the first boot creates a ring, keeps writing the legacy format instead of failing", () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("legacy key only: pv2.legacy values every process with the same environment can read", () => {
     const legacyKey = randomBytes(32).toString("base64");
-    const env = { CMS_CONFIG_ENCRYPTION_KEY: legacyKey, POLYNOVEA_CONFIG_DIR: noKeyFile };
-    const encrypted = encryptConfig({ value: "x" }, env);
-    expect(ciphertextKid(encrypted)).toBeNull();
-    expect(decryptConfig(encrypted, env)).toEqual({ value: "x" });
-    expect(secureConfigKeyAvailable(env)).toBe(true);
+    // Two processes (say the app and the delivery worker on another host): same environment, no file.
+    const appEnv = { CMS_CONFIG_ENCRYPTION_KEY: legacyKey, POLYNOVEA_CONFIG_DIR: mkdtempSync(path.join(os.tmpdir(), "polynovea-app-")) };
+    const workerEnv = { CMS_CONFIG_ENCRYPTION_KEY: legacyKey, POLYNOVEA_CONFIG_DIR: mkdtempSync(path.join(os.tmpdir(), "polynovea-worker-")) };
+    const encrypted = encryptConfig({ value: "x" }, appEnv);
+    expect(ciphertextKid(encrypted)).toBe("legacy");
+    resetKeyRingCache();
+    expect(decryptConfig(encrypted, workerEnv)).toEqual({ value: "x" });
+    // Old unprefixed values still read too.
+    expect(decryptConfig(legacyEncrypt({ value: "old" }, legacyKey), workerEnv)).toEqual({ value: "old" });
+    expect(secureConfigKeyAvailable(appEnv)).toBe(true);
     expect(secureConfigKeyAvailable({ POLYNOVEA_CONFIG_DIR: noKeyFile })).toBe(false);
     expect(() => encryptConfig({ value: "x" }, { POLYNOVEA_CONFIG_DIR: noKeyFile })).toThrow(/No master key/);
   });
