@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { LookupAddress } from "node:dns";
 import type pg from "pg";
-import { MANAGED_DATABASE_CA_BUNDLE_ID } from "./caBundles";
+import { RDS_CA_BUNDLE_ID } from "./caBundles";
 import { localEndpoint, type DatabaseEndpoint, type DatabaseLogin } from "./connect";
 import { DatabaseSetupError } from "./errors";
 import { runManagedDatabaseSetup } from "./flow";
@@ -12,7 +12,7 @@ import { adminRoutes, fakeClient, ownerRoutes, type FakeClient } from "./testFak
 
 const ADMIN_PASSWORD = "Adm1n-S3cret-Pa55word!";
 const PEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
-const REMOTE: DatabaseEndpoint = { kind: "remote", hostname: "mydb.abc.eu-west-1.rds.amazonaws.com", address: "10.0.4.7", port: 5432, ca: [PEM], caBundleId: MANAGED_DATABASE_CA_BUNDLE_ID };
+const REMOTE: DatabaseEndpoint = { kind: "remote", hostname: "mydb.abc.eu-west-1.rds.amazonaws.com", address: "10.0.4.7", port: 5432, ca: [PEM], caBundleId: RDS_CA_BUNDLE_ID };
 
 let logged: MockInstance;
 beforeEach(() => { logged = vi.spyOn(console, "error").mockImplementation(() => {}); });
@@ -57,7 +57,7 @@ describe("provisionDatabase", () => {
     expect(s.logins[1].fake.statements).toEqual(["select 1"]);
     expect(result).toEqual({
       databaseMode: "managed",
-      database: { host: REMOTE.kind === "remote" ? REMOTE.hostname : "", port: 5432, name: "postgres", caBundleId: MANAGED_DATABASE_CA_BUNDLE_ID },
+      database: { host: REMOTE.kind === "remote" ? REMOTE.hostname : "", port: 5432, name: "postgres", caBundleId: RDS_CA_BUNDLE_ID },
       roles: { owner: { user: "polynovea_owner", password: "generated-role-password-1-xxxxxxxxxxxxxxxxxxxx" }, app: { user: "polynovea_app", password: "generated-role-password-2-xxxxxxxxxxxxxxxxxxxx" } },
     } satisfies ProvisionedDatabase);
     expect(JSON.stringify(s.events)).not.toContain("generated-role-password");
@@ -142,7 +142,7 @@ describe("runManagedDatabaseSetup through the stream (acceptance test 6, unit le
         if (options.saveFails) throw new Error("disk full");
         saved.push(result);
       },
-      checks: { resolve: dns, tcp: async () => {}, tls: async () => {}, factory, roots: { id: MANAGED_DATABASE_CA_BUNDLE_ID, ca: [PEM], providers: { rds: true, azure: true } } },
+      checks: { resolve: dns, tcp: async () => {}, tls: async () => {}, factory, rootsFor: () => ({ id: RDS_CA_BUNDLE_ID, ca: [PEM] }) },
       provision: s.deps,
     }), { secrets: () => held });
     const text = await response.text();

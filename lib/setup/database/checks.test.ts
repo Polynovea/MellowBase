@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import type { LookupAddress } from "node:dns";
 import type pg from "pg";
 import { isClientSafeError } from "@/lib/http/clientError";
-import { MANAGED_DATABASE_CA_BUNDLE_ID, type TrustedRoots } from "./caBundles";
+import { CaBundleError, RDS_CA_BUNDLE_ID, type TrustedRoots } from "./caBundles";
 import {
   CANNOT_CREATE_ROLES,
   dnsFix,
@@ -21,7 +21,7 @@ import { DatabaseSetupError } from "./errors";
 import { fakeClient, type FakeClient } from "./testFakes";
 
 const PEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
-const ROOTS: TrustedRoots = { id: MANAGED_DATABASE_CA_BUNDLE_ID, ca: [PEM], providers: { rds: true, azure: true } };
+const ROOTS: TrustedRoots = { id: RDS_CA_BUNDLE_ID, ca: [PEM] };
 const PASSWORD = "Adm1n-S3cret-Pa55word!";
 const HOST = "mydb.abc123.eu-west-1.rds.amazonaws.com";
 
@@ -43,7 +43,7 @@ function harness(options: { addresses?: string[]; tcp?: Error; tls?: Error; logi
     clients.push(fake);
     return fake.client;
   };
-  const context = { emit: (event: CheckEvent) => events.push(event), roots: ROOTS, resolve: dns(options.addresses ?? ["10.0.4.7"]), tcp, tls, factory };
+  const context = { emit: (event: CheckEvent) => events.push(event), rootsFor: () => ROOTS, resolve: dns(options.addresses ?? ["10.0.4.7"]), tcp, tls, factory };
   return { events, clients, tcp, tls, context };
 }
 
@@ -90,7 +90,7 @@ describe("runDatabaseChecks", () => {
     expect(config).not.toHaveProperty("connectionString");
     expect(config.ssl).toEqual({ rejectUnauthorized: true, servername: HOST, ca: [PEM], minVersion: "TLSv1.2" });
     expect(passed.serverVersionNum).toBe(160004);
-    expect(passed.endpoint).toMatchObject({ kind: "remote", caBundleId: MANAGED_DATABASE_CA_BUNDLE_ID });
+    expect(passed.endpoint).toMatchObject({ kind: "remote", caBundleId: RDS_CA_BUNDLE_ID });
     // The connected client no longer holds the password.
     const held = passed.adminClient as unknown as { password: unknown; connectionParameters: { password: unknown } };
     expect(held.password).toBeNull();
@@ -133,9 +133,11 @@ describe("runDatabaseChecks", () => {
   });
 
   it("refuses an RDS endpoint with a plain fix when the RDS roots are missing", async () => {
-    const h = harness({ tls: new ProbeError("UNABLE_TO_GET_ISSUER_CERT_LOCALLY") });
-    const error = await runDatabaseChecks(input(), { ...h.context, roots: { ...ROOTS, providers: { rds: false, azure: true } } }).then(() => new Error("did not fail"), (e: Error) => e);
+    const h = harness();
+    const error = await runDatabaseChecks(input(), { ...h.context, rootsFor: () => { throw new CaBundleError("missing", "rds"); } }).then(() => new Error("did not fail"), (e: Error) => e);
     expect(error.message).toMatch(/missing Amazon RDS's signing roots/);
+    expect(h.events.at(-1)).toMatchObject({ id: "tls", status: "failed" });
+    expect(h.tls).not.toHaveBeenCalled();
   });
 });
 
@@ -143,8 +145,8 @@ describe("plain fixes", () => {
   const messages = [
     ...["localhost", "blocked-address", "private-literal", "private-not-allowed", "invalid-host", "invalid-port", "not-found", "dns-timeout"].map((reason) => dnsFix({ reason })),
     tcpFix(new ProbeError("ETIMEDOUT"), 5432), tcpFix(new ProbeError("ECONNREFUSED"), 5432), tcpFix(new ProbeError("EHOSTUNREACH"), 5432),
-    ...["ENOTLS", "ETIMEDOUT", "EPROTOCOL", "ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED", "OTHER"].map((code) => tlsFix(new ProbeError(code), HOST, ROOTS)),
-    tlsFix(new ProbeError("OTHER"), "db.example.com", ROOTS),
+    ...["ENOTLS", "ETIMEDOUT", "EPROTOCOL", "ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED", "OTHER"].map((code) => tlsFix(new ProbeError(code), HOST)),
+    tlsFix(new ProbeError("OTHER"), "db.example.com"), tlsFix(new CaBundleError("x", "rds"), HOST), tlsFix(new CaBundleError("x", "public"), HOST),
     ...["28P01", "28000", "3D000", "53300", "x"].map((code) => loginFix({ code })),
     CANNOT_CREATE_ROLES, versionFix(14), versionFix(null), dnsFix(new Error("POLYNOVEA_SETUP_DB_ALLOWLIST has an entry that is not a valid network: x")),
   ];

@@ -1,49 +1,96 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { rootCertificates } from "node:tls";
-import { azureRoots, CaBundleError, certificateAuthoritiesFor, managedDatabaseRoots, MANAGED_DATABASE_CA_BUNDLE_ID, rdsRoots, RDS_BUNDLE_RELATIVE_PATH } from "./caBundles";
+import {
+  CaBundleError, certificateAuthoritiesFor, isRdsHostname, publicRoots, PUBLIC_CA_BUNDLE_ID, RDS_BUNDLE_RELATIVE_PATH, RDS_BUNDLE_SHA256, RDS_CA_BUNDLE_ID,
+  rdsRoots, rootsForHost,
+} from "./caBundles";
 
-describe("azureRoots", () => {
+function bundleDir(contents: string) {
+  const dir = mkdtempSync(path.join(tmpdir(), "rds-ca-"));
+  mkdirSync(path.dirname(path.join(dir, RDS_BUNDLE_RELATIVE_PATH)), { recursive: true });
+  writeFileSync(path.join(dir, RDS_BUNDLE_RELATIVE_PATH), contents);
+  return { dir, sha256: createHash("sha256").update(contents).digest("hex") };
+}
+
+describe("the shipped RDS bundle", () => {
+  // Any change to the file must come with a matching RDS_BUNDLE_SHA256 (scripts/refresh-rds-ca.mjs
+  // updates both and the README), so a silent edit or a corrupted copy fails here.
+  const file = path.join(process.cwd(), RDS_BUNDLE_RELATIVE_PATH);
+
+  it("matches RDS_BUNDLE_SHA256, or is absent while no hash is recorded", () => {
+    if (RDS_BUNDLE_SHA256 === null) {
+      expect(existsSync(file)).toBe(false);
+      return;
+    }
+    expect(createHash("sha256").update(readFileSync(file)).digest("hex")).toBe(RDS_BUNDLE_SHA256);
+    expect(rdsRoots().length).toBeGreaterThan(0);
+  });
+
+  it("is recorded with the same hash in ca/README.md", () => {
+    const readme = readFileSync(path.join(process.cwd(), "lib", "setup", "database", "ca", "README.md"), "utf8");
+    expect(readme).toContain(RDS_BUNDLE_SHA256 === null ? "SHA-256: (not yet added)" : `SHA-256: ${RDS_BUNDLE_SHA256}`);
+  });
+});
+
+describe("publicRoots", () => {
   it("finds DigiCert Global Root G2 and Microsoft RSA Root CA 2017 in Node's store by fingerprint", () => {
-    expect(azureRoots()).toHaveLength(2);
+    expect(publicRoots()).toHaveLength(2);
   });
 
   it("fails loudly when the store no longer has them", () => {
-    expect(() => azureRoots(rootCertificates.slice(0, 3))).toThrow(CaBundleError);
+    expect(() => publicRoots(rootCertificates.slice(0, 3))).toThrow(CaBundleError);
   });
 });
 
 describe("rdsRoots", () => {
-  it("fails when the shipped bundle is missing or holds nothing valid", () => {
+  it("fails when the bundle is missing or no hash is recorded", () => {
     const empty = mkdtempSync(path.join(tmpdir(), "rds-ca-"));
-    expect(() => rdsRoots(empty)).toThrow(/missing/);
-    mkdirSync(path.dirname(path.join(empty, RDS_BUNDLE_RELATIVE_PATH)), { recursive: true });
-    writeFileSync(path.join(empty, RDS_BUNDLE_RELATIVE_PATH), "-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n");
-    expect(() => rdsRoots(empty)).toThrow(/no valid certificate/);
+    expect(() => rdsRoots({ root: empty, expectedSha256: "0".repeat(64) })).toThrow(/missing/);
+    const { dir } = bundleDir(publicRoots().join("\n"));
+    expect(() => rdsRoots({ root: dir, expectedSha256: null })).toThrow(/missing/);
   });
 
-  it("reads valid CA certificates from the bundle", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "rds-ca-"));
-    mkdirSync(path.dirname(path.join(dir, RDS_BUNDLE_RELATIVE_PATH)), { recursive: true });
+  it("refuses a file that does not match the recorded SHA-256", () => {
+    const { dir } = bundleDir(publicRoots().join("\n"));
+    expect(() => rdsRoots({ root: dir, expectedSha256: "0".repeat(64) })).toThrow(/does not match/);
+  });
+
+  it("refuses a matching file with no valid certificate", () => {
+    const { dir, sha256 } = bundleDir("-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n");
+    expect(() => rdsRoots({ root: dir, expectedSha256: sha256 })).toThrow(/no valid certificate/);
+  });
+
+  it("reads the CA certificates from a matching bundle", () => {
     // Two real roots stand in for the RDS bundle's format (concatenated PEM).
-    writeFileSync(path.join(dir, RDS_BUNDLE_RELATIVE_PATH), azureRoots().join("\n"));
-    expect(rdsRoots(dir)).toHaveLength(2);
+    const { dir, sha256 } = bundleDir(publicRoots().join("\n"));
+    expect(rdsRoots({ root: dir, expectedSha256: sha256 })).toHaveLength(2);
   });
 });
 
-describe("managedDatabaseRoots", () => {
-  it("never includes the system store, and says which providers it covers", () => {
-    const empty = mkdtempSync(path.join(tmpdir(), "rds-ca-"));
-    const roots = managedDatabaseRoots({ root: empty });
-    expect(roots).toMatchObject({ id: MANAGED_DATABASE_CA_BUNDLE_ID, providers: { rds: false, azure: true } });
-    expect(roots.ca).toHaveLength(2);
-    expect(roots.ca.length).toBeLessThan(rootCertificates.length);
+describe("rootsForHost", () => {
+  it.each(["mydb.abc.eu-west-1.rds.amazonaws.com", "MyDB.ABC.us-east-1.RDS.amazonaws.com."])("uses only the RDS bundle for %s", (host) => {
+    expect(isRdsHostname(host)).toBe(true);
+    if (RDS_BUNDLE_SHA256 === null) {
+      expect(() => rootsForHost(host)).toThrow(expect.objectContaining({ missing: "rds" }));
+    } else {
+      expect(rootsForHost(host).id).toBe(RDS_CA_BUNDLE_ID);
+    }
   });
 
-  it("maps a saved caBundleId back to the same roots, and an unknown one to null", () => {
-    expect(certificateAuthoritiesFor(MANAGED_DATABASE_CA_BUNDLE_ID)?.length).toBeGreaterThanOrEqual(2);
+  it.each(["pg1.postgres.database.azure.com", "db.corp.internal", "rds.amazonaws.com.evil.com", "evilrds.amazonaws.com", "x.rds.amazonaws.com.evil.com"])(
+    "never gives the RDS bundle to %s", (host) => {
+      expect(isRdsHostname(host)).toBe(false);
+      const roots = rootsForHost(host);
+      expect(roots.id).toBe(PUBLIC_CA_BUNDLE_ID);
+      expect(roots.ca).toEqual(publicRoots());
+    });
+
+  it("maps a saved caBundleId back to its roots, and an unknown one to null", () => {
+    expect(certificateAuthoritiesFor(PUBLIC_CA_BUNDLE_ID)).toHaveLength(2);
     expect(certificateAuthoritiesFor("something-else")).toBeNull();
     expect(certificateAuthoritiesFor(null)).toBeNull();
   });

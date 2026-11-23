@@ -14,14 +14,14 @@ function repo(files: Record<string, string>) {
   return root;
 }
 
-function db(options: { locked?: boolean; applied?: Record<string, string>; failOn?: string } = {}) {
+function db(options: { locked?: boolean; applied?: Record<string, string>; failOn?: RegExp } = {}) {
   const routes: Route[] = [
     [/pg_try_advisory_lock/, () => ({ rows: [{ locked: !options.locked }] })],
     [/unnest\(\$1::text\[\]\)/, () => ({ rows: [] })],
     [/ledger_exists/, () => ({ rows: [{ ledger_exists: true, core_exists: true }] })],
     [/select checksum_sha256/, (params) => ({ rows: options.applied?.[params[0] as string] ? [{ checksum_sha256: options.applied[params[0] as string] }] : [] })],
   ];
-  if (options.failOn) routes.unshift([new RegExp(options.failOn), () => new Error("syntax error at or near")]);
+  if (options.failOn) routes.unshift([options.failOn, () => new Error("syntax error at or near")]);
   return fakeClient(routes);
 }
 
@@ -67,7 +67,7 @@ describe("runMigrations as a module", () => {
   });
 
   it("rolls back, reports the failed file and still unlocks", async () => {
-    const fake = db({ failOn: "^create table broken" });
+    const fake = db({ failOn: /^create table broken/ });
     const events: MigrationEvent[] = [];
     await expect(migrateAsOwner(fake.client, { root: repo({ "0001_x.sql": "create table broken();" }), emit: (e) => events.push(e) })).rejects.toThrow();
     expect(events.at(-1)).toMatchObject({ filename: "0001_x.sql", status: "failed" });

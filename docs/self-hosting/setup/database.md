@@ -50,12 +50,14 @@ A hostname entry allows that name's private addresses; a network entry allows pr
 
 ### TLS
 
-Every managed connection uses TLS with full certificate and hostname checks, against these roots only (not the operating system's store):
+Every managed connection uses TLS with full certificate and hostname checks, against roots we ship (never the operating system's store), chosen by the endpoint name:
 
-- the Amazon RDS global bundle (`lib/setup/database/ca/rds-global-bundle.pem`, from AWS's trust store);
-- DigiCert Global Root G2 and Microsoft RSA Root Certificate Authority 2017 (Azure), taken from Node.js's built-in store and pinned by fingerprint.
+- Amazon RDS endpoints (`….rds.amazonaws.com`): the Amazon RDS global bundle only (`lib/setup/database/ca/rds-global-bundle.pem`, from AWS's trust store, checked against its recorded SHA-256 before use). It is never used for any other host.
+- Every other endpoint (Azure, or a host the operator allowed): DigiCert Global Root G2 and Microsoft RSA Root Certificate Authority 2017, taken from Node.js's built-in store and pinned by fingerprint.
 
 We trust roots only, because both clouds rotate intermediate certificates without notice. There is no fallback to an unverified connection. A server signed by any other authority is refused at check 3.
+
+**Refreshing the RDS bundle.** When AWS announces new RDS certificate authorities, and well before the oldest root in the bundle expires, run `node scripts/refresh-rds-ca.mjs` from the repository root. It downloads the bundle from AWS's trust store only, prints the old and new SHA-256 and every certificate's expiry date, and updates the bundle, its README and the recorded hash together. Check that every printed certificate is an Amazon RDS root, run the unit tests, and commit the three files in one change. The full steps are in `lib/setup/database/ca/README.md`.
 
 ### The admin login is used once
 

@@ -10,7 +10,7 @@ import {
   type Resolver,
 } from "@/lib/infrastructure/guardedNetwork.mjs";
 import { pinnedTlsOptions } from "@/lib/infrastructure/postgresTls.mjs";
-import { managedDatabaseRoots, type TrustedRoots } from "./caBundles";
+import { CaBundleError, rootsForHost, type TrustedRoots } from "./caBundles";
 import { openClient, remoteEndpoint, type ClientFactory, type DatabaseEndpoint } from "./connect";
 import { DatabaseSetupError, setupFailure } from "./errors";
 
@@ -164,14 +164,16 @@ export function tcpFix(error: unknown, port: number): string {
   return `The database didn't answer within 5 seconds: ${SECURITY_GROUP} (inbound port ${port}).`;
 }
 
-export function tlsFix(error: unknown, hostname: string, roots: TrustedRoots): string {
+export function tlsFix(error: unknown, hostname: string): string {
+  if (error instanceof CaBundleError) {
+    return error.missing === "rds"
+      ? "This copy of Polynovea CMS is missing Amazon RDS's signing roots, so it can't verify the database. Update Polynovea CMS, then try again."
+      : "This copy of Polynovea CMS can't load the signing roots it verifies databases with. Update Polynovea CMS, then try again.";
+  }
   const code = error instanceof ProbeError ? error.code : "";
   if (code === "ENOTLS") return "The database does not accept encrypted connections. Turn on TLS (SSL) for it; we never connect without it.";
   if (code === "ETIMEDOUT") return `The database stopped answering while setting up encryption: ${SECURITY_GROUP}, then try again.`;
   if (code === "EPROTOCOL") return "Something answered on that port, but it is not PostgreSQL. Check the endpoint name and port.";
-  if (/\.rds\.amazonaws\.com$/.test(hostname) && !roots.providers.rds) {
-    return "This copy of Polynovea CMS is missing Amazon RDS's signing roots, so it can't verify the database. Update Polynovea CMS, then try again.";
-  }
   if (code === "ERR_TLS_CERT_ALTNAME_INVALID") {
     return "The database's identity doesn't match the name you entered. Use the endpoint name exactly as your cloud console shows it, not a custom DNS name or alias.";
   }
@@ -233,7 +235,8 @@ export interface CheckContext {
   emit: (event: CheckEvent) => void;
   /** POLYNOVEA_SETUP_DB_ALLOWLIST, from the environment only. */
   allowlist?: string | DatabaseAllowlist;
-  roots?: TrustedRoots;
+  /** Picks the trusted roots for an endpoint name (default rootsForHost). */
+  rootsFor?: (hostname: string) => TrustedRoots;
   resolve?: Resolver;
   tcp?: TcpProbe;
   tls?: TlsProbe;
@@ -272,9 +275,14 @@ export async function runDatabaseChecks(input: ManagedDatabaseInput, context: Ch
   const target = await step("dns", () => resolveDatabaseTarget(input.hostname, input.port, { allowlist: context.allowlist, resolve: context.resolve }), dnsFix);
   await step("tcp", () => (context.tcp ?? tcpProbe)(target.address, target.port, 5_000), (error) => tcpFix(error, target.port));
 
-  const roots = context.roots ?? managedDatabaseRoots();
-  const endpoint = remoteEndpoint(target, roots) as Extract<DatabaseEndpoint, { kind: "remote" }>;
-  await step("tls", () => (context.tls ?? tlsProbe)(endpoint, 10_000), (error) => tlsFix(error, target.hostname, roots));
+  // The roots are chosen by the endpoint's name: RDS's bundle for RDS names only, the pinned public
+  // roots for everything else. Failing to load them fails this check; there is no fallback.
+  const endpoint = await step("tls", async () => {
+    const roots = (context.rootsFor ?? rootsForHost)(target.hostname);
+    const remote = remoteEndpoint(target, roots) as Extract<DatabaseEndpoint, { kind: "remote" }>;
+    await (context.tls ?? tlsProbe)(remote, 10_000);
+    return remote;
+  }, (error) => tlsFix(error, target.hostname));
 
   const adminClient = await step("login", async () => {
     const client = await openClient(endpoint, input.database, { user: input.user, password: input.password }, { connectTimeoutMs: 10_000, statementTimeoutMs: 30_000, factory: context.factory });
