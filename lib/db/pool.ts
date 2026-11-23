@@ -138,8 +138,13 @@ function assertPoolAllowed(purpose: Purpose) {
 
 /** A pool that re-checks the mode on every checkout, so a pool opened earlier cannot be used later in the wrong mode. */
 class ModeGuardedPool extends pg.Pool {
-  constructor(config: pg.PoolConfig, private readonly purpose: Purpose) {
+  // A plain field, not a constructor parameter property: the certification scripts load this file
+  // through Node's type stripping, which cannot run parameter properties.
+  private readonly purpose: Purpose;
+
+  constructor(config: pg.PoolConfig, purpose: Purpose) {
     super(config);
+    this.purpose = purpose;
   }
 
   // pg.Pool.query() checks out through connect(), so this covers both.
