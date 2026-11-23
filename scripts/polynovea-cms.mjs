@@ -14,6 +14,41 @@ if (area === "auth") {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
+} else if (area === "keys") {
+  // Logic in lib/setup/reencrypt.ts, loaded with Node's type stripping (Node 24).
+  const args = process.argv.slice(4);
+  const batchArg = args.find((arg) => arg.startsWith("--batch-size="));
+  const unknown = args.filter((arg) => arg !== "--dry-run" && !arg.startsWith("--batch-size="));
+  if (action !== "reencrypt" || unknown.length) {
+    console.error("Usage: polynovea-cms keys reencrypt [--dry-run] [--batch-size=200]");
+    console.error("Rewrites the secrets stored in the database under the first key of CMS_MASTER_KEY (or master.key).");
+    process.exit(1);
+  }
+  const pg = (await import("pg")).default;
+  const { postgresConnectionConfig } = await import("../lib/infrastructure/postgresTls.mjs");
+  const { readConfigSync, databaseUrlFromConfig } = await import("../lib/setup/configStore.ts");
+  const { reencryptSecrets, reencryptConfigFile, formatReencryptReport } = await import("../lib/setup/reencrypt.ts");
+  let db;
+  try {
+    const config = readConfigSync();
+    const url = (config && databaseUrlFromConfig(config, "app")) || process.env.POLYNOVEA_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
+    if (!url) throw new Error("No database: run this on the CMS server (config.enc), or set POLYNOVEA_DATABASE_URL");
+    db = new pg.Client({ ...postgresConnectionConfig(url), application_name: "polynovea-cms-keys" });
+    await db.connect();
+    const report = await reencryptSecrets(db, {
+      dryRun: args.includes("--dry-run"),
+      batchSize: batchArg ? Number(batchArg.slice("--batch-size=".length)) : undefined,
+      log: (line) => console.log(line),
+    });
+    console.log(formatReencryptReport(report));
+    console.log(`config.enc: ${await reencryptConfigFile(process.env, args.includes("--dry-run"))}`);
+    process.exitCode = report.columns.some((column) => column.failed > 0) ? 2 : 0;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  } finally {
+    await db?.end().catch(() => {});
+  }
 } else {
   await import("../packages/cms-cli/bin/polynovea-cms.mjs");
 }
