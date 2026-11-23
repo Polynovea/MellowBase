@@ -1,7 +1,7 @@
 // Contract between the setup wizard and the built-in auth: an owner created by finalise signs in
 // through the real Better Auth handler (the app's own instance and configuration), with every
 // method the sign-in page offers, and passes the owner's MFA gate.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { closeDb } from "@/lib/db/index";
@@ -18,9 +18,14 @@ let app: pg.Pool;
 let enrolled: EnrolledOwner;
 let created: FinalisedOwner;
 
-/** A tiny browser on the app's own auth handler: keeps cookies and sends the CMS origin. */
+/**
+ * A tiny browser on the app's own auth handler: keeps cookies and sends the CMS origin. Each one has
+ * its own client address, as real browsers do; without one, every test file's sign-ins would share
+ * the per-IP sign-in limit (10 a minute) in a full test run.
+ */
 class Browser {
   readonly cookies = new Map<string, string>();
+  readonly address = `100.${64 + randomInt(64)}.${randomInt(256)}.${1 + randomInt(254)}`;
 
   cookieHeader(): string {
     return [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ");
@@ -31,6 +36,7 @@ class Browser {
       method,
       headers: {
         origin: TEST_PUBLIC_URL,
+        "x-forwarded-for": this.address,
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
         ...(this.cookies.size ? { cookie: this.cookieHeader() } : {}),
       },
