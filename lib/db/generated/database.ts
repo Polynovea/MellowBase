@@ -446,6 +446,22 @@ export interface ContentHealthProfiles {
   workspace_id: string;
 }
 
+export interface ContentModelMoveRuns {
+  backfill: Generated<Json>;
+  content_model_id: string;
+  counts: Json;
+  fields: Json;
+  finished_at: Generated<string>;
+  id: Generated<string>;
+  matched: boolean;
+  mismatches: Generated<Json>;
+  requested_by: string | null;
+  shape_hash: string;
+  started_at: string;
+  table_name: string;
+  workspace_id: string;
+}
+
 export interface ContentModels {
   api_key: string;
   created_at: Generated<string | null>;
@@ -458,6 +474,18 @@ export interface ContentModels {
   settings_json: Generated<Json>;
   status: Generated<string>;
   updated_at: Generated<string | null>;
+  workspace_id: string;
+}
+
+export interface ContentModelStorage {
+  content_model_id: string;
+  last_run_id: string | null;
+  out_of_sync_at: string | null;
+  out_of_sync_code: string | null;
+  read_source: Generated<string>;
+  switched_at: string | null;
+  switched_by: string | null;
+  updated_at: Generated<string>;
   workspace_id: string;
 }
 
@@ -2204,6 +2232,8 @@ export interface DB {
   content_fields: ContentFields;
   content_health_findings: ContentHealthFindings;
   content_health_profiles: ContentHealthProfiles;
+  content_model_move_runs: ContentModelMoveRuns;
+  content_model_storage: ContentModelStorage;
   content_model_tables: ContentModelTables;
   content_model_versions: ContentModelVersions;
   content_models: ContentModels;

@@ -3,6 +3,7 @@
 // reached only through the workspace's entries; the page has an id tie-break.
 import { getDb, maybeOne } from "@/lib/db/index";
 import type { ContentModelRow } from "@/lib/schema/modelService";
+import { currentTableData } from "@/lib/content/tableStore";
 
 // The model is read here, not through the schema area, so this area's data comes from one backend.
 async function modelByApiKey(workspaceId: string, apiKey: string) {
@@ -34,10 +35,13 @@ export async function listDeveloperEntries(params: { workspaceId: string; modelA
       .where("v.id", "in", versionIds).where("v.entry_id", "in", entryIds).execute()
     : [];
   const versionById = new Map(versions.map((version) => [version.id, version]));
+  // Phase 3: entries of models switched to their tables take the current version's data from the table.
+  const fromTables = await currentTableData(params.workspaceId, entries);
   const rows = entries
     .map((entry) => {
       const current = entry.current_draft_version_id ? versionById.get(entry.current_draft_version_id) : entry.published_version_id ? versionById.get(entry.published_version_id) : null;
-      return { ...entry, currentVersion: current ?? null };
+      const tableRow = fromTables.get(entry.id);
+      return { ...entry, currentVersion: current ? (tableRow ? { ...current, data_jsonb: tableRow.data } : current) : null };
     })
     .filter((entry) => !params.locale || entry.currentVersion?.locale === params.locale);
   return { rows, model, limit, offset };
