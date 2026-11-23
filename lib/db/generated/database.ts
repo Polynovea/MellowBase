@@ -393,6 +393,18 @@ export interface ContentEntryWatchers {
   workspace_id: string;
 }
 
+export interface ContentFieldPermissions {
+  can_read: Generated<boolean>;
+  can_write: Generated<boolean>;
+  content_model_id: string;
+  created_at: Generated<string>;
+  field_key: string;
+  id: Generated<string>;
+  role_id: string;
+  updated_at: Generated<string>;
+  workspace_id: string;
+}
+
 export interface ContentFields {
   configuration_json: Generated<Json>;
   content_model_id: string;
@@ -446,6 +458,16 @@ export interface ContentModels {
   settings_json: Generated<Json>;
   status: Generated<string>;
   updated_at: Generated<string | null>;
+  workspace_id: string;
+}
+
+export interface ContentModelTables {
+  applied_shape: Json;
+  applied_shape_hash: string;
+  content_model_id: string;
+  created_at: Generated<string>;
+  table_name: string;
+  updated_at: Generated<string>;
   workspace_id: string;
 }
 
@@ -1766,6 +1788,39 @@ export interface Roles {
   workspace_id: string;
 }
 
+export interface SchemaMigrationLedger {
+  attempts: Generated<number>;
+  base_shape_hash: string | null;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  content_model_id: string | null;
+  created_at: Generated<string>;
+  error_ref: string | null;
+  finished_at: string | null;
+  id: Generated<string>;
+  model_api_key: string;
+  plan_hash: string;
+  plan_json: Json;
+  requested_by: string | null;
+  stage: string;
+  started_at: string | null;
+  status: string;
+  table_name: string;
+  target_schema_hash: string | null;
+  workspace_id: string;
+}
+
+export interface SchemaNameReservations {
+  content_model_id: string | null;
+  created_at: Generated<string>;
+  id: Generated<string>;
+  kind: string;
+  name: string;
+  reason: string;
+  reserved_until: string;
+  workspace_id: string;
+}
+
 export interface SocialPosts {
   checkpoint_metrics: Json | null;
   checkpoints: Generated<string[] | null>;
@@ -2144,9 +2199,11 @@ export interface DB {
   content_entry_version_terms: ContentEntryVersionTerms;
   content_entry_versions: ContentEntryVersions;
   content_entry_watchers: ContentEntryWatchers;
+  content_field_permissions: ContentFieldPermissions;
   content_fields: ContentFields;
   content_health_findings: ContentHealthFindings;
   content_health_profiles: ContentHealthProfiles;
+  content_model_tables: ContentModelTables;
   content_model_versions: ContentModelVersions;
   content_models: ContentModels;
   content_redirect_history: ContentRedirectHistory;
@@ -2236,6 +2293,8 @@ export interface DB {
   releases: Releases;
   role_permissions: RolePermissions;
   roles: Roles;
+  schema_migration_ledger: SchemaMigrationLedger;
+  schema_name_reservations: SchemaNameReservations;
   social_posts: SocialPosts;
   system_doctor_runs: SystemDoctorRuns;
   taxonomies: Taxonomies;
