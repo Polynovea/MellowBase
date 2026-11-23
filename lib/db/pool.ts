@@ -1,5 +1,6 @@
 import pg from "pg";
 import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
+import { currentMode, runtimeDatabaseUrl } from "@/lib/setup/mode";
 
 /**
  * One pg.Pool per process, shared by every area on the direct path.
@@ -12,9 +13,14 @@ import { postgresConnectionConfig } from "@/lib/infrastructure/postgresTls.mjs";
  * - Session TimeZone is UTC and timestamps, dates, bigint and numeric are parsed the way PostgREST
  *   returned them (ISO strings and numbers), so converted areas keep identical return shapes.
  *
- * The runtime connects with POLYNOVEA_DATABASE_URL, which should be the polynovea_app role (rows and
- * functions only, no DDL). DATABASE_URL, which migrations and the worker use, is the fallback while
- * existing installs have a single login.
+ * The runtime connects as the polynovea_app role (rows and functions only, no DDL): from config.enc
+ * when the setup wizard wrote one, otherwise POLYNOVEA_DATABASE_URL, with DATABASE_URL (which
+ * migrations and the worker use) as the fallback while existing installs have a single login.
+ *
+ * Setup mode (lib/setup/mode.ts): getPool() refuses to open the pool, and the pool refuses every
+ * connection, while the CMS is in setup or unavailable mode. This is the layer under middleware.ts,
+ * which alone can be bypassed (CVE-2025-29927). The wizard's own steps use getSetupPool(), which only
+ * works in setup mode.
  */
 
 const DEFAULTS = {
@@ -88,9 +94,13 @@ const typeOverrides: pg.CustomTypesConfig = {
 // ── Pool ─────────────────────────────────────────────────────────────────────
 
 export function poolConfigFromEnv(env: Record<string, string | undefined> = process.env): pg.PoolConfig {
+  return poolConfigFor(databaseUrlFromEnv(env), env);
+}
+
+export function poolConfigFor(url: string, env: Record<string, string | undefined> = process.env): pg.PoolConfig {
   const statementTimeout = intFromEnv("POLYNOVEA_DB_STATEMENT_TIMEOUT_MS", DEFAULTS.statementTimeoutMillis, env);
   return {
-    ...postgresConnectionConfig(databaseUrlFromEnv(env), env),
+    ...postgresConnectionConfig(url, env),
     max: intFromEnv("POLYNOVEA_DB_POOL_MAX", DEFAULTS.max, env),
     connectionTimeoutMillis: intFromEnv("POLYNOVEA_DB_CONNECT_TIMEOUT_MS", DEFAULTS.connectionTimeoutMillis, env),
     idleTimeoutMillis: DEFAULTS.idleTimeoutMillis,
@@ -105,28 +115,83 @@ export function poolConfigFromEnv(env: Record<string, string | undefined> = proc
   };
 }
 
-type PoolHolder = { pool?: pg.Pool };
+/** Thrown when the database is used in a mode that does not allow it. Not safe to show to clients. */
+export class PoolModeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PoolModeError";
+  }
+}
+
+type Purpose = "runtime" | "setup";
+
+/** Runtime: refused in setup and unavailable modes. Setup: only in setup mode. Undecided (scripts, tests): allowed. */
+function assertPoolAllowed(purpose: Purpose) {
+  const mode = currentMode();
+  if (purpose === "setup") {
+    if (mode !== "setup") throw new PoolModeError("The setup database pool is only available in setup mode");
+    return;
+  }
+  if (mode === "setup") throw new PoolModeError("The CMS is in setup mode: the database is not open until setup is finished");
+  if (mode === "unavailable") throw new PoolModeError("The CMS database is unavailable");
+}
+
+/** A pool that re-checks the mode on every checkout, so a pool opened earlier cannot be used later in the wrong mode. */
+class ModeGuardedPool extends pg.Pool {
+  constructor(config: pg.PoolConfig, private readonly purpose: Purpose) {
+    super(config);
+  }
+
+  // pg.Pool.query() checks out through connect(), so this covers both.
+  connect(...args: unknown[]): never {
+    assertPoolAllowed(this.purpose);
+    return (super.connect as (...a: unknown[]) => never)(...args);
+  }
+}
+
+function openPool(purpose: Purpose, max?: number): pg.Pool {
+  const url = runtimeDatabaseUrl();
+  if (!url) throw new Error("Database is not configured: finish setup at /setup, or set POLYNOVEA_DATABASE_URL");
+  const config = poolConfigFor(url);
+  const pool = new ModeGuardedPool(max ? { ...config, max } : config, purpose);
+  // An idle client losing its connection must not crash the process; the pool replaces it.
+  pool.on("error", (error) => {
+    console.error("[db] idle connection error", (error as { code?: string }).code ?? error.name);
+  });
+  return pool;
+}
+
+type PoolHolder = { pool?: pg.Pool; setupPool?: pg.Pool };
 const holder = globalThis as typeof globalThis & { __polynoveaPgPool?: PoolHolder };
 
 export function getPool(): pg.Pool {
   holder.__polynoveaPgPool ??= {};
   const state = holder.__polynoveaPgPool;
   if (!state.pool) {
-    const pool = new pg.Pool(poolConfigFromEnv());
-    // An idle client losing its connection must not crash the process; the pool replaces it.
-    pool.on("error", (error) => {
-      console.error("[db] idle connection error", (error as { code?: string }).code ?? error.name);
-    });
-    state.pool = pool;
+    assertPoolAllowed("runtime");
+    state.pool = openPool("runtime");
   }
   return state.pool;
 }
 
-/** Closes the process pool (tests, graceful shutdown). The next getPool() opens a new one. */
+/**
+ * The database for the wizard's own steps (owner and installation row), as the app role. Only in
+ * setup mode; a small pool, closed by closePool().
+ */
+export function getSetupPool(): pg.Pool {
+  holder.__polynoveaPgPool ??= {};
+  const state = holder.__polynoveaPgPool;
+  assertPoolAllowed("setup");
+  state.setupPool ??= openPool("setup", 2);
+  return state.setupPool;
+}
+
+/** Closes the process pools (tests, graceful shutdown, end of setup). The next getPool() opens a new one. */
 export async function closePool(): Promise<void> {
   const state = holder.__polynoveaPgPool;
-  const pool = state?.pool;
-  if (!pool) return;
+  if (!state) return;
+  const pools = [state.pool, state.setupPool].filter((pool): pool is pg.Pool => Boolean(pool));
   state.pool = undefined;
-  await pool.end();
+  state.setupPool = undefined;
+  await Promise.all(pools.map((pool) => pool.end()));
 }
