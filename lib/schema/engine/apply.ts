@@ -278,10 +278,10 @@ export async function applyExpandStage(
   } catch (error) {
     if (error instanceof SchemaEngineError) throw error;
     const ref = randomUUID();
-    console.error(`[schema-engine] expand stage failed for model ${String(plan?.modelId)} (ref ${ref})`, error);
+    console.error("[schema-engine] expand stage failed", { modelId: String(plan?.modelId), ref }, error);
     await db.insertInto("schema_migration_ledger").values({
       ...ledgerRow(plan, "expand", requestedBy), status: "failed", error_ref: ref, attempts: 1, started_at: startedAt, finished_at: new Date().toISOString(),
-    }).execute().catch((ledgerError: unknown) => console.error(`[schema-engine] could not record failure ${ref}`, ledgerError));
+    }).execute().catch((ledgerError: unknown) => console.error("[schema-engine] could not record failure", { ref }, ledgerError));
     throw new SchemaEngineError("apply_failed", `The change could not be applied and nothing was changed. Reference: ${ref}`);
   }
 }
@@ -324,7 +324,7 @@ export async function applyDestructiveStage(
   } catch (error) {
     if (error instanceof SchemaEngineError) throw error;
     const ref = randomUUID();
-    console.error(`[schema-engine] destructive stage failed (ledger ${args.ledgerId}, ref ${ref})`, error);
+    console.error("[schema-engine] destructive stage failed", { ledgerId: args.ledgerId, ref }, error);
     await db.updateTable("schema_migration_ledger").set({ error_ref: ref, attempts: sql<number>`attempts + 1` })
       .where("id", "=", args.ledgerId).execute().catch(() => undefined);
     throw new SchemaEngineError("apply_failed", `The deletion could not be applied and nothing was changed. Reference: ${ref}`);
