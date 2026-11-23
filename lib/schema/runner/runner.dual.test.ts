@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { computeStageHash } from "@/lib/schema/engine/planner";
 import { derivedName } from "@/lib/schema/engine/names";
 import { assertOwnerSession } from "@/lib/schema/runner/ownerPool";
 import { claimNextStage, RUNNER_LOCK_CLASS, lockKey, tryLockModel, unlockModel } from "@/lib/schema/runner/ledger";
@@ -57,7 +58,7 @@ describe("the ledger", () => {
     expect(await h.run(model)).toEqual({ ledgerId, outcome: "succeeded" });
 
     const ledger = await h.ledger(ledgerId);
-    expect(ledger).toMatchObject({ status: "succeeded", requested_by: model.adminId, plan_hash: plan.planHash, attempts: 1, error_ref: null, stage: "expand" });
+    expect(ledger).toMatchObject({ status: "succeeded", requested_by: model.adminId, plan_hash: computeStageHash(plan, "expand"), attempts: 1, error_ref: null, stage: "expand" });
     expect(ledger.started_at).toBeInstanceOf(Date);
     expect(ledger.finished_at.getTime()).toBeGreaterThanOrEqual(ledger.started_at.getTime());
     const run = await h.runRow(ledgerId);
