@@ -216,7 +216,8 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     await backend.query(`update content.${table} set price = price + 1 where _entry_id = $1 and price is not null`, [posts[0]]);
     const changed = await verifyModel(getDb(), { workspaceId, modelId: postModelId });
     expect(changed.matched).toBe(false);
-    expect(changed.mismatches).toEqual([{ kind: "field_checksum", column: "price", variant: "published" }]);
+    // posts[0] is post 1: a draft only.
+    expect(changed.mismatches).toEqual([{ kind: "field_checksum", column: "price", variant: "draft" }]);
 
     await backend.query(`delete from content.${table} where _entry_id = $1`, [posts[1]]);
     const missing = await verifyModel(getDb(), { workspaceId, modelId: postModelId });

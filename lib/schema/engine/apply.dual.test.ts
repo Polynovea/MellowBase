@@ -209,6 +209,7 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
       "Adds a field: status (text)",
       "Makes status required when published: blocked until 3 published entries have a value",
       "Makes title unique: blocked until 2 duplicate values are changed",
+      "Indexes status for search",
     ]);
     expect(await errorOf(applyExpandStage(owner, { plan: blocked, requestedBy: null, limits: TEST_LIMITS }))).toMatchObject({ code: "apply_failed" });
     expect(Object.keys((await physicalShape(backend.query, table))!)).toEqual(["title"]);
