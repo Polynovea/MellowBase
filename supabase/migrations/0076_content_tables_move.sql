@@ -530,9 +530,10 @@ end;
 $$;
 
 -- ── App access ───────────────────────────────────────────────────────────────────────────────────
--- 0074's helper, with two additions only: content_model_storage and content_model_move_runs join the
--- read_only list (the app changes them only through the functions above), and the three content
--- functions join app_only_functions (EXECUTE for polynovea_app only, never service_role).
+-- 0074's helper, with these additions only: content_model_storage and content_model_move_runs join the
+-- read_only list (the app changes them only through the functions above), read_only tables are also
+-- write-protected from service_role on Supabase, and the content functions join app_only_functions
+-- (EXECUTE for polynovea_app only, never service_role).
 create or replace function public.polynovea_apply_app_access()
 returns void
 language plpgsql
@@ -567,6 +568,10 @@ begin
       -- Written by migrations, the migration worker or the engine's bookkeeping (polynovea_owner).
       execute format('grant select on public.%I to polynovea_app', item.relname);
       execute format('revoke insert, update, delete, truncate on public.%I from polynovea_app', item.relname);
+      -- On Supabase, service_role must not write them either (it bypasses row-level security).
+      if has_service_role then
+        execute format('revoke insert, update, delete, truncate on public.%I from service_role', item.relname);
+      end if;
       foreach grantee in array api_roles loop
         execute format('revoke all on public.%I from %I', item.relname, grantee);
       end loop;

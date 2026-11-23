@@ -99,7 +99,8 @@ export async function waitForStage(db: DbExecutor, ledgerId: string, options: { 
   const deadline = Date.now() + (options.timeoutMs ?? 10 * 60_000);
   for (;;) {
     const status = await planStageStatus(db, ledgerId);
-    if (status && ["succeeded", "failed", "superseded"].includes(status.status)) return status.status;
+    // Final states: a stage that failed, was superseded by a newer change or was cancelled will not run.
+    if (status && ["succeeded", "failed", "superseded", "cancelled"].includes(status.status)) return status.status;
     if (Date.now() > deadline) return status?.status ?? "unknown";
     await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 1000));
   }
