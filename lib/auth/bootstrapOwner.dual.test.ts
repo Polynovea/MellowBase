@@ -7,7 +7,8 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { closeDb } from "@/lib/db/index";
-import { bootstrapBuiltinOwner } from "@/lib/auth/bootstrapOwner.mjs";
+import { bootstrapBuiltinOwner, bootstrapBuiltinOwnerInTransaction } from "@/lib/auth/bootstrapOwner.mjs";
+import { hashPassword } from "@/lib/auth/betterAuth/passwordHash.mjs";
 import { getBuiltinAuth, resetBuiltinAuthForTests } from "@/lib/auth/betterAuth/instance";
 import { requireAdminRequest } from "@/lib/admin/serverAccess";
 
@@ -151,5 +152,40 @@ describe("bootstrap the first owner on the built-in auth [postgres]", () => {
     await expect(mismatch).rejects.toMatchObject({ code: 1 });
     const { rows } = await owner.query(`select 1 from polynovea_auth."user" where email = $1`, [other.email.toLowerCase()]);
     expect(rows).toEqual([]);
+  });
+});
+
+describe("bootstrap the owner inside the caller's transaction [postgres]", () => {
+  it("uses a staged Argon2id hash, and writes nothing until the caller commits", async () => {
+    const { slug } = await workspace();
+    const input = details(slug);
+    const password = `staged owner ${randomBytes(8).toString("hex")}`;
+    const passwordHash = await hashPassword(password);
+    const email = input.email.toLowerCase();
+
+    await app.query("begin");
+    const rolledBack = await bootstrapBuiltinOwnerInTransaction(app, { ...input, passwordHash });
+    expect(rolledBack).toMatchObject({ createdUser: true, setPassword: true });
+    await app.query("rollback");
+    expect((await owner.query(`select 1 from polynovea_auth."user" where email = $1`, [email])).rows).toEqual([]);
+
+    await app.query("begin");
+    const result = await bootstrapBuiltinOwnerInTransaction(app, { ...input, passwordHash });
+    await app.query("commit");
+    const { rows: [account] } = await owner.query(`select password from polynovea_auth.account where "userId" = $1::uuid`, [result.authUserId]);
+    expect(account.password).toBe(passwordHash);
+    expect((await signIn(email, password)).status).toBe(200);
+  });
+
+  it("refuses a hash that is not the app's Argon2id, or a password and a hash together", async () => {
+    const { slug } = await workspace();
+    const input = details(slug);
+    await app.query("begin");
+    try {
+      await expect(bootstrapBuiltinOwnerInTransaction(app, { ...input, passwordHash: "plain text" })).rejects.toThrow(/Argon2id/);
+      await expect(bootstrapBuiltinOwnerInTransaction(app, { ...input, password: "x".repeat(20), passwordHash: await hashPassword("y".repeat(20)) })).rejects.toThrow(/not both/);
+    } finally {
+      await app.query("rollback");
+    }
   });
 });
