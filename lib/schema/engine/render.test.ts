@@ -20,8 +20,15 @@ const title: ColumnShape = { name: "title", field: "title", fieldType: "text", p
 
 describe("rendered SQL", () => {
   it("creates the table with storage columns, grants, row-level security and the app policy", () => {
-    const [create, grant, rls, policy] = compile({ kind: "create_table", stage: "expand", summary: "", table: "m_post", columns: [title] });
-    expect(oneLine(create.sql)).toContain('create table "content"."m_post" ( _entry_id uuid not null references public.content_entries (id) on delete cascade');
+    const step: PlanStep = { kind: "create_table", stage: "expand", summary: "", table: "m_post", columns: [title] };
+    const [create, grant, rls, policy, fkAdd, fkValidate] = compile(step);
+    expect(oneLine(create.sql)).toContain('create table "content"."m_post" ( _entry_id uuid not null, _variant text not null');
+    expect(create.sql).not.toContain("references");
+    const fk = derivedName("fk", "m_post", "_entry_id");
+    expect(fkAdd.sql).toBe(`alter table "content"."m_post" add constraint "${fk}" foreign key (_entry_id) references public.content_entries (id) on delete cascade not valid`);
+    expect(fkValidate.sql).toBe(`alter table "content"."m_post" validate constraint "${fk}"`);
+    // The FK add takes SHARE ROW EXCLUSIVE on content_entries: lock-sensitive, and committed on its own.
+    expect(renderStep(step).map((s) => [s.lockSensitive, s.ownTransaction])).toEqual([[false, false], [false, false], [false, false], [false, false], [true, true], [false, true]]);
     expect(oneLine(create.sql)).toContain('_locale text not null, "title" text, primary key (_entry_id, _variant, _locale) )');
     expect(grant.sql).toBe('grant select, insert, update, delete on "content"."m_post" to "polynovea_app"');
     expect(rls.sql).toBe('alter table "content"."m_post" enable row level security');
@@ -82,6 +89,7 @@ describe("rendered SQL defaults", () => {
     expect(add.sql.compile(db).sql).toContain("create index concurrently");
     const [drop] = renderStep({ kind: "drop_index", stage: "expand", summary: "", table: "m_post", column: "title", unique: true });
     expect(drop).toMatchObject({ transactional: false, lockSensitive: false });
-    expect(renderStep({ kind: "add_foreign_key", stage: "expand", summary: "", table: "m_post", column: "a", onDelete: "restrict" }).map((s) => s.transactional)).toEqual([true, true]);
+    expect(renderStep({ kind: "add_foreign_key", stage: "expand", summary: "", table: "m_post", column: "a", onDelete: "restrict" }).map((s) => [s.transactional, s.lockSensitive, s.ownTransaction])).toEqual([[true, true, true], [true, false, true]]);
+    expect(renderStep({ kind: "backfill_column", stage: "expand", summary: "", table: "m_post", column: "a", pgType: "text", value: "x" })[0].ownTransaction).toBe(true);
   });
 });

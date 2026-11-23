@@ -152,4 +152,10 @@ export interface RenderedStatement {
   transactional: boolean;
   /** Takes a lock that can queue other queries: run it under lock_timeout with retries. */
   lockSensitive: boolean;
+  /**
+   * Run in its own short transaction and commit straight after, so the lock it takes (SHARE ROW
+   * EXCLUSIVE on content_entries for a foreign key) or the time it runs (VALIDATE, backfill) is not
+   * held together with the rest of the stage.
+   */
+  ownTransaction: boolean;
 }

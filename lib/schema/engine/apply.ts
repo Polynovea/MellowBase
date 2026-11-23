@@ -237,7 +237,13 @@ export async function applyStageBookkeeping(trx: Transaction<DB>, plan: Migratio
   })).execute();
 }
 
-/** The reference executor's loop: every statement of the stage in the caller's transaction, indexes not concurrent. */
+/**
+ * The reference executor's loop: every statement of the stage in the caller's transaction, indexes not
+ * concurrent. It deliberately ignores `ownTransaction`: it is the test reference, and keeping the
+ * stage and its bookkeeping atomic is what lets a failure leave nothing behind. The migration runner
+ * honours `ownTransaction` (short FK adds, VALIDATE and backfill committed on their own) and records
+ * progress so it can resume.
+ */
 async function runStage(trx: Transaction<DB>, plan: MigrationPlan, stage: PlanStage): Promise<void> {
   await sql`select set_config('lock_timeout', ${DDL_LOCK_TIMEOUT}, true)`.execute(trx);
   for (const step of stageSteps(plan, stage)) {
