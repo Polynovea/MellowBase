@@ -109,7 +109,10 @@ alter table public.schema_expand_contract_tasks enable row level security;
 -- ── Dual-write trigger ───────────────────────────────────────────────────────────────────────────
 -- BEFORE INSERT OR UPDATE, FOR EACH ROW, on a content table during an expand. Arguments: the source
 -- column, the destination column, and 'copy' (one way, source to destination: type changes) or 'sync'
--- (both ways: renames, so writers that know either name keep both columns equal).
+-- (both ways: renames, so writers that know either name keep both columns equal). In sync mode an
+-- INSERT that sets BOTH columns keeps the old column's value (and copies it over the new one); an
+-- UPDATE that changes both does the same. Only a writer that knows both names can do that, and the
+-- runner logs `rename_sync_old_column_wins` once per rename so an operator knows the rule.
 --
 -- It only ever sets a column of NEW. The value converts through JSON (jsonb_populate_record), so
 -- there is no dynamic SQL and no name is ever spliced into a statement. A value that cannot convert

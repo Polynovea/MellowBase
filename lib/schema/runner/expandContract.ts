@@ -284,6 +284,8 @@ export async function runExpandStep(ctx: ExpandContext, stepIndex: number, planI
           for each row execute function public.polynovea_schema_dual_write(${sql.lit(task.old_column)}, ${sql.lit(task.new_column)}, ${sql.lit(isRename ? "sync" : "copy")})`);
         await setPhase(client, task.id, isRename ? "backfill" : "guard_index");
       }, ctx.retry)).retries;
+      // Once per rename: a write that sets both names keeps the old column's value (see the trigger).
+      if (isRename) ctx.log?.("rename_sync_old_column_wins", { ledgerId: ctx.ledgerId, step: stepIndex });
       task.phase = isRename ? "backfill" : "guard_index";
     }
 
