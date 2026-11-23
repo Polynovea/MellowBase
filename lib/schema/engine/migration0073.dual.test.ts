@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { expect, it } from "vitest";
+import pg from "pg";
 import { describeWithDatabase } from "@/lib/db/testing/database";
 
 const migration = readFileSync(path.join(process.cwd(), "supabase", "migrations", "0073_schema_engine.sql"), "utf8").replace(/\r\n/g, "\n");
@@ -45,6 +46,22 @@ describeWithDatabase("migration 0073: existing content schema guard", (backend) 
     for (const extra of ["create table %s.customer_data (x int)", "create view %s.v as select 1 as x", "create function %s.f() returns int language sql as 'select 1'", "create type %s.mood as enum ('a')"]) {
       const result = await runGuard((s) => [`create schema ${s}`, extra.replace("%s", s)]);
       expect(result.error, extra).toMatch(/holds objects Polynovea CMS did not create/);
+    }
+  });
+
+  it("refuses an existing schema owned by another role", async () => {
+    // The owner creates the schema (committed); the guard then runs as polynovea_app, for which it belongs to someone else.
+    const schema = `content_guard_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const block = guard!.split("'content'").join(`'${schema}'`).split("create schema content;").join(`create schema ${schema};`);
+    await backend.query(`create schema ${schema}`);
+    const app = new pg.Client({ connectionString: process.env.POLYNOVEA_TEST_POSTGRES_URL, ssl: false });
+    await app.connect();
+    try {
+      const error = await app.query(block).then(() => null, (caught: Error) => caught.message);
+      expect(error).toMatch(/owned by another role/);
+    } finally {
+      await app.end();
+      await backend.query(`drop schema ${schema}`);
     }
   });
 });

@@ -36,7 +36,7 @@ begin
               and c.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'c')
               and c.relname !~ '^m_[a-z0-9_]{1,61}$')
        + (select count(*) from pg_catalog.pg_proc p where p.pronamespace = 'content'::regnamespace)
-       + (select count(*) from pg_catalog.pg_type t where t.typnamespace = 'content'::regnamespace and t.typtype in ('b', 'd', 'e', 'r', 'm'))
+       + (select count(*) from pg_catalog.pg_type t where t.typnamespace = 'content'::regnamespace and t.typtype in ('b', 'd', 'e', 'r', 'm') and t.typcategory <> 'A')
     into foreign_objects;
   if foreign_objects > 0 then
     raise exception 'This database already has a schema named "content" that holds objects Polynovea CMS did not create. Rename or remove that schema, then run setup again.';
