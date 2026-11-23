@@ -5,11 +5,11 @@ import Link from "next/link";
 import { Check, KeyRound, LockKeyhole, Save, ShieldCheck, UserRound } from "lucide-react";
 import AdminLayout from "@/components/admin/AdminLayout";
 import { useAdminAccess } from "@/lib/admin/useAdminAccess";
-import { getSupabaseBrowserIdentityProvider } from "@/lib/auth/supabaseProvider";
+import { getBrowserIdentityProvider, usesBuiltinAuth } from "@/lib/auth/browser";
 
 async function getAccessToken(fallback?: string | null) {
   if (fallback) return fallback;
-  const { session } = await getSupabaseBrowserIdentityProvider().getSession();
+  const { session } = await getBrowserIdentityProvider().getSession();
   return session?.accessToken ?? null;
 }
 
@@ -193,6 +193,11 @@ export default function ProfilePage() {
                 </div>
               </div>
 
+              {usesBuiltinAuth() ? (
+                <Link href="/admin/security" className="ui-btn ui-btn-secondary no-underline">
+                  <ShieldCheck size={13} /> Manage password, passkeys and two-step sign-in
+                </Link>
+              ) : (
               <form onSubmit={savePassword} className="max-w-xl space-y-4">
                 <label className="block">
                   <span className="mb-2 block text-[10px] font-bold uppercase tracking-wider text-fg-muted">New password</span>
@@ -231,6 +236,7 @@ export default function ProfilePage() {
                   )}
                 </div>
               </form>
+              )}
             </section>
 
             <section className="border-t border-subtle pt-5">

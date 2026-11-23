@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { Session } from "@/lib/auth/provider";
-import { getSupabaseBrowserIdentityProvider } from "@/lib/auth/supabaseProvider";
+import { getBrowserIdentityProvider } from "@/lib/auth/browser";
 import type { AdminUser } from "@/lib/admin/types";
 
 export function useAdminAccess() {
@@ -17,7 +17,7 @@ export function useAdminAccess() {
   }, []);
 
   useEffect(() => {
-    const identity = getSupabaseBrowserIdentityProvider();
+    const identity = getBrowserIdentityProvider();
     const resolveProfile = async (nextSession: Session | null) => {
       setSession(nextSession);
 

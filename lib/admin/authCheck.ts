@@ -1,8 +1,10 @@
 "use client";
 
-import { getSupabaseBrowserIdentityProvider } from "@/lib/auth/supabaseProvider";
+import { getBrowserIdentityProvider } from "@/lib/auth/browser";
 
-const identity = getSupabaseBrowserIdentityProvider();
+// For the built-in auth the "token" is only a marker that a session exists: the session itself is an
+// HttpOnly cookie, and the admin fetch wrapper strips the Authorization header before sending.
+const identity = getBrowserIdentityProvider();
 
 export async function isAuthenticated(): Promise<boolean> {
   const { session, error } = await identity.getSession();

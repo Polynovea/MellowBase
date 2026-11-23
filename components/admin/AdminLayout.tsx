@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -36,9 +36,9 @@ import {
   X,
 } from "lucide-react";
 import { logout } from "@/lib/admin/authCheck";
+import { usesBuiltinAuth } from "@/lib/auth/browser";
 import { hasModuleAccess } from "@/lib/admin/access";
 import { useAdminAccess } from "@/lib/admin/useAdminAccess";
-import { getSupabaseBrowserIdentityProvider } from "@/lib/auth/supabaseProvider";
 import ThemeToggle from "@/components/admin/ThemeToggle";
 
 const navItems = [
@@ -99,20 +99,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const profileRef = useRef<HTMLDivElement>(null);
   const { profile } = useAdminAccess();
 
-  useLayoutEffect(() => {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
-      const isCmsApi = url.startsWith("/api/") || url.startsWith(`${window.location.origin}/api/`);
-      const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
-      if (!isCmsApi || headers.has("authorization")) return nativeFetch(input, init);
-      const { session } = await getSupabaseBrowserIdentityProvider().getSession();
-      if (!session?.accessToken) return nativeFetch(input, init);
-      headers.set("Authorization", `Bearer ${session.accessToken}`);
-      return nativeFetch(input, { ...init, headers });
-    };
-    return () => { window.fetch = nativeFetch; };
-  }, []);
 
   const loadNotifications = useCallback(async () => {
     setNotificationsLoading(true);
@@ -177,10 +163,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const activeItem = visibleNavItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
   const pageLabel = pathname === "/admin/profile" || pathname.startsWith("/admin/profile/")
     ? "Profile & Settings"
-    : activeItem?.label || "Admin";
+    : pathname === "/admin/security" ? "Sign-in & Security" : activeItem?.label || "Admin";
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    // Wait for the server to end the session before leaving the page.
+    await logout();
     window.location.href = "/admin";
   };
 
@@ -357,6 +344,16 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                         <Settings size={14} />
                         Profile & Settings
                       </Link>
+                      {usesBuiltinAuth() && (
+                        <Link
+                          href="/admin/security"
+                          onClick={() => setProfileOpen(false)}
+                          className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[12px] font-medium text-fg-secondary no-underline transition hover:bg-surface-2 hover:text-fg-primary"
+                        >
+                          <ShieldCheck size={14} />
+                          Sign-in & security
+                        </Link>
+                      )}
                       <button
                         type="button"
                         onClick={handleLogout}
