@@ -183,11 +183,11 @@ alter table public.schema_migration_ledger
 -- of that model, and the model's own api key is written in (the worker ignores the row's table name,
 -- api key and plan_json anyway).
 --
--- Who is "the app": a session whose role may not UPDATE the ledger. That is decided by
--- has_table_privilege on current_user, which only role membership changes. polynovea_app belongs to no
--- other role, so it cannot SET ROLE out of it, and no setting it can change (GUCs, search_path,
--- session variables) has any effect here. The owner (migrations, the worker, the engine's reference
--- executor) is left alone, so this never depends on role names.
+-- Who is exempt: only sessions that are (members of) the ledger table's owner: migrations, the worker
+-- and the engine's reference executor. Every other role, including Supabase's service_role (which a
+-- deployment's service key reaches through PostgREST), gets the checks. Membership is the only thing
+-- that changes this; polynovea_app belongs to no other role, so it cannot SET ROLE out of it, and no
+-- setting it can change (GUCs, search_path, session variables) has any effect here.
 create or replace function public.polynovea_schema_ledger_request()
 returns trigger
 language plpgsql
@@ -198,7 +198,7 @@ declare
   model_workspace uuid;
   model_key text;
 begin
-  if pg_catalog.has_table_privilege(current_user, 'public.schema_migration_ledger', 'UPDATE') then
+  if pg_catalog.pg_has_role(current_user, (select c.relowner from pg_catalog.pg_class c where c.oid = 'public.schema_migration_ledger'::pg_catalog.regclass), 'MEMBER') then
     return new;
   end if;
   select m.workspace_id, m.api_key into model_workspace, model_key
@@ -379,6 +379,10 @@ begin
       foreach grantee in array api_roles loop
         execute format('revoke all on public.%I from %I', item.relname, grantee);
       end loop;
+      -- On Supabase, default privileges give service_role everything; the service key must not write here.
+      if has_service_role then
+        execute format('revoke insert, update, delete, truncate on public.%I from service_role', item.relname);
+      end if;
     elsif item.relname = 'schema_migration_ledger' then
       -- Requests only: insert these columns, read the rows. Status changes are the owner's.
       execute 'grant select on public.schema_migration_ledger to polynovea_app';
@@ -387,9 +391,16 @@ begin
       foreach grantee in array api_roles loop
         execute format('revoke all on public.schema_migration_ledger from %I', grantee);
       end loop;
+      if has_service_role then
+        -- At most SELECT: requests come through polynovea_app's column INSERT only.
+        execute 'revoke insert, update, delete, truncate on public.schema_migration_ledger from service_role';
+      end if;
     elsif item.relname = 'content_model_versions' then
       execute 'grant select, insert on public.content_model_versions to polynovea_app';
       execute 'revoke update, delete, truncate on public.content_model_versions from polynovea_app';
+      if has_service_role then
+        execute 'revoke update, delete, truncate on public.content_model_versions from service_role';
+      end if;
     elsif item.relname = 'installation' then
       -- Read, and insert once at the end of setup. Never change or delete (0072).
       execute 'grant select, insert on public.installation to polynovea_app';
