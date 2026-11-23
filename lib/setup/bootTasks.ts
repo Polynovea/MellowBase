@@ -1,5 +1,7 @@
 import { loadKeyRing, masterKeyPath } from "./keyRing.ts";
 import { installConfig, onModeChange, resolveMode, type ModeState } from "./mode.ts";
+import { installPeerStamp } from "./peerStamp.ts";
+import { issueAndPrintSetupCode } from "./setupCode.ts";
 
 /**
  * Start-up work, run once from instrumentation.ts before the server takes requests:
@@ -9,7 +11,9 @@ import { installConfig, onModeChange, resolveMode, type ModeState } from "./mode
  * 3. Decide the mode. In setup mode, log the setup URL, and while the server listens on a
  *    non-loopback address, repeat a warning every 5 minutes until setup is finished.
  *
- * The setup code (setup-code lane) is printed through announceSetupAccess().
+ * In setup mode it also issues the one-time setup code (setupCode.ts) and prints it with the URL,
+ * and installs the peer stamp (peerStamp.ts) so the wizard's request guards can see the real
+ * connection. A POLYNOVEA_SETUP_CODE that is too weak throws here and stops the server.
  */
 
 type Env = Record<string, string | undefined>;
@@ -45,7 +49,7 @@ export function announceSetupAccess(options: { code?: string; env?: Env; logger?
   const env = options.env ?? process.env;
   const logger = options.logger ?? console;
   const lines = ["[setup] This CMS is not set up yet.", `[setup] Open ${setupUrl(env)} to finish setup.`];
-  if (options.code) lines.push(`[setup] Setup code: ${options.code}  (valid for 1 hour; a restart issues a new one)`);
+  if (options.code) lines.push(`[setup] Setup code: ${options.code}  (works once, for 1 hour; a restart issues a new one)`);
   logger.info(lines.join("\n"));
 }
 
@@ -92,8 +96,9 @@ export async function runBootTasks(env: Env = process.env, logger: Logger = cons
   }
 
   const state = await resolveMode(env);
+  if (state.mode !== "running") installPeerStamp();
   if (state.mode === "setup") {
-    announceSetupAccess({ env, logger });
+    issueAndPrintSetupCode({ env, announce: (issued) => announceSetupAccess({ code: issued.display ?? undefined, env, logger }) });
     startSetupWarnings(env, logger);
   } else if (state.mode === "unavailable") {
     logger.error(`[setup] CMS unavailable: ${state.reason}. Every route but /api/health answers 503 until this is fixed.`);

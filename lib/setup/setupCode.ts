@@ -10,7 +10,9 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
  * - Checked with timingSafeEqual on two 32-byte digests, after normalising what was typed (case,
  *   separators, Crockford look-alikes I/L→1 and O→0). Every input, right or wrong, expired or never
  *   issued, takes the same path: one hash, one comparison.
- * - Valid for 1 hour after it is issued; a restart issues a new one.
+ * - One use only, and valid for 1 hour after it is issued. A correct code is consumed at once, so a
+ *   second use fails even inside the hour; the route then prints a replacement to the server log
+ *   (for continuing setup in another browser). A restart also issues a new one.
  * - POLYNOVEA_SETUP_CODE lets an automated deploy supply the code. It must carry at least 128 bits
  *   (26+ base32 or 22+ base64 characters) or boot refuses it. Once read it is hashed and deleted
  *   from process.env, and it expires like a generated code.
@@ -171,6 +173,32 @@ export function verifySetupCode(input: unknown, now: number = Date.now()): boole
   const candidate = digestOf(canonical(text, state?.format ?? "base32"));
   const matches = timingSafeEqual(candidate, state?.digest ?? DUMMY_DIGEST);
   return matches && state !== undefined && text.length > 0 && now < state.expiresAt;
+}
+
+/**
+ * Like verifySetupCode, but a correct code is used up: its digest is cleared in the same
+ * synchronous step, so of two simultaneous right answers only one wins, and the code never works
+ * again. Returns true for the one successful use.
+ */
+export function consumeSetupCode(input: unknown, now: number = Date.now()): boolean {
+  if (!verifySetupCode(input, now)) return false;
+  delete store[STATE_KEY];
+  return true;
+}
+
+function replacementAnnouncer(issued: IssuedSetupCode): void {
+  console.info(
+    `[setup] The setup code was used and no longer works. To continue setup in a different browser, use this new code: ${issued.display}  (valid until ${new Date(issued.expiresAt).toISOString()}).`,
+  );
+}
+
+/**
+ * After a successful use: issue a fresh generated code and print it to the server log, so the
+ * owner can take setup over in another browser without a restart. Never reads POLYNOVEA_SETUP_CODE
+ * again (it was deleted at boot).
+ */
+export function issueReplacementSetupCode(options: { now?: number; announce?: SetupCodeAnnouncer } = {}): IssuedSetupCode {
+  return issueAndPrintSetupCode({ env: {}, now: options.now, announce: options.announce ?? replacementAnnouncer });
 }
 
 /** When the live code stops working, or null if none was issued. */
