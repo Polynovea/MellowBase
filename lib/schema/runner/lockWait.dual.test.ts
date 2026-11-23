@@ -96,6 +96,8 @@ describe("an index built CONCURRENTLY while a 30-second transaction runs elsewhe
     // A long report on a different table: CREATE INDEX CONCURRENTLY must wait for its snapshot.
     const holder = await connect("app");
     const prober = await connect("app");
+    const observer = await connect("owner");
+    const events: Array<{ event: string; fields: Record<string, unknown> }> = [];
     try {
       await holder.query("begin");
       const holding = holder.query(`select count(*), pg_sleep(${HOLD_SECONDS}) from workspaces`).then(() => holder.query("commit"));
@@ -114,7 +116,9 @@ describe("an index built CONCURRENTLY while a 30-second transaction runs elsewhe
         }
       })();
 
-      const outcome = await h.run(model, { retry: undefined });
+      const outcome = await h.run(model, {
+        retry: undefined, observer, waitLogIntervalMs: 2_000, log: (event, fields) => events.push({ event, fields }),
+      });
       const finishedAfter = Date.now() - heldSince;
       done = true;
       await Promise.all([probing, holding]);
@@ -122,11 +126,20 @@ describe("an index built CONCURRENTLY while a 30-second transaction runs elsewhe
       expect(outcome).toEqual({ ledgerId, outcome: "succeeded" });
       expect(finishedAfter).toBeGreaterThanOrEqual((HOLD_SECONDS - 2) * 1000);
       expect((await h.runRow(ledgerId)).lock_retries).toBe(0);
+      // The runner issues nothing else on the table while the build waits, so nothing queues behind it:
+      // a plain SELECT and an UPDATE on the table both finish in well under a second the whole time.
       expect(latencies.length).toBeGreaterThan(40);
-      expect(Math.max(...latencies)).toBeLessThan(1_500);
+      expect(Math.max(...latencies)).toBeLessThan(1_000);
+      // The wait is reported, as a code and the elapsed time only.
+      const waits = events.filter((entry) => entry.event === "waiting_for_older_transactions");
+      expect(waits.length).toBeGreaterThanOrEqual(5);
+      expect(waits.at(-1)?.fields.elapsedMs).toBeGreaterThan(10_000);
+      expect(String(waits[0].fields.phase)).toMatch(/^waiting_for_/);
+      expect(JSON.stringify(events)).not.toContain(model.table);
     } finally {
       await holder.end().catch(() => undefined);
       await prober.end().catch(() => undefined);
+      await observer.end().catch(() => undefined);
     }
   }, 120_000);
 });
