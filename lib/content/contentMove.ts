@@ -39,6 +39,8 @@ export interface BackfillResult {
   skippedNoTable: number;
   missing: number;
   failed: string[];
+  /** Batches run again after a deadlock or serialization failure (retryOnConflict). */
+  retries: number;
   durationMs: number;
 }
 
@@ -59,6 +61,31 @@ export interface MoveRun {
   backfill: Record<string, number>;
   started_at: string;
   finished_at: string;
+}
+
+/** SQLSTATEs worth running a batch again for: deadlock_detected, serialization_failure. */
+const RETRYABLE_CODES = new Set(["40P01", "40001"]);
+
+/**
+ * Runs `run` again after a deadlock or a serialization failure: at most `retries` more times (3), with
+ * exponential backoff and jitter (base 100 ms). Any other error, or the last one, is thrown.
+ */
+export async function retryOnConflict<T>(
+  run: () => Promise<T>,
+  options: { retries?: number; baseMs?: number; sleep?: (ms: number) => Promise<void>; onRetry?: (attempt: number, code: string) => void } = {},
+): Promise<T> {
+  const retries = options.retries ?? 3;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      if (attempt > retries || typeof code !== "string" || !RETRYABLE_CODES.has(code)) throw error;
+      options.onRetry?.(attempt, code);
+      await sleep((options.baseMs ?? 100) * 2 ** (attempt - 1) * (0.5 + Math.random()));
+    }
+  }
 }
 
 /** Writes the table rows of up to 1,000 entries from their own current pointers (one transaction). */
@@ -117,7 +144,7 @@ export async function backfillModel(
 ): Promise<BackfillResult> {
   const started = Date.now();
   const size = Math.min(MOVE_BATCH_SIZE, Math.max(1, input.batchSize ?? MOVE_BATCH_SIZE));
-  const total: BackfillResult = { batches: 0, entries: 0, synced: 0, skippedNoTable: 0, missing: 0, failed: [], durationMs: 0 };
+  const total: BackfillResult = { batches: 0, entries: 0, synced: 0, skippedNoTable: 0, missing: 0, failed: [], retries: 0, durationMs: 0 };
   let cursor: string | null = null;
   for (;;) {
     const after = cursor;
@@ -126,7 +153,11 @@ export async function backfillModel(
     if (after) query = query.where("id", ">", after);
     const ids = (await query.orderBy("id").limit(size).execute()).map((row) => row.id);
     if (!ids.length) break;
-    const result = await db.transaction().execute((trx) => syncEntries(trx, ids));
+    // A batch that meets a save in a deadlock (or a serialization failure) is rolled back whole and
+    // run again: each entry's rows are rewritten from its pointers, so a rerun is always safe.
+    const result = await retryOnConflict(() => db.transaction().execute((trx) => syncEntries(trx, ids)), {
+      onRetry: () => { total.retries += 1; },
+    });
     total.batches += 1;
     total.entries += ids.length;
     total.synced += result.synced;

@@ -73,7 +73,7 @@ try {
       log("model_moved", {
         modelId: model.id,
         batches: result.backfill?.batches, entries: result.backfill?.entries, synced: result.backfill?.synced,
-        failedEntries: result.backfill?.failed.length, durationMs: result.backfill?.durationMs,
+        failedEntries: result.backfill?.failed.length, retries: result.backfill?.retries, durationMs: result.backfill?.durationMs,
         runId: result.verify?.runId, matched: result.verify?.matched, mismatches: result.verify?.mismatches,
         counts: run?.counts, fields: run ? Object.keys(run.fields).length : undefined, switched: result.switched,
       });
