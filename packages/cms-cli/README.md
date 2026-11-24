@@ -10,6 +10,22 @@ CLI for the stable Polynovea CMS Developer API.
 
 From this repository, run it without installing: `node packages/cms-cli/bin/polynovea-cms.mjs --help`.
 
+## Types for the typed SDK
+
+```bash
+export POLYNOVEA_CMS_TOKEN=pnv_...                      # schema.read
+polynovea-cms types pull --url https://cms.example.com   # writes ./polynovea-cms.ts
+polynovea-cms types pull --url https://cms.example.com --check
+```
+
+- `--out <file>` chooses the file (default `polynovea-cms.ts`).
+- `--check` writes nothing: exit 0 when the file is current, 1 when it is out of date or missing (it
+  names the models that changed), 2 when it could not check (auth, network, not a types file). Use it
+  in your local CI.
+- The token comes only from `POLYNOVEA_CMS_TOKEN` or `--token-file <path>`; `types pull` refuses
+  `--token`, which would end up in shell history. The token is never printed or written to the file.
+- The URL must be https, except for this machine (`localhost`, `127.0.0.1`, `::1`).
+
 ## Usage
 
 ```bash
