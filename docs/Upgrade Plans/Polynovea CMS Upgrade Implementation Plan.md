@@ -218,6 +218,22 @@ Exit check on `a2022a4`, on Payal's laptop: 1,555 unit tests, build, `npm audit`
 
 The runner uses its own expand and contract rather than pgroll: pgroll serves schema versions through views, which does not fit direct table reads under row-level security, and would add a separate binary to every install. Carried to Phase 4: make the one-time-code lockout and recovery-code use strictly serial and their race tests reliable; `seed:starter` on built-in auth; a clear status from `content:move` for a table part-way through a change.
 
+### Phase 5 progress (24 November 2026)
+
+Phase 5 ships as one PR, #89, built in three waves on Payal's laptop.
+
+| Wave | What it adds |
+| --- | --- |
+| Release package | A multi-arch container image (Next.js standalone build, worker, PostgreSQL 16 for "on this server"), non-root, the app on 127.0.0.1 only behind a pinned Caddy that terminates HTTPS when a domain is set; Packer images for AWS and Azure; signing with cosign, an SBOM and a signed `release.json`, verified with the public key only and tagged after verification; the wizard's "on this server" option with pgBackRest |
+| Cloud templates | CloudFormation, Bicep and OpenTofu modules: IMDSv2, private encrypted databases with backups and deletion protection, locked-down storage, one secret and one bucket per server, SSH closed unless chosen, images pinned to Polynovea's signed image and Caddy's official image, an AMI table in the template, no database password in OpenTofu state, and a release gate that refuses unpinned templates |
+| Upgrades and operations | The System page with releases and changelogs; a root upgrade helper that verifies, backs up, migrates, checks health within 120 seconds and switches back on failure; restore-mode upgrades that pause writes and restore to the exact recorded position; the System Doctor; a monthly restore test with alerts (migration 0077) |
+
+Security: one independent review per wave. The main findings were a pre-upgrade backup that could silently lose writes on rollback, quick-create parameters that could swap in an attacker's image, and a Caddy container stuck after a restart. All were fixed with tests.
+
+Exit check on `3df79a4`, on Payal's laptop: 1,707 unit tests, build, `npm audit` 0 and Semgrep 0 (whole repo); template validators and checkov (CloudFormation 30, ARM 25, OpenTofu 159 passing, 0 failing); image smoke, release-signing (9 checks) and end-to-end upgrade tests (restore mode: writes paused 9 seconds; compatible mode: 4 seconds down; both forced failures switched back with no committed write lost); on PostgreSQL 15, 16 and 17: migrations 0073 to 0077 in order, the full database suite (395/395 on 15 and 17; on 16 the parallel recovery-code race test, fixed in Phase 4, failed once and passed alone), an owner through `bootstrap:admin`, the app `running` with `/setup` closed, and all 26 certification scripts.
+
+Not run locally by design, and covered by the first Azure deployment: cloud builds and publishing, real S3 and Azure backups, a real Let's Encrypt certificate, real systemd and the helper's sandbox on a VM. Publishing public images waits for Subrojit.
+
 The shared audit logger goes first because every area writes through it. Phase 0 found that it still uses Supabase, so on a database without Supabase the audit events of moved areas are silently dropped. No area counts as moved until its audit events land. The direct-path logger now exists (`lib/platform/audit.postgres.ts`, merged in PR #17: audit row, webhook deliveries and delivery jobs in the caller's transaction) and taxonomy uses it; wave 1 makes every other area call it.
 
 **How each area moves**
