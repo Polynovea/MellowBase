@@ -128,11 +128,13 @@ export default async function PreviewPage({ params, searchParams }: Params) {
           href={`/preview/${token}?viewport=${mode}`}
           className={`rounded px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
             mode === viewport
-              ? "bg-[#e6d3a3] text-[#0a0a0a]"
+              ? "bg-[#e6d3a3]"
               : "text-zinc-400 hover:text-zinc-200"
           }`}
         >
-          {mode}
+          {/* The colour sits on a span: globals.css sets a { color: inherit } outside any layer, which wins over
+              a text colour class on the link itself (here it made the active label near-white on beige). */}
+          <span className={mode === viewport ? "text-[#0a0a0a]" : undefined}>{mode}</span>
         </a>
       ))}
     </nav>
