@@ -118,5 +118,5 @@ These templates were validated offline only (Bicep build and linter, checkov, an
 - Key Vault accepts the secret written by Resource Manager while its firewall is set to deny by default, with only the VM's subnet admitted. If it doesn't, set `networkAcls.defaultAction` to `Allow` for the first deployment and report it.
 - The Consumption budget deploys on the subscription's offer type.
 - The release package's data-disk script finds the data disk at LUN 0, and the first-boot script finishes on plain Ubuntu.
-- Trusted Launch works with a custom Polynovea image (it must be a Gen2 image).
+- A published Polynovea community gallery image deploys through `customImageId` (without Trusted Launch, until its image definition declares `SecurityType=TrustedLaunchSupported`).
 - Actual prices in the chosen region.

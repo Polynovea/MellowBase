@@ -450,8 +450,8 @@ resource "azurerm_linux_virtual_machine" "main" {
   allow_extension_operations      = false
   provision_vm_agent              = true
   patch_mode                      = "ImageDefault"
-  secure_boot_enabled             = var.architecture == "x64"
-  vtpm_enabled                    = var.architecture == "x64"
+  secure_boot_enabled             = var.architecture == "x64" && var.custom_image_id == "" # gallery images need TrustedLaunchSupported
+  vtpm_enabled                    = var.architecture == "x64" && var.custom_image_id == ""
   source_image_id                 = var.custom_image_id == "" ? null : var.custom_image_id
   tags                            = local.tags
 
