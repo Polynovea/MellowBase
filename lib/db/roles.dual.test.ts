@@ -44,7 +44,8 @@ function catalogChecks(label: string, url: () => string | undefined) {
         where n.nspname = 'public' and c.relkind in ('r', 'p')`);
       expect(rows.length).toBeGreaterThanOrEqual(140);
       expect(rows.filter((row) => !row.can_select).map((row) => row.relname)).toEqual([]);
-      expect(rows.filter((row) => !row.can_write).map((row) => row.relname)).toEqual(["polynovea_migration_ledger"]);
+      // 0077: the system tables change only through their functions. (Phase 3 adds its own tables to this list.)
+      expect(rows.filter((row) => !row.can_write).map((row) => row.relname).sort()).toEqual(["polynovea_migration_ledger", "system_restore_tests", "system_upgrades"]);
     });
 
     it("polynovea_app executes every SQL function and PUBLIC executes none", async () => {
