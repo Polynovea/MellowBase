@@ -110,7 +110,8 @@
 
   --text-primary: #17121A;
   --text-secondary: #4C4551;
-  --text-muted: #716876;
+  /* #716876 was 4.49:1 on the sidebar, just under WCAG AA 4.5:1; this is 4.7–5.5:1 on every light surface. */
+  --text-muted: #675E6C;
   --text-disabled: #A39AA7;
   --text-inverse: #F5F1E8;
 

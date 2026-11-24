@@ -1,7 +1,7 @@
 import { auditScreen, tabTo } from "./support/audit";
 import { expect, test } from "./support/fixtures";
 import { readState, writeState } from "./support/state";
-import { expectEmptyState } from "./support/ui";
+import { allowSelfApproval, expectEmptyState } from "./support/ui";
 
 // Entries: the empty state, a required field left empty, an entry written from the keyboard with the
 // uploaded image, an edit, a preview, then submit for review → approve → publish. Approving your own
@@ -77,11 +77,7 @@ test("edit, preview, submit for review, approve, publish", async ({ page, contex
   await expect(refusal).toBeVisible();
   await expect(refusal.getByRole("link", { name: /Workflows/ })).toBeVisible();
 
-  await page.goto("/admin/workflows");
-  await page.getByRole("button", { name: /Default editorial workflow/ }).click();
-  await page.getByLabel("Allow requester self-approval").check();
-  await page.getByRole("button", { name: "Save workflow" }).click();
-  await expect(page.locator(".ui-alert-success")).toBeVisible();
+  await allowSelfApproval(page);
   await auditScreen(page, "workflows");
 
   await page.goto(`/admin/entries/${entryId}`);

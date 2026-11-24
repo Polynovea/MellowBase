@@ -1,7 +1,7 @@
 import { auditScreen } from "./support/audit";
 import { expect, test } from "./support/fixtures";
 import { readState, writeState } from "./support/state";
-import { expectEmptyState } from "./support/ui";
+import { allowSelfApproval, expectEmptyState } from "./support/ui";
 
 // Releases and the calendar: the starter entry is approved, put in a release, the release is approved
 // and scheduled, and the calendar shows it. The calendar's own form gets a missing title, then an event
@@ -19,6 +19,7 @@ test("releases and the calendar have empty states", async ({ page }) => {
 test("the starter entry is approved, released, scheduled, and shows in the calendar", async ({ page }) => {
   test.setTimeout(4 * 60_000);
   const { starterEntryId } = readState();
+  await allowSelfApproval(page);
   await page.goto(`/admin/entries/${starterEntryId}`);
   await page.getByRole("button", { name: "Submit for review" }).click();
   await page.getByRole("button", { name: "Approve stage" }).click();

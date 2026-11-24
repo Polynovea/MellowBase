@@ -129,20 +129,31 @@ export async function auditScreen(page: Page, screen: string): Promise<ScreenRes
     }
   }
   await page.setViewportSize(VIEWPORTS[1]);
+  // Recorded only. The gates (no serious or critical axe finding, no sideways scroll at 390 px, a
+  // named tab title) are one test at the end of 80-audit.spec.ts, so a finding never stops a flow.
   writeFileSync(path.join(RESULTS_DIR, `${screen}.json`), JSON.stringify(result, null, 2));
-
-  // The gates. Soft, so one screen's problems never hide the next screen's.
-  for (const view of result.views) {
-    const blocking = view.axe.filter((finding) => finding.impact === "serious" || finding.impact === "critical");
-    expect.soft(blocking.map((finding) => `${finding.impact} ${finding.id}: ${finding.nodes.map((node) => node.target).join(", ")}`), `${screen} at ${view.width} px, ${view.theme}: axe serious/critical`).toEqual([]);
-    if (view.width === 390) expect.soft(view.horizontalScroll, `${screen} scrolls sideways at 390 px (${view.sticksOut.join("; ")})`).toBe(false);
-  }
-  expect.soft(result.title, `${screen}: the tab title names the screen`).not.toMatch(/^(Polynovea Admin|Polynovea CMS)?$/);
   return result;
+}
+
+/** The gate over every recorded screen: what auditScreen found, as a list of plain problems. */
+export function auditProblems(results: ScreenResult[]): string[] {
+  const problems: string[] = [];
+  for (const result of results) {
+    for (const view of result.views) {
+      for (const finding of view.axe.filter((f) => f.impact === "serious" || f.impact === "critical")) {
+        problems.push(`${result.screen} ${view.width}px ${view.theme}: ${finding.impact} ${finding.id} (${finding.nodes.map((node) => node.target).join(", ")})`);
+      }
+      if (view.width === 390 && view.horizontalScroll) problems.push(`${result.screen} ${view.theme}: scrolls sideways at 390 px (${view.sticksOut.join("; ")})`);
+    }
+    if (/^(Polynovea Admin|Polynovea CMS)?$/.test(result.title)) problems.push(`${result.screen}: the tab title does not name the screen ("${result.title}")`);
+  }
+  return problems;
 }
 
 /** Presses Tab until `target` has focus (at most `max` presses), then checks the focus is visible. */
 export async function tabTo(page: Page, target: Locator, max = 40): Promise<void> {
+  // Fails at once (not after the test timeout) when the control isn't on the page at all.
+  await expect(target).toBeVisible();
   for (let i = 0; i < max; i += 1) {
     if (await target.evaluate((el) => el === document.activeElement).catch(() => false)) {
       await expectVisibleFocus(target);

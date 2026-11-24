@@ -30,7 +30,8 @@ export default defineConfig({
   // run.mjs runs each stage on its own (--no-deps) so a failing flow never skips the audit; each
   // stage writes its own JSON report.
   reporter: [["list"], ["json", { outputFile: `test-results/ui/results-${process.env.UI_STAGE ?? "all"}.json` }]],
-  outputDir: "test-results/ui/artifacts",
+  // Per stage, so a later stage doesn't wipe an earlier stage's failure screenshots and traces.
+  outputDir: `test-results/ui/artifacts-${process.env.UI_STAGE ?? "all"}`,
   use: { baseURL, trace: "retain-on-failure", screenshot: "only-on-failure", viewport: { width: 1440, height: 900 } },
   projects: [
     { name: "wizard", testMatch: /01-wizard\.spec\.ts/, use: browser },

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { auditScreen, RESULTS_DIR, type ScreenResult } from "./support/audit";
+import { auditProblems, auditScreen, RESULTS_DIR, type ScreenResult } from "./support/audit";
 import { expect, test } from "./support/fixtures";
 import { readState } from "./support/state";
 
@@ -57,11 +57,18 @@ test("the mobile navigation opens, lists every section, and closes", async ({ pa
   await expect(page.getByRole("link", { name: "System" })).toBeHidden();
 });
 
+/** Every screen this run audited (the flows' screens too), read back from test-results/ui/audit. */
+function auditedScreens(): ScreenResult[] {
+  return readdirSync(RESULTS_DIR).filter((name) => name.endsWith(".json")).map((file) => JSON.parse(readFileSync(path.join(RESULTS_DIR, file), "utf8")) as ScreenResult);
+}
+
+test("every audited screen: no serious or critical axe finding, no sideways scroll at 390 px, a named tab title", () => {
+  expect(auditProblems(auditedScreens())).toEqual([]);
+});
+
 test("no same-site link on any audited screen is broken", async ({ page }) => {
   const links = new Set<string>();
-  for (const file of readdirSync(RESULTS_DIR).filter((name) => name.endsWith(".json"))) {
-    for (const link of (JSON.parse(readFileSync(path.join(RESULTS_DIR, file), "utf8")) as ScreenResult).links) links.add(link);
-  }
+  for (const screen of auditedScreens()) for (const link of screen.links) links.add(link);
   const broken: string[] = [];
   for (const link of links) {
     if (link.startsWith("/preview/")) continue; // one-time preview links, opened by the entries flow

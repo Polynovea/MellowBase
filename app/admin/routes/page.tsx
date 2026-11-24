@@ -224,6 +224,7 @@ export default function RoutesPage() {
           </div>
           <div className="flex items-center gap-3">
             <select
+              aria-label="Locale"
               value={locale}
               onChange={(e) => setLocale(e.target.value)}
               className="min-w-44 rounded-lg px-3 py-2 text-sm"

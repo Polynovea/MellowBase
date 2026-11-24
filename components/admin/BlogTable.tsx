@@ -228,7 +228,7 @@ export default function BlogTable({
       </div>
 
       {/* Grid Table Container */}
-      <div className="bg-surface-1 border border-[rgba(255,255,255,0.08)] rounded-[14px] backdrop-blur-[24px] overflow-x-auto flex flex-col shadow-2xl">
+      <div tabIndex={0} role="region" aria-label="Blog posts" className="bg-surface-1 border border-[rgba(255,255,255,0.08)] rounded-[14px] backdrop-blur-[24px] overflow-x-auto flex flex-col shadow-2xl">
         <div className="min-w-[800px]">
           {/* Table Header Row */}
           <div className="bg-surface-2 min-h-[52px] px-8 py-0 border-b border-[rgba(255,255,255,0.05)] grid grid-cols-12 gap-4 items-center font-body text-[11px] font-semibold leading-none text-fg-muted uppercase tracking-[0.12em] select-none">

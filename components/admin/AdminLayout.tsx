@@ -167,9 +167,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     ? "Profile & Settings"
     : pathname === "/admin/security" ? "Sign-in & Security" : activeItem?.label || "Admin";
 
-  // Each screen names itself in the browser tab (every tab used to say "Polynovea Admin").
+  // Each screen names itself in the browser tab (every tab used to say "Polynovea Admin"). Next.js
+  // re-applies the layout's metadata title after some navigations, so the title is put back if changed.
   useEffect(() => {
-    document.title = `${pageLabel} · Polynovea CMS`;
+    const wanted = `${pageLabel} · Polynovea CMS`;
+    const apply = () => { if (document.title !== wanted) document.title = wanted; };
+    apply();
+    const observer = new MutationObserver(apply);
+    observer.observe(document.head, { subtree: true, childList: true, characterData: true });
+    return () => observer.disconnect();
   }, [pageLabel]);
 
   const handleLogout = async () => {

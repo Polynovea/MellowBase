@@ -5,17 +5,18 @@ import { expect, type Page } from "@playwright/test";
  * says something useful. The seeded run always has data, so this is the only way to see these states.
  */
 export async function expectEmptyState(page: Page, url: string, api: string | RegExp, text: string | RegExp): Promise<void> {
-  const pattern = typeof api === "string" ? (u: URL) => u.pathname === api : (u: URL) => api.test(u.pathname + u.search);
+  // One matcher object for route() and unroute(): unroute only removes a route registered with the same one.
+  const matcher = typeof api === "string" ? (u: URL) => u.pathname === api : (u: URL) => api.test(u.pathname + u.search);
   const handler = async (route: Parameters<Parameters<Page["route"]>[1]>[0]) => {
     if (route.request().method() !== "GET") return route.fallback();
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ success: true, data: [], error: null, timestamp: new Date().toISOString() }) });
   };
-  await page.route((u) => pattern(u), handler);
+  await page.route(matcher, handler);
   try {
     await page.goto(url);
     await expect(page.getByText(text).first()).toBeVisible();
   } finally {
-    await page.unroute((u) => pattern(u), handler);
+    await page.unroute(matcher, handler);
   }
 }
 
@@ -34,3 +35,19 @@ export async function responseTo(page: Page, path: string | RegExp, action: () =
 
 /** A tiny valid PNG (1x1), for uploads. */
 export const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+
+/**
+ * On a one-person install the owner must be allowed to approve their own submissions (Workflows →
+ * "Allow requester self-approval"). Turns it on through the Workflows screen if it is off, so each
+ * flow that approves can run on its own.
+ */
+export async function allowSelfApproval(page: Page): Promise<void> {
+  await page.goto("/admin/workflows");
+  await page.getByRole("button", { name: /Default editorial workflow/ }).click();
+  const box = page.getByLabel("Allow requester self-approval");
+  await expect(box).toBeVisible();
+  if (await box.isChecked()) return;
+  await box.check();
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await expect(page.locator(".ui-alert-success")).toBeVisible();
+}
