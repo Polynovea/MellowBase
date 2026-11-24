@@ -52,7 +52,7 @@ First boot **fails closed**. Images are pulled only by digest (`name@sha256:...`
 
 Plain Ubuntu plus a pinned container image is the default, because it works from a one-click link in every region. A Polynovea server image can be used only once it's published (see "Publishing" in `docs/self-hosting/vm-images.md`; a decision for the project lead):
 
-- **AWS:** a public AMI in each region, built with `aws_publishable = true` (an unencrypted root snapshot with no secrets on it). The template still encrypts every volume at launch. Pass the region's AMI ID, from the release notes, as `CustomImageId`.
+- **AWS:** a public AMI in each region, built with `aws_publishable = true` (an unencrypted root snapshot with no secrets on it). The template still encrypts every volume at launch. The release script writes each region's AMI ID into the template's `ReleaseAmis` map (from `deploy/release.json`); no link or parameter can name another AMI.
 - **Azure:** an image version in an Azure Compute Gallery shared with the community. Pass `/CommunityGalleries/<public name>/Images/<definition>/Versions/<version>` as `customImageId`. A managed image only works inside its own subscription. The VM uses Trusted Launch (secure boot and a virtual TPM) on x64 with the Ubuntu image or a gallery image, so **the gallery image definition must be created with `--features SecurityType=TrustedLaunchSupported`** (as in `vm-images.md`). Otherwise the deployment fails. A managed image can't use Trusted Launch, so it runs without it.
 
 ## Paid hardening upgrades

@@ -43,7 +43,11 @@ https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/crea
   &param_DatabaseMode=managed
 ```
 
-(one line, no spaces). The user can edit every value in the link, so nothing trust-critical goes in it: no image digest the user can't see, and never a password.
+(one line, no spaces). Anyone can make a link like this, and the person who opens it can edit every value, so the template itself decides what is safe, not the link:
+
+- The CMS image must come from `ghcr.io/polynovea/` and Caddy must be Caddy's official image, both pinned by digest. A link naming any other image is refused when the stack is created. The release's own digests are the defaults (`deploy/release.json`, baked in by `deploy/scripts/release-templates.mjs`), and the server checks the CMS image's signature again before every start.
+- No parameter names the server's disk image (AMI). The server boots the release's published Polynovea AMI for its region (the template's `ReleaseAmis` map), or else Ubuntu 24.04 from Canonical's fixed public parameter.
+- No password or key ever goes in the link.
 
 ## Launching it
 
@@ -81,4 +85,4 @@ These templates were validated offline only (cfn-lint, checkov, and the unit tes
 - `rds.force_ssl` is on by default for PostgreSQL 16 on RDS, so TLS is required without a custom parameter group.
 - Actual prices in the chosen region.
 
-Replacing the server (for example by changing `CustomImageId` on an existing stack) re-attaches the data disk only after the old server has gone, and CloudFormation creates the new attachment first. Upgrade through the CMS's System page instead, not by changing the server image.
+Replacing the server (for example when a stack update moves it to a newer release AMI) re-attaches the data disk only after the old server has gone, and CloudFormation creates the new attachment first. Upgrade through the CMS's System page instead, not by changing the server image.

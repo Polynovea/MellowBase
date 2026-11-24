@@ -4,6 +4,7 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { parseDatabaseSecret, parseSecretRef, SECRET_MALFORMED } from "@/lib/setup/database/createdForYou";
+import { AWS_REGIONS, loadRelease, renderCfn } from "./scripts/release-templates.mjs";
 import { checkReleaseKey, COPIES, expectedOutputs, findSources, RELEASE_KEY, renderBootstrap, START_COMMAND, VM_FILES } from "./scripts/sync-vm-bootstrap.mjs";
 
 /**
@@ -427,12 +428,99 @@ describe("first boot fails closed", () => {
 });
 
 describe("Azure server images", () => {
-  it("uses Trusted Launch on x64 with the Ubuntu image or a gallery image, never with a managed image", () => {
-    expect(bicep).toContain("var isManagedImage = contains(toLower(customImageId), '/providers/microsoft.compute/images/')");
-    expect(bicep).toContain("securityProfile: architecture == 'x64' && !isManagedImage");
-    expect(bicep).toContain("startsWith(customImageId, '/CommunityGalleries/')");
-    expect(bicep).toContain("{ communityGalleryImageId: customImageId }");
-    expect(tofuAzure).toContain('trusted_launch = var.architecture == "x64" && !strcontains(lower(var.custom_image_id), "/providers/microsoft.compute/images/")');
+  it("uses the release's gallery image or Ubuntu, with Trusted Launch on x64", () => {
+    expect(bicep).toContain("var galleryImage = loadJsonContent('../release.json').azure.galleryImages[architecture]");
+    expect(bicep).toContain("imageReference: empty(galleryImage) ? ubuntuImage : { communityGalleryImageId: galleryImage }");
+    expect(bicep).toContain("securityProfile: architecture == 'x64'");
+    expect(bicep).not.toMatch(/param customImageId/);
+    expect(tofuAzure).toContain('trusted_launch = var.architecture == "x64"');
     expect(read("README.md")).toContain("--features SecurityType=TrustedLaunchSupported");
+  });
+});
+
+describe("review item 1: a link can't swap in someone else's images", () => {
+  const digest = "a".repeat(64);
+  const cfnPattern = (param: string) => {
+    const block = cfnResource(param);
+    const yaml = /AllowedPattern: "(.+)"/.exec(block)![1];
+    return new RegExp(yaml.replaceAll("\\\\", "\\")); // YAML "\\." is the pattern \.
+  };
+  const tfPattern = (text: string, variable: string) => {
+    const marker = `var.${variable} == "" || can(regex("`;
+    const start = text.indexOf(marker) + marker.length;
+    const hcl = text.slice(start, text.indexOf(`", var.${variable}))`, start));
+    return new RegExp(hcl.replaceAll("\\\\", "\\")); // HCL "\\." is the pattern \.
+  };
+  const genuineCms = `ghcr.io/polynovea/cms@sha256:${digest}`;
+  const genuineCaddy = [`caddy@sha256:${digest}`, `docker.io/library/caddy@sha256:${digest}`];
+  const foreign = [
+    `ghcr.io/attacker/cms@sha256:${digest}`, `docker.io/attacker/caddy@sha256:${digest}`, `ghcr.io/polynovea/cms:latest`,
+    `ghcr.io/polynovea.evil.com/cms@sha256:${digest}`, `caddy:2`, `evil.example/caddy@sha256:${digest}`, `caddy@sha256:${"g".repeat(64)}`,
+    `ghcr.io/polynovea/cms@sha256:${digest}\nPOLYNOVEA_DOMAIN=evil.example`,
+  ];
+
+  it("CloudFormation refuses a foreign CMS or Caddy image in a quick-create link", () => {
+    const cms = cfnPattern("ContainerImage");
+    const caddy = cfnPattern("CaddyImage");
+    expect(cms.test("")).toBe(true);
+    expect(cms.test(genuineCms)).toBe(true);
+    for (const ok of genuineCaddy) expect(caddy.test(ok)).toBe(true);
+    for (const bad of foreign) {
+      if (bad !== genuineCms) expect(cms.test(bad), bad).toBe(false);
+      if (!genuineCaddy.includes(bad)) expect(caddy.test(bad), bad).toBe(false);
+    }
+  });
+
+  it("CloudFormation has no parameter that names the server's disk image", () => {
+    expect(cfn).not.toMatch(/\n  (UbuntuImage|CustomImageId):\n/);
+    expect(cfnResource("Server")).toMatch(/ImageId: !If\n\s+- HasReleaseAmi\n\s+- !FindInMap \[ReleaseAmis, !Ref AWS::Region, !Ref Architecture\]\n\s+- !Sub "\{\{resolve:ssm:\/aws\/service\/canonical\/ubuntu\/server\/24\.04\/stable\/current\/\$\{Architecture\}\/hvm\/ebs-gp3\/ami-id\}\}"/);
+    expect(cfnResource("Architecture")).toContain("AllowedValues: [arm64, amd64]"); // the only free part of that path
+    // Every region is in the map (FindInMap fails for a missing one), "none" until a release publishes.
+    for (const region of AWS_REGIONS) expect(cfn).toMatch(new RegExp(`\n    ${region}: \{ arm64: (none|ami-[0-9a-f]+), amd64: (none|ami-[0-9a-f]+) \}`));
+  });
+
+  it("the release file accepts only Polynovea and Caddy images, and real AMI and gallery IDs", () => {
+    const base = { release: false, cmsImage: "", caddyImage: "", aws: { amis: {} }, azure: { galleryImages: { x64: "", arm64: "" } } };
+    expect(() => loadRelease(JSON.stringify({ ...base, cmsImage: genuineCms, caddyImage: genuineCaddy[0] }))).not.toThrow();
+    expect(() => loadRelease(JSON.stringify({ ...base, cmsImage: `ghcr.io/attacker/cms@sha256:${digest}` }))).toThrow(/cmsImage/);
+    expect(() => loadRelease(JSON.stringify({ ...base, caddyImage: `docker.io/attacker/caddy@sha256:${digest}` }))).toThrow(/caddyImage/);
+    expect(() => loadRelease(JSON.stringify({ ...base, aws: { amis: { "eu-west-1": { arm64: "attacker" } } } }))).toThrow(/AMI/);
+    expect(() => loadRelease(JSON.stringify({ ...base, azure: { galleryImages: { x64: "/subscriptions/x/resourceGroups/y/providers/Microsoft.Compute/images/z" } } }))).toThrow(/gallery/);
+    // The committed release file is valid and the template is in step with it.
+    const release = loadRelease(read("release.json"));
+    expect(renderCfn(cfn, release)).toBe(cfn);
+    const published = renderCfn(cfn, { ...release, cmsImage: genuineCms, caddyImage: genuineCaddy[0], aws: { amis: { "eu-west-1": { arm64: "ami-0123456789abcdef0", amd64: "" } } } });
+    expect(published).toContain(`\n  ContainerImage:\n    Type: String\n    Default: "${genuineCms}"`);
+    expect(published).toContain("\n    eu-west-1: { arm64: ami-0123456789abcdef0, amd64: none }");
+  });
+
+  it("Bicep checks the images before creating anything, and has no free image parameter", () => {
+    expect(bicep).toContain("param containerImage string = loadJsonContent('../release.json').cmsImage");
+    expect(bicep).toContain("param caddyImage string = loadJsonContent('../release.json').caddyImage");
+    expect(bicep).toContain("containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || isPolynoveaImage(containerImage)");
+    expect(bicep).toContain("caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || isDigestRef(caddyImage, ['caddy', 'docker.io/library/caddy'])");
+    expect(bicep).toMatch(/parameters: toObject\(items\(inputRules\), rule => rule\.key, rule => \{ type: 'bool', allowedValues: \[true\] \}\)/);
+    // Every resource with no other dependency waits for the checks.
+    for (const name of ["vmNsg", "dbNsg", "databaseDns", "storage", "publicIp", "dataDisk", "budget"]) {
+      const start = bicep.indexOf(`resource ${name} '`);
+      expect(start, name).toBeGreaterThan(0);
+      const body = bicep.slice(bicep.indexOf("{\n", start));
+      expect(body.startsWith("{\n  dependsOn: [inputChecks]\n"), name).toBe(true);
+    }
+  });
+
+  it("OpenTofu validates the images the same way", () => {
+    for (const text of [read("opentofu/modules/aws/variables.tf"), read("opentofu/modules/azure/variables.tf")]) {
+      const cms = tfPattern(text, "container_image");
+      const caddy = tfPattern(text, "caddy_image");
+      expect(cms.test(genuineCms)).toBe(true);
+      for (const ok of genuineCaddy) expect(caddy.test(ok)).toBe(true);
+      for (const bad of foreign) {
+        if (bad !== genuineCms) expect(cms.test(bad), bad).toBe(false);
+        if (!genuineCaddy.includes(bad)) expect(caddy.test(bad), bad).toBe(false);
+      }
+    }
+    expect(tfPattern(read("opentofu/modules/aws/variables.tf"), "custom_image_id").test("ami-attacker")).toBe(false);
+    expect(tfPattern(read("opentofu/modules/azure/variables.tf"), "custom_image_id").test("/subscriptions/x/providers/Microsoft.Compute/images/y")).toBe(false);
   });
 });

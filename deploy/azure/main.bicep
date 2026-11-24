@@ -57,14 +57,15 @@ param databaseSku string = 'Standard_B1ms'
 @allowed([32, 64, 128, 256])
 param databaseStorageGb int = 32
 
-@description('Polynovea CMS image pinned by digest (name@sha256:...). Required on plain Ubuntu; on a Polynovea server image, blank uses the image it carries.')
-param containerImage string = ''
+// Images come only from the release (deploy/release.json). The checks below refuse anything else, so a
+// "Deploy to Azure" link can't swap in someone else's image: the CMS only from ghcr.io/polynovea/,
+// the proxy only Caddy's official image, both pinned by digest. The server checks the CMS image's
+// signature again before every start.
+@description('Set by the release: the Polynovea CMS image, ghcr.io/polynovea/<name>@sha256:<digest>. Leave as it is.')
+param containerImage string = loadJsonContent('../release.json').cmsImage
 
-@description('HTTPS proxy (Caddy) image pinned by digest. Required on plain Ubuntu; on a Polynovea server image, blank uses the image it carries.')
-param caddyImage string = ''
-
-@description('Optional Polynovea server image: the published community gallery image (/CommunityGalleries/<public name>/Images/<definition>/Versions/<version>), or the resource ID of a managed image or gallery image version in your subscription. When blank, Ubuntu 24.04 LTS is used.')
-param customImageId string = ''
+@description('Set by the release: Caddy\'s official image, caddy@sha256:<digest>. Leave as it is.')
+param caddyImage string = loadJsonContent('../release.json').caddyImage
 
 @description('Location for all resources.')
 param location string = resourceGroup().location
@@ -87,8 +88,8 @@ param databaseAdminPassword string = 'P${newGuid()}'
 var managed = databaseMode == 'managed'
 var hasAdminCidr = !empty(adminCidr)
 var hasDomain = !empty(domain)
-// A managed image (not a gallery image) can't use Trusted Launch.
-var isManagedImage = contains(toLower(customImageId), '/providers/microsoft.compute/images/')
+// The release's published Polynovea gallery image for this processor; blank = Ubuntu 24.04 LTS.
+var galleryImage = loadJsonContent('../release.json').azure.galleryImages[architecture]
 var suffix = uniqueString(resourceGroup().id) // 13 characters, for names only (never for secrets)
 var prefix = 'polynovea'
 var vnetCidr = '10.30.0.0/16'
@@ -103,6 +104,39 @@ var secretName = 'polynovea-database-admin'
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 
+// ---------------------------------------------------------------- input checks
+// Bicep can't put a pattern on a parameter, so each rule is computed here and handed to a tiny nested
+// deployment whose parameters accept only true. A broken rule fails that deployment, naming the rule,
+// before any other resource is created (everything depends on it).
+
+func allIn(text string, alphabet string) bool =>
+  empty(filter(range(0, length(text)), i => !contains(alphabet, substring(text, i, 1))))
+
+func isDigestRef(ref string, names string[]) bool =>
+  length(split(ref, '@sha256:')) == 2 && contains(names, first(split(ref, '@sha256:'))) && length(last(split(ref, '@sha256:'))) == 64 && allIn(last(split(ref, '@sha256:')), '0123456789abcdef')
+
+func isPolynoveaImage(ref string) bool =>
+  length(split(ref, '@sha256:')) == 2 && startsWith(ref, 'ghcr.io/polynovea/') && length(first(split(ref, '@sha256:'))) > 18 && allIn(first(split(ref, '@sha256:')), 'abcdefghijklmnopqrstuvwxyz0123456789._/-') && length(last(split(ref, '@sha256:'))) == 64 && allIn(last(split(ref, '@sha256:')), '0123456789abcdef')
+
+var inputRules = {
+  containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || isPolynoveaImage(containerImage)
+  caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || isDigestRef(caddyImage, ['caddy', 'docker.io/library/caddy'])
+}
+
+resource inputChecks 'Microsoft.Resources/deployments@2022-09-01' = {
+  name: 'polynovea-input-checks'
+  properties: {
+    mode: 'Incremental'
+    template: {
+      '$schema': 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'
+      contentVersion: '1.0.0.0'
+      parameters: toObject(items(inputRules), rule => rule.key, rule => { type: 'bool', allowedValues: [true] })
+      resources: []
+    }
+    parameters: toObject(items(inputRules), rule => rule.key, rule => { value: rule.value })
+  }
+}
+
 var ubuntuImage = {
   publisher: 'Canonical'
   offer: 'ubuntu-24_04-lts'
@@ -113,6 +147,7 @@ var ubuntuImage = {
 // ---------------------------------------------------------------- network
 
 resource vmNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
+  dependsOn: [inputChecks]
   name: '${prefix}-vm-nsg'
   location: location
   properties: {
@@ -163,6 +198,7 @@ resource vmNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
 }
 
 resource dbNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = if (managed) {
+  dependsOn: [inputChecks]
   name: '${prefix}-db-nsg'
   location: location
   properties: {
@@ -225,6 +261,7 @@ resource dbSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existin
 // ---------------------------------------------------------------- database ("Created for you")
 
 resource databaseDns 'Microsoft.Network/privateDnsZones@2024-06-01' = if (managed) {
+  dependsOn: [inputChecks]
   name: '${prefix}-${suffix}.private.postgres.database.azure.com'
   location: 'global'
 }
@@ -324,6 +361,7 @@ resource databaseSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (man
 // ---------------------------------------------------------------- storage: one container
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  dependsOn: [inputChecks]
   name: 'polynovea${suffix}'
   location: location
   sku: { name: 'Standard_LRS' }
@@ -377,6 +415,7 @@ resource storageLock 'Microsoft.Authorization/locks@2020-05-01' = {
 // ---------------------------------------------------------------- the VM
 
 resource publicIp 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
+  dependsOn: [inputChecks]
   name: '${prefix}-ip'
   location: location
   sku: { name: 'Standard', tier: 'Regional' }
@@ -406,6 +445,7 @@ resource nic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
 
 // A separate disk for /var/lib/polynovea. It is detached, not deleted, if the VM is deleted.
 resource dataDisk 'Microsoft.Compute/disks@2024-03-02' = {
+  dependsOn: [inputChecks]
   name: '${prefix}-data'
   location: location
   sku: { name: 'StandardSSD_LRS' }
@@ -463,11 +503,10 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   identity: { type: 'SystemAssigned' }
   properties: {
     hardwareProfile: { vmSize: vmSize }
-    // Trusted Launch (secure boot and a virtual TPM) on x64, with the Ubuntu marketplace image or a
-    // gallery image (Polynovea's gallery image definition is created with
-    // SecurityType=TrustedLaunchSupported). Not with a managed image, which can't use it, and not on
-    // Azure's Arm64 sizes, which don't offer it.
-    securityProfile: architecture == 'x64' && !isManagedImage
+    // Trusted Launch (secure boot and a virtual TPM) on x64, with the Ubuntu marketplace image or the
+    // release's gallery image (its definition is created with SecurityType=TrustedLaunchSupported).
+    // Azure's Arm64 sizes don't offer it.
+    securityProfile: architecture == 'x64'
       ? {
           securityType: 'TrustedLaunch'
           uefiSettings: { secureBootEnabled: true, vTpmEnabled: true }
@@ -486,13 +525,9 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
       allowExtensionOperations: false
     }
     storageProfile: {
-      // A community gallery image (the published Polynovea image) is referenced by its public name;
-      // a managed image or a gallery in your own subscription by its resource ID.
-      imageReference: empty(customImageId)
-        ? ubuntuImage
-        : startsWith(customImageId, '/CommunityGalleries/')
-            ? { communityGalleryImageId: customImageId }
-            : { id: customImageId }
+      // The release's community gallery image, by its public name, or else Ubuntu 24.04 LTS. No
+      // parameter can name another image.
+      imageReference: empty(galleryImage) ? ubuntuImage : { communityGalleryImageId: galleryImage }
       osDisk: {
         name: '${prefix}-os'
         createOption: 'FromImage'
@@ -544,6 +579,7 @@ resource containerWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 // ---------------------------------------------------------------- budget alert
 
 resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
+  dependsOn: [inputChecks]
   name: 'polynovea-${suffix}'
   properties: {
     category: 'Cost'
