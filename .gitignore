@@ -22,3 +22,6 @@ BACKEND_SPEC.md
 # Playwright output
 test-results/
 playwright-report/
+
+# Python bytecode (release/packer/files/upgrade-agent.py tests)
+__pycache__/
