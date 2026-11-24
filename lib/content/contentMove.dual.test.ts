@@ -381,6 +381,47 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(counts).toEqual({ storage: "1", run: "0" });
   });
 
+  it("a 1,000-entry batch with one entry that cannot be written syncs the other 999 and stays fast", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Bulk", apiKey: uniqueKey("bulk"), fields: [field({ key: "title", type: "text" }), field({ key: "count", type: "integer" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId })).verify.matched).toBe(true);
+    const ids = Array.from({ length: 1_000 }, () => randomUUID()).sort();
+    const badIndex = 613;
+    await insertEntries(backend, workspaceId, modelId, ids.map((id, n) => ({
+      id, status: "published", published: { data: { title: `T${n}`, count: n === badIndex ? "not a number" : n }, locale: "en" },
+    })));
+    const db = getDb();
+    const table = await tableOf(backend, modelId);
+
+    // The whole batch again, with the bad entry, against the same batch without it.
+    const good = ids.filter((_, n) => n !== badIndex);
+    let started = performance.now();
+    const clean = await db.transaction().execute((trx) => syncEntries(trx, good));
+    const cleanMs = performance.now() - started;
+    started = performance.now();
+    const mixed = await db.transaction().execute((trx) => syncEntries(trx, ids));
+    const mixedMs = performance.now() - started;
+    expect(clean).toMatchObject({ requested: 999, synced: 999, failed: [] });
+    expect(mixed).toMatchObject({ requested: 1_000, synced: 999, skipped_no_table: 0, missing: 0, failed: [ids[badIndex]] });
+    const [rows] = await backend.query<{ n: number; bad: number }>(
+      `select count(*)::int as n, count(*) filter (where _entry_id = $1)::int as bad from content.${table}`, [ids[badIndex]]);
+    expect(rows).toEqual({ n: 999, bad: 0 });
+    // Halving finds the entry in about 20 tries; one try per entry would be 1,000.
+    report("bad_entry_batch", { entries: 1_000, cleanMs: Math.round(cleanMs), mixedMs: Math.round(mixedMs) });
+    expect(mixedMs).toBeLessThan(cleanMs * 6 + 500);
+
+    // Two bad entries far apart, and the model's failure count goes up once per batch.
+    const [before] = await backend.query<{ n: string }>("select sync_failures::text as n from content_model_storage where content_model_id = $1", [modelId]);
+    await backend.query("update content_entry_versions set data_jsonb = jsonb_set(data_jsonb, '{count}', '\"x\"') where entry_id = $1", [ids[3]]);
+    const two = await db.transaction().execute((trx) => syncEntries(trx, ids));
+    expect(two).toMatchObject({ synced: 998, failed: [ids[3], ids[badIndex]] });
+    const [after] = await backend.query<{ n: string }>("select sync_failures::text as n from content_model_storage where content_model_id = $1", [modelId]);
+    expect(Number(after.n)).toBe(Number(before.n) + 1);
+  });
+
   it("each entry is written to its own model's table, whatever the batch mixes; deleted entries lose their rows", async () => {
     const db = getDb();
     const other = await backend.createWorkspace();

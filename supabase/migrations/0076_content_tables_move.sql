@@ -195,7 +195,6 @@ as $$
 declare
   m record;
   v_ids uuid[];
-  v_entry uuid;
   v_columns jsonb;
   v_aliases jsonb;
   v_state text;
@@ -207,6 +206,12 @@ declare
   v_skipped integer := 0;
   v_failed uuid[] := '{}';
   v_read_source text;
+  v_lo integer[];
+  v_hi integer[];
+  v_a integer;
+  v_b integer;
+  v_mid integer;
+  v_bad uuid[];
 begin
   if p_entry_ids is null then
     return jsonb_build_object('requested', 0, 'synced', 0, 'skipped_no_table', 0, 'missing', 0, 'failed', '[]'::jsonb);
@@ -276,37 +281,54 @@ begin
        where e.id = any ($1)
     $sql$, m.table_name);
 
-    begin
-      execute v_delete using m.ids;
-      execute v_insert using m.ids, v_columns, v_aliases;
-      v_synced := v_synced + cardinality(m.ids);
-    exception when others then
-      -- Find the entries that cannot be written, one at a time.
-      foreach v_entry in array m.ids loop
-        begin
-          execute v_delete using array[v_entry];
-          execute v_insert using array[v_entry], v_columns, v_aliases;
-          v_synced := v_synced + 1;
-        exception when others then
-          get stacked diagnostics v_state = returned_sqlstate;
-          if m.reads_table then
-            raise exception using errcode = v_state, message = 'content_table_write_failed';
-          end if;
-          v_failed := v_failed || v_entry;
-          insert into public.content_model_storage as s (content_model_id, workspace_id, out_of_sync_at, out_of_sync_code, sync_failures)
-          values (m.content_model_id, m.workspace_id, clock_timestamp(), 'sqlstate_' || lower(v_state), 1)
-          on conflict (content_model_id) do update
-            set out_of_sync_at = excluded.out_of_sync_at, out_of_sync_code = excluded.out_of_sync_code,
-                sync_failures = s.sync_failures + 1, updated_at = now()
-          returning s.read_source into v_read_source;
-          -- A switch to the table may have committed since the model was looked up; this row's lock
-          -- settles it: a model that now reads from its table never takes a save its table lacks.
-          if v_read_source = 'table' then
-            raise exception using errcode = v_state, message = 'content_table_write_failed';
-          end if;
-        end;
-      end loop;
-    end;
+    -- The entries' rows go first (an entry that cannot be written is left with none, never a stale
+    -- one), then one insert for all of them. If it fails, the range is split in halves and each half
+    -- tried again (a subtransaction per try) down to the single entries that cannot be written: one
+    -- bad entry in 1,000 costs about 20 tries, not 1,000, and the subtransactions that commit (about
+    -- 10 per bad entry) stay inside PostgreSQL's per-transaction cache of 64.
+    execute v_delete using m.ids;
+    v_lo := array[1];
+    v_hi := array[cardinality(m.ids)];
+    v_bad := '{}';
+    while cardinality(v_lo) > 0 loop
+      v_a := v_lo[cardinality(v_lo)];
+      v_b := v_hi[cardinality(v_hi)];
+      v_lo := v_lo[1 : cardinality(v_lo) - 1];
+      v_hi := v_hi[1 : cardinality(v_hi) - 1];
+      begin
+        execute v_insert using m.ids[v_a : v_b], v_columns, v_aliases;
+        v_synced := v_synced + (v_b - v_a + 1);
+      exception when others then
+        get stacked diagnostics v_state = returned_sqlstate;
+        -- A model that reads from its table never takes a save its table lacks: the save fails.
+        if m.reads_table then
+          raise exception using errcode = v_state, message = 'content_table_write_failed';
+        end if;
+        if v_a = v_b then
+          v_bad := v_bad || m.ids[v_a];
+        else
+          -- Left half first (popped last-in, first-out), so failures are found in id order.
+          v_mid := (v_a + v_b) / 2;
+          v_lo := v_lo || array[v_mid + 1, v_a];
+          v_hi := v_hi || array[v_b, v_mid];
+        end if;
+      end;
+    end loop;
+
+    if cardinality(v_bad) > 0 then
+      v_failed := v_failed || v_bad;
+      insert into public.content_model_storage as s (content_model_id, workspace_id, out_of_sync_at, out_of_sync_code, sync_failures)
+      values (m.content_model_id, m.workspace_id, clock_timestamp(), 'sqlstate_' || lower(v_state), 1)
+      on conflict (content_model_id) do update
+        set out_of_sync_at = excluded.out_of_sync_at, out_of_sync_code = excluded.out_of_sync_code,
+            sync_failures = s.sync_failures + 1, updated_at = now()
+      returning s.read_source into v_read_source;
+      -- A switch to the table may have committed since the model was looked up; this row's lock
+      -- settles it: a model that now reads from its table never takes a save its table lacks.
+      if v_read_source = 'table' then
+        raise exception using errcode = v_state, message = 'content_table_write_failed';
+      end if;
+    end if;
   end loop;
 
   return jsonb_build_object(
