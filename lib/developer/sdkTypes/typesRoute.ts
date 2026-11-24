@@ -6,6 +6,7 @@
 import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
 import { apiError } from "@/lib/developer/apiContract";
 import { buildItemsOpenApi, type OpenApiModelInput } from "@/lib/developer/items/openapi";
+import { PRIVATE_HEADERS } from "@/lib/developer/items/http";
 import { SCHEMA_HASH_HEADER } from "@/lib/developer/items/types";
 import { emitItemsTypes } from "@/lib/developer/sdkTypes/emit";
 
@@ -18,13 +19,12 @@ export interface TypesHandlerDeps {
   now?: () => Date;
 }
 
-/** Per caller, never cached by a shared cache, never sniffed as script. */
-export const TYPES_RESPONSE_HEADERS = {
+/** Per caller (W1's private headers: no shared cache, varies by token), plain text, never sniffed as script. */
+export const TYPES_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  ...PRIVATE_HEADERS,
   "content-type": "text/plain; charset=utf-8",
-  "cache-control": "private, no-store",
-  vary: "Authorization",
   "x-content-type-options": "nosniff",
-} as const;
+});
 
 export function createTypesHandler(deps: TypesHandlerDeps) {
   return async function GET(req: Request): Promise<Response> {
@@ -38,7 +38,9 @@ export function createTypesHandler(deps: TypesHandlerDeps) {
       schemaHash = input.schemaHash;
       body = emitItemsTypes(buildItemsOpenApi(input.models), { schemaHash, generatedAt: (deps.now?.() ?? new Date()).toISOString() });
     } catch {
-      return apiError("TYPES_BUILD_FAILED", "The types file could not be generated", 500, { requestId: ctx.requestId, rateLimit: ctx.rateLimit });
+      const error = apiError("TYPES_BUILD_FAILED", "The types file could not be generated", 500, { requestId: ctx.requestId, rateLimit: ctx.rateLimit });
+      for (const [name, value] of Object.entries(PRIVATE_HEADERS)) error.headers.set(name, value);
+      return error;
     }
     const headers = new Headers(TYPES_RESPONSE_HEADERS);
     headers.set(SCHEMA_HASH_HEADER, schemaHash);

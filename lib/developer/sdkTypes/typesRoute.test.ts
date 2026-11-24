@@ -8,7 +8,7 @@ import { createTypesHandler } from "@/lib/developer/sdkTypes/typesRoute";
 const WORKSPACE_HASH = "f".repeat(64);
 const ctx: DeveloperApiContext = {
   requestId: "req-1", workspaceId: "ws", tokenId: "t", tokenName: "site", actorAdminUserId: null, scopes: ["schema.read"],
-  allowedModels: [], rateLimit: { limit: 60, remaining: 59, resetAt: "2026-11-24T00:00:00Z" }, agentIdentityId: null, agentToolName: null,
+  allowedModels: [], rateLimit: { limit: 60, remaining: 59, resetAt: "2026-11-24T00:00:00Z" }, agentIdentityId: null, agentToolName: null, roleId: null,
 };
 function models(): OpenApiModelInput[] {
   const readable = new Set(ARTICLE_SCHEMA.fields.map((f) => f.key).filter((k) => k !== "secret"));
@@ -23,7 +23,7 @@ describe("GET /api/v1/types.ts", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     expect(res.headers.get("cache-control")).toBe("private, no-store");
-    expect(res.headers.get("vary")).toBe("Authorization");
+    expect(res.headers.get("vary")).toBe("Authorization, x-polynovea-preview");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("x-polynovea-schema-hash")).toBe(WORKSPACE_HASH);
     const body = await res.text();
@@ -44,6 +44,7 @@ describe("GET /api/v1/types.ts", () => {
     const GET = createTypesHandler({ auth: async () => ({ data: ctx }), load: async () => { throw new Error("relation \"content_models\" does not exist"); } });
     const res = await GET(req());
     expect(res.status).toBe(500);
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
     const body = await res.text();
     expect(body).toContain("TYPES_BUILD_FAILED");
     expect(body).not.toContain("content_models");
