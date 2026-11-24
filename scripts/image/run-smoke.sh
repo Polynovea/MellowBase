@@ -128,12 +128,23 @@ step "Restart: PostgreSQL comes back with the container"
 docker restart -t 90 "$PREFIX-tunnel" >/dev/null
 wait_healthy "$PREFIX-tunnel"
 docker exec "$PREFIX-tunnel" sh -ec '/opt/polynovea/bin/local-db.sh status && echo "bundled PostgreSQL running after restart"'
-docker exec "$PREFIX-tunnel" node -e "fetch('http://127.0.0.1:3000/api/setup/status').then(r=>r.json()).then(s=>{console.log('after restart:',JSON.stringify(s));process.exit(s.databaseReady?0:1)})"
+# The round trip finished setup (owner, organisation, keys), so after a restart the CMS runs, /setup is gone
+# for good, and the built-in auth starts in SSH-tunnel mode (no proxy list needed on loopback).
+docker exec "$PREFIX-tunnel" node -e "Promise.all([fetch('http://127.0.0.1:3000/api/health').then(r=>r.json()),fetch('http://127.0.0.1:3000/api/setup/status').then(r=>r.status)]).then(([h,s])=>{console.log('after restart: health',JSON.stringify(h),'setup status',s);process.exit(h.state==='running'&&s===404?0:1)})" \
+  && echo "ok    after restart: the CMS is running and setup is gone (404)" \
+  || { echo "FAIL  after restart: the CMS is not running, or setup still answers"; exit 1; }
+if docker logs "$PREFIX-tunnel" 2>&1 | grep -q "auth: SSH-tunnel mode (loopback only), shared sign-in rate limit"; then
+  echo "ok    after restart: the built-in auth started in SSH-tunnel mode (no proxy list, shared sign-in limit)"
+else
+  echo "FAIL  the built-in auth did not log SSH-tunnel mode after the restart"; exit 1
+fi
 docker logs "$PREFIX-tunnel" 2>&1 | grep -E "^\[entrypoint\]|\[local-db\]|delivery-worker" | tail -8 || true
 
 step "Delivery worker: the bundle (no TypeScript loader) is running and has recorded a heartbeat"
+# Only node processes count: this sh -ec script is itself a process whose command line contains every
+# word it searches for, so matching all processes would find itself.
 docker exec "$PREFIX-tunnel" sh -ec '
-  procs="$(for p in /proc/[0-9]*; do tr "\0" " " < "$p/cmdline" 2>/dev/null; echo; done)"
+  procs="$(for p in /proc/[0-9]*; do c="$(tr "\0" " " < "$p/cmdline" 2>/dev/null)"; case "$c" in node\ *|*/node\ *) echo "$c";; esac; done)"
   if echo "$procs" | grep -q "dist/delivery-worker.mjs"; then echo "ok    worker process runs dist/delivery-worker.mjs"; else echo "FAIL  no worker process running the bundle"; echo "$procs" | grep -i worker; exit 1; fi
   if echo "$procs" | grep -q -- "--loader"; then echo "FAIL  a process runs with a TypeScript loader"; exit 1; else echo "ok    no process uses --loader"; fi
   if [ -e /app/scripts/phase12_75-node-loader.mjs ] || [ -e /app/lib/developer/items/schedule.ts ]; then echo "FAIL  the loader or the worker TypeScript ships in the image"; exit 1; else echo "ok    no loader and no worker TypeScript in the image"; fi
@@ -149,9 +160,13 @@ step "Schema worker: the bundle runs, as polynovea_owner from config.enc, with n
 docker exec "$PREFIX-tunnel" sh -ec '
   found=""
   for p in /proc/[0-9]*; do
-    if tr "\0" " " < "$p/cmdline" 2>/dev/null | grep -q "dist/schema-migration-worker.mjs"; then found="$p"; fi
+    c="$(tr "\0" " " < "$p/cmdline" 2>/dev/null)"
+    case "$c" in node\ *|*/node\ *) ;; *) continue ;; esac
+    if echo "$c" | grep -q "dist/schema-migration-worker.mjs"; then found="$p"; fi
   done
-  if [ -n "$found" ]; then echo "ok    schema worker process runs dist/schema-migration-worker.mjs"; else echo "FAIL  no schema worker process"; exit 1; fi
+  if [ -n "$found" ]; then echo "ok    schema worker process runs dist/schema-migration-worker.mjs (pid ${found#/proc/})"; else echo "FAIL  no schema worker process"; exit 1; fi
+  # The worker process'"'"'s own environment (its pid above), never this shell'"'"'s; unreadable is a failure, not a pass.
+  if [ ! -r "$found/environ" ] || ! tr "\0" "\n" < "$found/environ" | grep -q "^PATH="; then echo "FAIL  cannot read the schema worker environment (${found}/environ)"; exit 1; fi
   if tr "\0" "\n" < "$found/environ" | grep -qiE "^(POLYNOVEA_MIGRATION_DATABASE_URL|DATABASE_URL)=.*polynovea_owner|postgres(ql)?://polynovea_owner"; then echo "FAIL  the owner credential is in the schema worker environment"; exit 1; else echo "ok    no owner credential in the schema worker environment"; fi
 '
 for i in $(seq 1 30); do
