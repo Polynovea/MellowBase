@@ -382,6 +382,8 @@ Resources:
   # The database's own log (errors, slow autovacuum, checkpoints) goes to CloudWatch, kept 14 days, so
   # it survives the instance and support can read it. Made here, before RDS would make it with no
   # expiry, so the database has a fixed lowercase name: polynovea-<this stack's ID>.
+  # That name is fixed when the stack is created and must never change in a later template version:
+  # a new name makes CloudFormation replace the database, which deletion protection then blocks.
   DatabaseLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: ManagedDb
