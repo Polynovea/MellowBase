@@ -149,6 +149,14 @@ function tool(image, args, { out, keyFile, capture = false } = {}) {
   return run("docker", toolArgs(image, args, { out, keyFile, dockerConfig: dockerConfigDir }), { capture });
 }
 
+/**
+ * Tags exactly the signed manifest. --prefer-index=false makes imagetools copy it unchanged; without
+ * it a single-platform manifest is wrapped in a new index whose digest is not the signed one.
+ */
+export function tagArgs(tag, signedRef) {
+  return ["buildx", "imagetools", "create", "--prefer-index=false", "--tag", tag, signedRef];
+}
+
 function ensureBuilder() {
   try {
     run("docker", ["buildx", "inspect", BUILDER.name], { capture: true });
@@ -259,7 +267,7 @@ export async function main(argv = process.argv.slice(2)) {
   // Only now does the version tag appear in the registry, pointing at exactly the signed digest.
   // --prefer-index=false copies the signed manifest as it is; by default a single source is wrapped
   // in a new index, whose digest would not be the signed one.
-  run("docker", ["buildx", "imagetools", "create", "--prefer-index=false", "--tag", release.tag, ref]);
+  run("docker", tagArgs(release.tag, ref));
   const tagged = JSON.parse(run("docker", ["buildx", "imagetools", "inspect", release.tag, "--format", "{{json .Manifest}}"], { capture: true })).digest;
   if (tagged !== digest) throw new Error(`${release.tag} points at ${tagged}, not the signed ${digest}`);
   console.log(`tagged ${release.tag} -> ${digest}`);

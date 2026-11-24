@@ -53,6 +53,16 @@ describe("release script options", () => {
     expect(sign.some((arg) => arg.startsWith("COSIGN_PASSWORD="))).toBe(false);
   });
 
+  it("tags the signed manifest unchanged, never a new wrapping index (regression from the review re-test)", () => {
+    const tagArgs = release.tagArgs as (tag: string, ref: string) => string[];
+    const ref = `localhost:35000/polynovea-cms@sha256:${"a".repeat(64)}`;
+    const args = tagArgs("localhost:35000/polynovea-cms:0.4.0", ref);
+    expect(args.slice(0, 3)).toEqual(["buildx", "imagetools", "create"]);
+    expect(args).toContain("--prefer-index=false");
+    expect(args.at(-1)).toBe(ref);
+    expect(args[args.indexOf("--tag") + 1]).toBe("localhost:35000/polynovea-cms:0.4.0");
+  });
+
   it("runs syft, cosign and the release builder from images pinned by digest", () => {
     for (const image of Object.values(TOOLS)) expect(image).toMatch(/@sha256:[0-9a-f]{64}$/);
     expect((release.BUILDER as { image: string }).image).toMatch(/^moby\/buildkit:[\w.-]+@sha256:[0-9a-f]{64}$/);
