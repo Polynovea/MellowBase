@@ -59,13 +59,15 @@ export async function tableSources(workspaceId: string, modelIds: Iterable<strin
     .innerJoin("content_models as m", (join) => join.onRef("m.id", "=", "s.content_model_id").onRef("m.workspace_id", "=", "s.workspace_id"))
     .innerJoin("content_model_versions as v", (join) => join.onRef("v.id", "=", "t.applied_version_id").onRef("v.content_model_id", "=", "t.content_model_id")
       .onRef("v.version_number", "=", "m.current_schema_version"))
-    // ...and only while the latest run matched on the table's current shape, with no failed sync since.
+    // ...and only while the latest run matched on the table's current shape, with no failed sync since it
+    // began reading.
     // A schema change alters the shape: rows saved before a new column existed lack its values, so
     // reads stay on the snapshots until the model is backfilled and verified again (npm run content:move).
     .innerJoin("content_model_move_runs as r", (join) => join.onRef("r.id", "=", "s.last_run_id").onRef("r.shape_hash", "=", "t.applied_shape_hash"))
     .select(["s.content_model_id", "t.table_name", "t.applied_shape", "v.schema_json"])
     .where("r.matched", "=", true)
-    .where((eb) => eb.or([eb("s.out_of_sync_at", "is", null), eb("s.out_of_sync_at", "<", eb.ref("r.started_at"))]))
+    // A save that failed to reach the table after the run began reading bumped sync_failures.
+    .whereRef("r.sync_failures", "=", "s.sync_failures")
     .where("s.workspace_id", "=", workspaceId)
     .where("s.read_source", "=", "table")
     .where("s.content_model_id", "in", ids)

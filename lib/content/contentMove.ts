@@ -212,7 +212,7 @@ export async function modelsNeedingResync(db: DbExecutor, options: { modelId?: s
       join public.content_model_tables t on t.content_model_id = s.content_model_id and t.workspace_id = s.workspace_id
       left join public.content_model_move_runs r on r.id = s.last_run_id
      where s.last_run_id is not null
-       and (r.id is null or r.shape_hash <> t.applied_shape_hash or (s.out_of_sync_at is not null and s.out_of_sync_at >= r.started_at))
+       and (r.id is null or r.shape_hash <> t.applied_shape_hash or s.sync_failures <> r.sync_failures)
        and not exists (select 1 from public.schema_migration_ledger l where l.content_model_id = s.content_model_id and l.status in ('pending', 'running'))
        ${options.modelId ? sql`and s.content_model_id = ${options.modelId}::uuid` : sql``}
      order by s.updated_at, s.content_model_id

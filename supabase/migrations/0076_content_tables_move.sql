@@ -41,10 +41,16 @@ create table if not exists public.content_model_storage (
   content_model_id uuid primary key references public.content_models (id) on delete cascade,
   workspace_id uuid not null references public.workspaces (id) on delete cascade,
   read_source text not null default 'snapshot' check (read_source in ('snapshot', 'table')),
-  -- Set when a save could not be written to the table (the save itself succeeded, because reads still
-  -- used the snapshots). Switching to the table needs a matching run that started after it.
+  -- When (and with which code) a save last could not be written to the table. The save itself
+  -- succeeded, because reads still used the snapshots. For information: decisions use sync_failures.
   out_of_sync_at timestamptz,
   out_of_sync_code text check (out_of_sync_code is null or out_of_sync_code ~ '^[a-z0-9_]{1,64}$'),
+  -- How many saves have failed to reach the table, bumped in the failing save's own transaction. A
+  -- verification run records the count it saw before reading anything; switching to the table and
+  -- reading from it need the count unchanged since. A failed save that commits while a run is reading
+  -- (the run sees the old content, which still matches) therefore always invalidates that run, however
+  -- the two interleave. Normal saves never touch this row, so they do not contend on it.
+  sync_failures bigint not null default 0,
   last_run_id uuid,
   switched_at timestamptz,
   switched_by uuid references public.admin_users (id) on delete set null,
@@ -64,6 +70,8 @@ create table if not exists public.content_model_move_runs (
   table_name text not null,
   -- The applied_shape_hash the run compared against: switching requires it to still be current.
   shape_hash text not null check (shape_hash ~ '^[0-9a-f]{64}$'),
+  -- content_model_storage.sync_failures as the run saw it before reading anything.
+  sync_failures bigint not null default 0,
   matched boolean not null,
   -- {"snapshot": {"draft": n, "published": n}, "table": {"draft": n, "published": n}, "foreign_rows": n, "rows": {...checksums}}
   counts jsonb not null,
@@ -163,6 +171,7 @@ declare
   v_synced integer := 0;
   v_skipped integer := 0;
   v_failed uuid[] := '{}';
+  v_read_source text;
 begin
   if p_entry_ids is null then
     return jsonb_build_object('requested', 0, 'synced', 0, 'skipped_no_table', 0, 'missing', 0, 'failed', '[]'::jsonb);
@@ -248,10 +257,17 @@ begin
             raise exception using errcode = v_state, message = 'content_table_write_failed';
           end if;
           v_failed := v_failed || v_entry;
-          insert into public.content_model_storage as s (content_model_id, workspace_id, out_of_sync_at, out_of_sync_code)
-          values (m.content_model_id, m.workspace_id, clock_timestamp(), 'sqlstate_' || lower(v_state))
+          insert into public.content_model_storage as s (content_model_id, workspace_id, out_of_sync_at, out_of_sync_code, sync_failures)
+          values (m.content_model_id, m.workspace_id, clock_timestamp(), 'sqlstate_' || lower(v_state), 1)
           on conflict (content_model_id) do update
-            set out_of_sync_at = excluded.out_of_sync_at, out_of_sync_code = excluded.out_of_sync_code, updated_at = now();
+            set out_of_sync_at = excluded.out_of_sync_at, out_of_sync_code = excluded.out_of_sync_code,
+                sync_failures = s.sync_failures + 1, updated_at = now()
+          returning s.read_source into v_read_source;
+          -- A switch to the table may have committed since the model was looked up; this row's lock
+          -- settles it: a model that now reads from its table never takes a save its table lacks.
+          if v_read_source = 'table' then
+            raise exception using errcode = v_state, message = 'content_table_write_failed';
+          end if;
         end;
       end loop;
     end;
@@ -366,7 +382,12 @@ declare
   v_pg_types constant text[] := array['text', 'jsonb', 'numeric', 'bigint', 'boolean', 'date', 'timestamptz', 'uuid'];
   v_aliases jsonb;
   v_key text;
+  v_sync_failures bigint;
 begin
+  -- Before reading anything: the failed-sync count this run is valid for (content_model_storage).
+  select coalesce((select st.sync_failures from public.content_model_storage st where st.content_model_id = p_content_model_id), 0)
+    into v_sync_failures;
+
   select mt.table_name, mt.applied_shape, mt.applied_shape_hash, mt.workspace_id into t
     from public.content_model_tables mt
     join public.content_models cm on cm.id = mt.content_model_id and cm.workspace_id = mt.workspace_id
@@ -497,9 +518,9 @@ begin
     'failed', case when p_failed is null then null else greatest(p_failed, 0) end));
 
   insert into public.content_model_move_runs
-    (content_model_id, workspace_id, table_name, shape_hash, matched, counts, fields, mismatches, backfill, requested_by, started_at)
+    (content_model_id, workspace_id, table_name, shape_hash, sync_failures, matched, counts, fields, mismatches, backfill, requested_by, started_at)
   values (
-    p_content_model_id, p_workspace_id, t.table_name, t.applied_shape_hash, v_matched,
+    p_content_model_id, p_workspace_id, t.table_name, t.applied_shape_hash, v_sync_failures, v_matched,
     jsonb_build_object('snapshot', v_snapshot_counts, 'table', v_table_counts - 'foreign_rows', 'foreign_rows', v_table_counts -> 'foreign_rows'),
     v_fields, v_mismatches, v_backfill,
     (select a.id from public.admin_users a where a.id = p_requested_by),
@@ -516,7 +537,8 @@ $$;
 
 -- ── Read switch ──────────────────────────────────────────────────────────────────────────────────
 -- 'table': only with the model's latest run matched, on the table's current shape hash, no save that
--- failed to reach the table since that run started, and no schema change queued or running. The table
+-- failed to reach the table since that run began reading (sync_failures unchanged), and no schema
+-- change queued or running. The table
 -- row is locked FOR UPDATE first, so a schema change finishing at the same moment either commits
 -- before (and the shape check sees it) or waits until this switch commits.
 -- 'snapshot': always allowed. This is the rollback.
@@ -557,7 +579,7 @@ begin
   select st.* into s from public.content_model_storage st where st.content_model_id = p_content_model_id for update;
 
   if p_source = 'table' then
-    select mr.id, mr.matched, mr.shape_hash, mr.started_at into r
+    select mr.id, mr.matched, mr.shape_hash, mr.sync_failures into r
       from public.content_model_move_runs mr
      where mr.content_model_id = p_content_model_id
      order by mr.started_at desc, mr.finished_at desc, mr.id desc
@@ -568,7 +590,7 @@ begin
     if r.shape_hash <> t.applied_shape_hash then
       raise exception using errcode = '55000', message = 'content_read_switch_stale_shape';
     end if;
-    if s.out_of_sync_at is not null and s.out_of_sync_at >= r.started_at then
+    if s.sync_failures <> r.sync_failures then
       raise exception using errcode = '55000', message = 'content_read_switch_out_of_sync';
     end if;
     if exists (

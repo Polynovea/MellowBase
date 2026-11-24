@@ -325,6 +325,50 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(await refusal("snapshot")).toBeNull();
   });
 
+  it("a save that fails while a verification is reading can never switch reads to stale rows (two connections)", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Race", apiKey: uniqueKey("race"), fields: [field({ key: "title", type: "text" }), field({ key: "count", type: "integer" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    const entryId = randomUUID();
+    await insertEntries(backend, workspaceId, modelId, [{ id: entryId, status: "published", published: { data: { title: "ok", count: 1 }, locale: "en" } }]);
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId })).verify.matched).toBe(true);
+    const db = getDb();
+
+    // Connection A: a save whose new version cannot be written to the table (the model reads its
+    // snapshots, so the save goes through). Not committed yet: the failure is recorded in its transaction.
+    await app.query("begin");
+    const { rows: [bad] } = await app.query<{ id: string }>(
+      "insert into content_entry_versions (entry_id, model_schema_version, version_number, data_jsonb) values ($1, 1, 2, $2) returning id",
+      [entryId, JSON.stringify({ title: "new", count: "not a number" })]);
+    await app.query("update content_entries set published_version_id = $1 where id = $2", [bad.id, entryId]);
+
+    // Connection B: a verification starts meanwhile and reads the committed content, which still matches.
+    const verifying = verifyModel(db, { workspaceId, modelId });
+    // It reads without waiting; only recording its run waits for A's row in content_model_storage.
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      const [waiting] = await owner.query<{ n: number }>(
+        "select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and query like '%polynovea_content_verify_model%' and pid <> pg_backend_pid()").then((r) => r.rows);
+      if (waiting.n > 0 || Date.now() > deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await app.query("commit");
+    const run = await verifying;
+    expect(run.matched).toBe(true);
+
+    // The failed save committed after the run began reading: that run can never switch reads...
+    expect(await errorOf(setReadSource(db, { workspaceId, modelId, source: "table" }))).toEqual({ code: "55000", message: "content_read_switch_out_of_sync" });
+    // ...and even with the intent forced to 'table', reads do not use the table on that run.
+    await owner.query("update content_model_storage set read_source = 'table' where content_model_id = $1", [modelId]);
+    expect(await tableSource(workspaceId, modelId)).toBeNull();
+    await owner.query("update content_model_storage set read_source = 'snapshot' where content_model_id = $1", [modelId]);
+    const [counts] = await backend.query<{ storage: string; run: string }>(
+      "select s.sync_failures::text as storage, r.sync_failures::text as run from content_model_storage s join content_model_move_runs r on r.id = $2 where s.content_model_id = $1", [modelId, run.runId]);
+    expect(counts).toEqual({ storage: "1", run: "0" });
+  });
+
   it("each entry is written to its own model's table, whatever the batch mixes; deleted entries lose their rows", async () => {
     const db = getDb();
     const other = await backend.createWorkspace();

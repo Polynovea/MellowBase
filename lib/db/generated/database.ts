@@ -458,6 +458,7 @@ export interface ContentModelMoveRuns {
   requested_by: string | null;
   shape_hash: string;
   started_at: string;
+  sync_failures: Generated<number>;
   table_name: string;
   workspace_id: string;
 }
@@ -485,6 +486,7 @@ export interface ContentModelStorage {
   read_source: Generated<string>;
   switched_at: string | null;
   switched_by: string | null;
+  sync_failures: Generated<number>;
   updated_at: Generated<string>;
   workspace_id: string;
 }
