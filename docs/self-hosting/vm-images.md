@@ -115,7 +115,7 @@ The default build is for the building account only. To offer the images to other
 
 **Azure: an Azure Compute Gallery shared with the community.**
 
-- A managed image can only be used inside its own subscription. Publish through an Azure Compute Gallery instead. Create it once, with community sharing and the publisher details the portal shows to users:
+- A managed image (`/subscriptions/…/providers/Microsoft.Compute/images/…`, what a plain build makes) is **for testing in your own subscription only**: it cannot leave that subscription, and VMs made from it cannot use Trusted Launch, so the templates switch Trusted Launch off for it. For anything real, use a gallery image (the community gallery below, or a gallery in your own subscription). Publish through an Azure Compute Gallery instead. Create it once, with community sharing and the publisher details the portal shows to users:
   - `az sig create --gallery-name <gallery> --resource-group <rg> --permissions community --publisher-uri <url> --publisher-email <email> --eula <url> --public-name-prefix polynovea`
   - then `az sig share enable-community --gallery-name <gallery> --resource-group <rg>`.
 - Create one image definition per architecture, marked Trusted Launch-capable (without `--features SecurityType=TrustedLaunchSupported`, VMs from the gallery image cannot use Trusted Launch, so the template would have to turn it off):
