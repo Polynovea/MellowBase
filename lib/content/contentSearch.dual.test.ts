@@ -108,6 +108,10 @@ describeWithDatabase("search before and after a model's reads move to its table"
       { id: randomUUID(), published: "Alpha harbour", draft: "Alpha zygomorphic", draftLocale: "en" },
       { id: randomUUID(), published: "Beta lighthouse", draft: "Beta quixotry", draftLocale: "hi" },
       { id: randomUUID(), published: "Gamma zygomorphic", draft: "Gamma", draftLocale: "en" },
+      { id: randomUUID(), published: "Save 50% today", draft: "Save 50% today", draftLocale: "en" },
+      { id: randomUUID(), published: "Save 500 today", draft: "Save 500 today", draftLocale: "en" },
+      { id: randomUUID(), published: "file_name here", draft: "file_name here", draftLocale: "en" },
+      { id: randomUUID(), published: "filexname here", draft: "filexname here", draftLocale: "en" },
     ];
     for (const entry of entries) {
       const publishedId = randomUUID();
@@ -136,5 +140,8 @@ describeWithDatabase("search before and after a model's reads move to its table"
     expect(await hits("quixotr", "en")).toEqual([]);
     // The published text itself is still found by substring and trigram on the table.
     expect(await hits("lighthous")).toEqual([entries[1].id]);
+    // % and _ in a query are the characters themselves, not wildcards.
+    expect(await hits("50%")).toEqual([entries[3].id]);
+    expect(await hits("e_na")).toEqual([entries[5].id]);
   });
 });

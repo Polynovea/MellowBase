@@ -191,6 +191,8 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = ''
+-- A timestamp saved without an offset is read as UTC, whatever the saving session's time zone.
+set timezone = 'UTC'
 as $$
 declare
   m record;
@@ -417,6 +419,9 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = ''
+-- The same as the sync: a timestamp without an offset is UTC, and checksums do not depend on the
+-- calling session's time zone.
+set timezone = 'UTC'
 as $$
 declare
   t record;

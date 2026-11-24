@@ -10,6 +10,7 @@ import { sql } from "kysely";
 import { callFunction, DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne } from "@/lib/db/index";
 import { tableSource, type TableSource } from "@/lib/content/tableStore";
 import { STORAGE_COLUMNS } from "@/lib/schema/engine/names";
+import { trigramSchema } from "@/lib/schema/engine/render";
 import type { ContentEntryRow, ContentEntryVersionRow } from "@/lib/content/entryService";
 import { searchableText, type ContentSearchParams } from "@/lib/content/searchService";
 
@@ -72,14 +73,34 @@ type RankedRow = Awaited<ReturnType<typeof callFunction<"cms_search_content_rank
  * non-text fields (rich text, lists, JSON) or in text fields that are not search-indexed (slug, email,
  * url, select), match only through full text, not by trigram or substring.
  */
+let trgmSchemaLookup: Promise<string | null> | null = null;
+
+/** The schema pg_trgm is installed in (looked up once), so its operator and functions are named exactly. */
+function trgmSchema(): Promise<string | null> {
+  trgmSchemaLookup ??= trigramSchema(getDb())
+    .then((schema) => (schema && /^[a-z_][a-z0-9_]{0,62}$/.test(schema) ? schema : null))
+    .catch(() => { trgmSchemaLookup = null; return null; });
+  return trgmSchemaLookup;
+}
+
+/** A substring pattern for ILIKE: the query's own % and _ (and the escape character) match literally. */
+export const likeSubstring = (q: string) => `%${q.replace(/[\\%_]/g, "\\$&")}%`;
+
 async function searchModelTable(params: ContentSearchParams, source: TableSource, q: string): Promise<RankedRow[]> {
   const columns = Object.values(source.shape.columns).filter((column) => column.searchIndexed && column.pgType === "text");
   const table = sql.id("content", source.table);
   const entryCol = sql.id(STORAGE_COLUMNS.entryId);
   const variantCol = sql.id(STORAGE_COLUMNS.variant);
   const localeCol = sql.id(STORAGE_COLUMNS.locale);
+  // pg_trgm's % operator and similarity(), schema-qualified (never left to the session's search_path).
+  const schema = await trgmSchema();
+  const similar = (text: unknown) => (schema ? sql`${sql.id(schema)}.similarity(${text}, input.q)` : sql`0::real`);
+  const pattern = likeSubstring(q);
   const columnMatch = columns.length
-    ? sql.join(columns.map((column) => sql`r.${sql.id(column.name)} % ${q} or r.${sql.id(column.name)} ilike '%' || ${q} || '%'`), sql` or `)
+    ? sql.join(columns.map((column) => {
+      const col = sql`r.${sql.id(column.name)}`;
+      return schema ? sql`${col} operator(${sql.id(schema)}.%) ${q} or ${col} ilike ${pattern}` : sql`${col} ilike ${pattern}`;
+    }), sql` or `)
     : sql`false`;
   const limit = Math.min(200, Math.max(1, params.limit ?? 50));
   const offset = Math.max(0, params.offset ?? 0);
@@ -87,7 +108,7 @@ async function searchModelTable(params: ContentSearchParams, source: TableSource
     with input as (select ${q}::text as q, websearch_to_tsquery('simple', ${q}) as tsq)
     select d.entry_id, d.workspace_id, d.version_id, d.content_model_id, d.locale, d.status, d.author_id, d.search_text, d.updated_at,
            ts_rank_cd(d.search_vector, input.tsq)::real as rank,
-           similarity(d.search_text, input.q)::real as similarity
+           ${similar(sql`d.search_text`)}::real as similarity
       from public.content_search_documents d
      cross join input
      where d.workspace_id = ${params.workspaceId}
@@ -114,7 +135,7 @@ async function searchModelTable(params: ContentSearchParams, source: TableSource
                 or (r.${variantCol} = 'published' and e.published_version_id = d.version_id))
               and (${columnMatch}))
        )
-     order by greatest(ts_rank_cd(d.search_vector, input.tsq), similarity(d.search_text, input.q)) desc, d.updated_at desc
+     order by greatest(ts_rank_cd(d.search_vector, input.tsq), ${similar(sql`d.search_text`)}) desc, d.updated_at desc
      limit ${limit} offset ${offset}`.execute(getDb());
   return rows;
 }

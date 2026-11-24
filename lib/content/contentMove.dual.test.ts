@@ -422,6 +422,36 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(Number(after.n)).toBe(Number(before.n) + 1);
   });
 
+  it("a timestamp without an offset is UTC to the sync and the verification, whatever the session's time zone", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Clock", apiKey: uniqueKey("clock"), fields: [field({ key: "title", type: "text" }), field({ key: "happens_at", type: "datetime" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId })).verify.matched).toBe(true);
+    const entryId = randomUUID();
+    const versionId = randomUUID();
+    // Saved from a session in India (+05:30).
+    await app.query("begin");
+    await app.query("set local timezone = 'Asia/Kolkata'");
+    await app.query("insert into content_entries (id, workspace_id, content_model_id, status) values ($1, $2, $3, 'published')", [entryId, workspaceId, modelId]);
+    await app.query(
+      "insert into content_entry_versions (id, entry_id, model_schema_version, version_number, data_jsonb, locale, state) values ($1, $2, 1, 1, $3, 'en', 'published')",
+      [versionId, entryId, JSON.stringify({ title: "Launch", happens_at: "2026-03-01 10:00:00" })]);
+    await app.query("update content_entries set published_version_id = $1 where id = $2", [versionId, entryId]);
+    await app.query("commit");
+    const table = await tableOf(backend, modelId);
+    const { rows: [column] } = await owner.query<{ name: string }>(
+      "select c.key as name from content_model_tables t, jsonb_each(t.applied_shape -> 'columns') c where t.content_model_id = $1 and c.value ->> 'field' = 'happens_at'", [modelId]);
+    const { rows: [row] } = await owner.query<{ epoch: string }>(`select extract(epoch from "${column.name}")::bigint::text as epoch from content.${table} where _entry_id = $1`, [entryId]);
+    expect(Number(row.epoch)).toBe(Date.UTC(2026, 2, 1, 10) / 1000);
+    // Verified from a session in New York (-05:00): the same instant on both sides.
+    await app.query("set timezone = 'America/New_York'");
+    const { rows: [verified] } = await app.query("select public.polynovea_content_verify_model($1, $2) as result", [workspaceId, modelId]);
+    await app.query("reset timezone");
+    expect(verified.result).toMatchObject({ matched: true, mismatches: [] });
+  });
+
   it("each entry is written to its own model's table, whatever the batch mixes; deleted entries lose their rows", async () => {
     const db = getDb();
     const other = await backend.createWorkspace();
