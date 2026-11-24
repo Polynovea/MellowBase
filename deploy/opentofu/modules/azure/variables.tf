@@ -41,6 +41,12 @@ variable "database_storage_mb" {
 
 variable "budget_email" {
   type = string
+
+  validation {
+    # One address, no spaces or line breaks: it is written into the server's settings file.
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.budget_email))
+    error_message = "budget_email must be one email address."
+  }
 }
 
 variable "budget_monthly_amount" {
@@ -143,6 +149,12 @@ variable "acme_email" {
   description = "Optional. Let's Encrypt may email this address about the certificate."
   type        = string
   default     = ""
+
+  validation {
+    # One address, no spaces or line breaks: it is written into the server's settings file.
+    condition     = var.acme_email == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.acme_email))
+    error_message = "acme_email must be blank or one email address."
+  }
 }
 
 variable "tags" {

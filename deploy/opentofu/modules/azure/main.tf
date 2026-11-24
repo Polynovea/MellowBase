@@ -132,6 +132,55 @@ resource "azurerm_network_security_group" "vm" {
     }
   }
 
+  # Out to the internet only on 443 and 80, as on AWS, plus Azure's platform address (DNS, VM agent).
+  security_rule {
+    name                       = "allow-azure-platform"
+    priority                   = 150
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_address_prefix      = "*"
+    source_port_range          = "*"
+    destination_address_prefix = "168.63.129.16"
+    destination_port_range     = "*"
+  }
+
+  security_rule {
+    name                       = "allow-https-out"
+    priority                   = 200
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_address_prefix      = "*"
+    source_port_range          = "*"
+    destination_address_prefix = "Internet"
+    destination_port_range     = "443"
+  }
+
+  security_rule {
+    name                       = "allow-http-out"
+    priority                   = 210
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_address_prefix      = "*"
+    source_port_range          = "*"
+    destination_address_prefix = "Internet"
+    destination_port_range     = "80"
+  }
+
+  security_rule {
+    name                       = "deny-other-internet-outbound"
+    priority                   = 4010
+    direction                  = "Outbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_address_prefix      = "*"
+    source_port_range          = "*"
+    destination_address_prefix = "Internet"
+    destination_port_range     = "*"
+  }
+
   security_rule {
     name                       = "deny-other-vnet-outbound"
     priority                   = 4000
