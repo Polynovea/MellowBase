@@ -97,11 +97,81 @@ export async function syncEntries(db: DbExecutor, entryIds: string[]): Promise<S
 export type EnsureTableResult =
   | { status: "exists"; table: string }
   | { status: "requested"; expandLedgerId: string | null }
+  /** A schema change to the model is queued or running: its table is part-way through the change. */
+  | { status: "change_in_progress"; table: string; ledgerId: string; stage: string; stageStatus: string }
+  /** The model's latest table change (expand) failed: the table is not at the model's fields. */
+  | { status: "change_failed"; table: string; ledgerId: string; errorRef: string | null }
   | { status: "no_schema_version" };
+
+export type TableChangeState =
+  | { state: "none" }
+  | { state: "in_progress"; ledgerId: string; stage: string; status: string }
+  | { state: "failed"; ledgerId: string; errorRef: string | null };
+
+export interface LedgerRowForState {
+  id: string;
+  stage: string;
+  status: string;
+  error_ref: string | null;
+}
+
+/**
+ * Whether a model's table is part-way through a schema change, from its ledger rows, newest first.
+ * Queued or running stages (the same rule as the read switch, 0076) mean the worker has not finished
+ * reshaping the table. Otherwise, a latest expand stage that failed means the table never got the
+ * model's new columns. A destructive stage waiting for confirmation is not "part-way": its expand
+ * already ran, and the extra columns it would drop are never written by the sync.
+ */
+export function tableChangeState(rowsNewestFirst: readonly LedgerRowForState[]): TableChangeState {
+  const open = rowsNewestFirst.find((row) => row.status === "pending" || row.status === "running");
+  if (open) return { state: "in_progress", ledgerId: open.id, stage: open.stage, status: open.status };
+  const lastExpand = rowsNewestFirst.find((row) => row.stage === "expand" && row.status !== "superseded");
+  if (lastExpand?.status === "failed") return { state: "failed", ledgerId: lastExpand.id, errorRef: lastExpand.error_ref };
+  return { state: "none" };
+}
+
+/** The model's ledger state (read-only for the app role). */
+export async function modelTableChange(db: DbExecutor, modelId: string): Promise<TableChangeState> {
+  const rows = await db.selectFrom("schema_migration_ledger").select(["id", "stage", "status", "error_ref"])
+    .where("content_model_id", "=", modelId).orderBy("created_at", "desc").orderBy("id", "desc").limit(20).execute();
+  return tableChangeState(rows);
+}
+
+/** The ensureModelTable status for a table that is part-way through a change, or null when it is not. */
+export function tableStatusFromChange(change: TableChangeState, table: string): EnsureTableResult | null {
+  if (change.state === "in_progress") return { status: "change_in_progress", table, ledgerId: change.ledgerId, stage: change.stage, stageStatus: change.status };
+  if (change.state === "failed") return { status: "change_failed", table, ledgerId: change.ledgerId, errorRef: change.errorRef };
+  return null;
+}
+
+/** PostgreSQL errors a sync or verify meets when the table changed shape under it (undefined column or table). */
+export function isTableShapeError(error: unknown): boolean {
+  const code = (error as { code?: unknown })?.code;
+  return code === "42703" || code === "42P01";
+}
+
+/** One plain sentence per status for content:move's output. Never values or SQL. */
+export function describeTableStatus(table: EnsureTableResult): string {
+  switch (table.status) {
+    case "exists":
+      return "The model's table is ready.";
+    case "requested":
+      return "The model's table was requested from the schema worker. Run npm run worker:schema, then content:move again (or add --wait).";
+    case "change_in_progress":
+      return table.stageStatus === "running"
+        ? "A schema change to this model is being applied right now. Run content:move again when it finishes (or add --wait)."
+        : "A schema change to this model is waiting for the schema worker. Run npm run worker:schema, then content:move again (or add --wait).";
+    case "change_failed":
+      return "The last schema change to this model failed, so its table does not have the model's fields yet. Retry the change from the model's page, then run content:move again.";
+    case "no_schema_version":
+      return "The model has no saved schema version yet, so there is nothing to build a table from.";
+  }
+}
 
 /**
  * The model's table, or a queued request for the migration worker to create it from the model's
- * current schema version.
+ * current schema version. A table that exists but is part-way through a change is reported as such
+ * (never backfilled: the sync would meet columns that are not there yet).
  */
 export async function ensureModelTable(
   db: DbExecutor,
@@ -109,7 +179,7 @@ export async function ensureModelTable(
 ): Promise<EnsureTableResult> {
   const existing = await db.selectFrom("content_model_tables").select("table_name")
     .where("content_model_id", "=", input.modelId).where("workspace_id", "=", input.workspaceId).executeTakeFirst();
-  if (existing) return { status: "exists", table: existing.table_name };
+  if (existing) return tableStatusFromChange(await modelTableChange(db, input.modelId), existing.table_name) ?? { status: "exists", table: existing.table_name };
   const version = await db.selectFrom("content_model_versions as v")
     .innerJoin("content_models as m", (join) => join.onRef("m.id", "=", "v.content_model_id").onRef("m.current_schema_version", "=", "v.version_number"))
     .select("v.id").where("m.id", "=", input.modelId).where("m.workspace_id", "=", input.workspaceId)
