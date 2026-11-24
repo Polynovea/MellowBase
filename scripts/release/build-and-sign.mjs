@@ -30,6 +30,8 @@
  *   7. verifies everything again with the public key alone, as an installer or upgrade would.
  *
  * syft and cosign run from their images, pinned by digest, so the release machine needs only Docker.
+ * Only the three signing steps (sign, attest, sign-blob) see the private key (that one file, read-only)
+ * and COSIGN_PASSWORD; syft and every verify step see neither.
  * The tool containers use host networking so a registry on this machine's loopback works the same as a
  * remote one.
  *
@@ -115,13 +117,25 @@ const step = (message) => console.log(`\n== ${message}`);
 let dockerConfigDir = null;
 
 /** A tool container: host network, the output folder and the key folder mounted, COSIGN_PASSWORD passed by name only. */
-function tool(image, args, { out, keyDir, capture = false } = {}) {
-  const docker = ["run", "--rm", "--network", "host", "-e", "COSIGN_PASSWORD"];
+/** Where the private key appears inside a signing container (read-only, the one file only). */
+export const KEY_IN_CONTAINER = "/keys/release.key";
+
+/**
+ * The `docker run` arguments for one tool container. Only a signing step (keyFile given) gets the
+ * private key, mounted as that single file read-only, and COSIGN_PASSWORD (passed by name, never its
+ * value on a command line). syft and the verify steps get neither.
+ */
+export function toolArgs(image, args, { out, keyFile, dockerConfig } = {}) {
+  const docker = ["run", "--rm", "--network", "host"];
+  if (keyFile) docker.push("-e", "COSIGN_PASSWORD", "-v", `${keyFile}:${KEY_IN_CONTAINER}:ro`);
   if (out) docker.push("-v", `${out}:/out`);
-  if (keyDir) docker.push("-v", `${keyDir}:/keys:ro`);
-  if (dockerConfigDir) docker.push("-e", "DOCKER_CONFIG=/docker-config", "-v", `${dockerConfigDir}:/docker-config:ro`);
+  if (dockerConfig) docker.push("-e", "DOCKER_CONFIG=/docker-config", "-v", `${dockerConfig}:/docker-config:ro`);
   docker.push(image, ...args);
-  return run("docker", docker, { capture });
+  return docker;
+}
+
+function tool(image, args, { out, keyFile, capture = false } = {}) {
+  return run("docker", toolArgs(image, args, { out, keyFile, dockerConfig: dockerConfigDir }), { capture });
 }
 
 function baseImages() {
@@ -141,8 +155,6 @@ export async function main(argv = process.argv.slice(2)) {
   const keyFile = path.resolve(options.key);
   const pubFile = keyFile.replace(/\.key$/, ".pub");
   if (!existsSync(keyFile) || !existsSync(pubFile) || keyFile === pubFile) throw new Error("The key pair was not found: --key must name <name>.key with <name>.pub beside it.");
-  const keyDir = path.dirname(keyFile);
-  const keyName = path.basename(keyFile);
   const pubName = path.basename(pubFile);
   const revision = run("git", ["rev-parse", "HEAD"], { capture: true });
   const dirty = run("git", ["status", "--porcelain"], { capture: true }) !== "";
@@ -188,11 +200,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   step("4. Sign the image (index and every platform)");
   const tlog = options.tlog ? [] : ["--tlog-upload=false"];
-  tool(TOOLS.cosign, ["sign", "--yes", "--recursive", "--key", `/keys/${keyName}`, ...tlog, ref], { keyDir });
+  tool(TOOLS.cosign, ["sign", "--yes", "--recursive", "--key", KEY_IN_CONTAINER, ...tlog, ref], { keyFile });
 
   step("5. Attach the SBOMs as signed attestations");
   for (const [arch, platformDigest] of Object.entries(platforms)) {
-    tool(TOOLS.cosign, ["attest", "--yes", "--key", `/keys/${keyName}`, "--type", "spdxjson", "--predicate", `/out/${sboms[arch].file}`, ...tlog, `${options.image}@${platformDigest}`], { out, keyDir });
+    tool(TOOLS.cosign, ["attest", "--yes", "--key", KEY_IN_CONTAINER, "--type", "spdxjson", "--predicate", `/out/${sboms[arch].file}`, ...tlog, `${options.image}@${platformDigest}`], { out, keyFile });
   }
 
   step("6. release.json");
@@ -214,7 +226,7 @@ export async function main(argv = process.argv.slice(2)) {
     createdAt: new Date().toISOString(),
   };
   writeFileSync(path.join(out, "release.json"), `${JSON.stringify(release, null, 2)}\n`);
-  tool(TOOLS.cosign, ["sign-blob", "--yes", "--key", `/keys/${keyName}`, ...tlog, "--output-signature", "/out/release.json.sig", "/out/release.json"], { out, keyDir });
+  tool(TOOLS.cosign, ["sign-blob", "--yes", "--key", KEY_IN_CONTAINER, ...tlog, "--output-signature", "/out/release.json.sig", "/out/release.json"], { out, keyFile });
   writeFileSync(path.join(out, "cosign.pub"), readFileSync(pubFile));
 
   step("7. Verify with the public key only");

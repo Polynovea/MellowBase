@@ -36,6 +36,23 @@ describe("release script options", () => {
     expect(() => parseArgs([...base, "--keyless"])).toThrow(/Unknown option/);
   });
 
+  it("gives the signing password and the key file only to signing steps", () => {
+    const toolArgs = release.toolArgs as (image: string, args: string[], opts?: Record<string, string>) => string[];
+    const syft = toolArgs(TOOLS.syft, ["scan", "registry:x"], { out: "/out-dir" });
+    const verify = toolArgs(TOOLS.cosign, ["verify", "--key", "/out/cosign.pub", "x"], { out: "/out-dir" });
+    const sign = toolArgs(TOOLS.cosign, ["sign", "--key", release.KEY_IN_CONTAINER as string, "x"], { keyFile: "/secure/polynovea-release.key" });
+    for (const args of [syft, verify]) {
+      expect(args).not.toContain("COSIGN_PASSWORD");
+      expect(args.join(" ")).not.toMatch(/\.key|\/keys/);
+    }
+    expect(sign).toContain("COSIGN_PASSWORD");
+    // Exactly the key file, read-only; never its folder.
+    expect(sign).toContain(`/secure/polynovea-release.key:${release.KEY_IN_CONTAINER}:ro`);
+    expect(sign.join(" ")).not.toMatch(/\/secure:/);
+    // The password travels by name only, never as a value on the command line.
+    expect(sign.some((arg) => arg.startsWith("COSIGN_PASSWORD="))).toBe(false);
+  });
+
   it("runs syft and cosign from images pinned by digest", () => {
     for (const image of Object.values(TOOLS)) expect(image).toMatch(/@sha256:[0-9a-f]{64}$/);
   });
