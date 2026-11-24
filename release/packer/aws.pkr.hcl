@@ -50,10 +50,11 @@ source "amazon-ebs" "polynovea" {
   imds_support = "v2.0"
 
   launch_block_device_mappings {
-    device_name           = "/dev/sda1"
-    volume_size           = 16
-    volume_type           = "gp3"
-    encrypted             = true
+    device_name = "/dev/sda1"
+    volume_size = 16
+    volume_type = "gp3"
+    # Shareable/public AMIs need an unencrypted snapshot (aws_publishable); launches encrypt at launch.
+    encrypted             = !var.aws_publishable
     delete_on_termination = true
   }
 

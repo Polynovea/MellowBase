@@ -7,7 +7,7 @@ The VM images are Ubuntu 24.04 LTS with Docker and one signed Polynovea CMS rele
 | Base | Canonical Ubuntu 24.04 LTS (`ubuntu-noble-24.04-<arch>-server`, owner 099720108477) | `Canonical:ubuntu-24_04-lts:server` (or `server-arm64`) |
 | Architectures | `amd64`, `arm64` (Graviton, such as t4g) | `amd64`, `arm64` |
 | Instance metadata | **IMDSv2 required** (`imds_support = "v2.0"`, so every instance launched from the AMI requires tokens), hop limit 2 | Azure IMDS already needs a `Metadata: true` header and refuses forwarded requests; there is no switch to turn on |
-| Root disk | 16 GB gp3, encrypted | Platform default |
+| Root disk | 16 GB gp3; encrypted with the account's default key, or unencrypted when built for publishing (`aws_publishable`), then encrypted at launch | Platform default |
 
 ## What is on the image
 
@@ -88,6 +88,33 @@ packer build -only='polynovea-azure.*' -var-file=release.pkrvars.hcl release/pac
 ```
 
 A build launches one small temporary VM in your account for about 10 minutes and stores one image (a few GB of snapshot storage). Packer removes the temporary VM; delete old images yourself.
+
+## Publishing (when the owner decides; not done yet)
+
+The default build is for the building account only. To offer the images to other people's accounts:
+
+**AWS: a public AMI, encrypted at launch.**
+
+- An AMI whose root snapshot is encrypted with the AWS-managed EBS key (`aws/ebs`, the default) can't be shared or made public. Build with `aws_publishable = true`: the snapshot is then unencrypted. It holds no secrets: the CMS keeps everything on the separate data disk, created at launch.
+- Every launch encrypts its volumes: the CloudFormation template sets `Encrypted: true` on the root and data volumes (with the customer's own key if they choose one). Customers can also turn on their account's EBS encryption by default.
+- After the build, in each region:
+  - make the AMI public: `aws ec2 modify-image-attribute --image-id <ami> --launch-permission "Add=[{Group=all}]"`;
+  - remove the account's "block public access for AMIs" setting first, if it is on.
+- Record the AMI IDs per region in the release notes and in the template's region map.
+
+**Azure: an Azure Compute Gallery shared with the community.**
+
+- A managed image can only be used inside its own subscription. Publish through an Azure Compute Gallery instead. Create it once, with community sharing and the publisher details the portal shows to users:
+  - `az sig create --gallery-name <gallery> --resource-group <rg> --permissions community --publisher-uri <url> --publisher-email <email> --eula <url> --public-name-prefix polynovea`
+  - then `az sig share enable-community --gallery-name <gallery> --resource-group <rg>`.
+- Create one image definition per architecture (`az sig image-definition create … --os-type Linux --hyper-v-generation V2 --architecture x64|Arm64`).
+- Build with:
+  - `azure_gallery_name`, `azure_gallery_resource_group`, `azure_gallery_image_name` and `azure_gallery_image_version` (major.minor.patch, e.g. `0.4.0`);
+  - `azure_gallery_regions` for replication.
+  Packer then publishes the image version to the gallery (and still makes the managed image).
+- The template refers to the community gallery image by its public name: `/CommunityGalleries/<public name>/Images/<definition>/Versions/<version>`.
+
+Making either public is a publishing decision for the project lead (Subrojit). Until then, builds stay private to the building account or subscription.
 
 ## Checking the definitions without a cloud account
 

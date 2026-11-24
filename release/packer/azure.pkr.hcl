@@ -25,6 +25,18 @@ source "azure-arm" "polynovea" {
   managed_image_name                = "${local.image_name}-{{timestamp}}"
   managed_image_resource_group_name = var.azure_resource_group
 
+  dynamic "shared_image_gallery_destination" {
+    for_each = var.azure_gallery_name == "" ? [] : [var.azure_gallery_name]
+    content {
+      subscription        = var.azure_subscription_id
+      resource_group      = var.azure_gallery_resource_group
+      gallery_name        = shared_image_gallery_destination.value
+      image_name          = var.azure_gallery_image_name
+      image_version       = var.azure_gallery_image_version
+      replication_regions = distinct(concat([var.azure_location], var.azure_gallery_regions))
+    }
+  }
+
   azure_tags = {
     "polynovea-release-id" = var.release_id
     "polynovea-image-ref"  = var.image_ref

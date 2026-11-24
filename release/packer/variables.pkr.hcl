@@ -51,6 +51,12 @@ variable "aws_instance_type" {
   description = "Build instance type. Empty picks t3.small (amd64) or t4g.small (arm64)."
 }
 
+variable "aws_publishable" {
+  type        = bool
+  default     = false
+  description = "true: build the AMI with an unencrypted root snapshot, so it can be shared or made public (an AMI whose snapshot uses the AWS-managed EBS key cannot be). Instances launched from it must encrypt their volumes at launch (the templates set Encrypted: true). false: encrypted with the account's default key, for private use in this account only."
+}
+
 variable "aws_ami_regions" {
   type        = list(string)
   default     = []
@@ -74,6 +80,42 @@ variable "azure_resource_group" {
   type        = string
   default     = "polynovea-images"
   description = "Existing resource group that receives the managed image."
+}
+
+# Optional Azure Compute Gallery destination, for publishing (a managed image alone cannot leave its
+# subscription). The gallery and its image definition must exist; community sharing is a property of
+# the gallery, set when it is created (docs/self-hosting/vm-images.md, "Publishing").
+variable "azure_gallery_name" {
+  type        = string
+  default     = ""
+  description = "Gallery to publish an image version into. Empty: managed image only."
+}
+
+variable "azure_gallery_resource_group" {
+  type    = string
+  default = ""
+}
+
+variable "azure_gallery_image_name" {
+  type        = string
+  default     = "polynovea-cms"
+  description = "The gallery image definition (one per architecture, e.g. polynovea-cms-arm64)."
+}
+
+variable "azure_gallery_image_version" {
+  type        = string
+  default     = ""
+  description = "Gallery image version, major.minor.patch (e.g. 0.4.0)."
+  validation {
+    condition     = var.azure_gallery_image_version == "" || can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.azure_gallery_image_version))
+    error_message = "The azure_gallery_image_version must be major.minor.patch."
+  }
+}
+
+variable "azure_gallery_regions" {
+  type        = list(string)
+  default     = []
+  description = "Regions to replicate the gallery image version to (the build location is always included)."
 }
 
 variable "azure_vm_size" {
