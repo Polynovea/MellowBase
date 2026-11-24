@@ -289,7 +289,7 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(self.ref(), REF_B)
         calls = self.calls()
         self.assertIn(f"pull -q {REF_B}", calls)
-        self.assertIn(f"--entrypoint polynovea-cms {REF_B} system migrate", calls)
+        self.assertIn(f"--entrypoint node -w /app {REF_B} scripts/polynovea-cms.mjs system migrate", calls)
         self.assertLess(calls.index("system backup"), calls.index("system migrate"))
         self.assertLess(calls.index("system migrate"), calls.index("restart polynovea"))
         state = json.loads(read(os.path.join(self.status, "state.json")))
@@ -317,7 +317,7 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(status["rollback"], "restore")
         self.assertEqual(status["status"], "rolled_back")
         calls = self.calls()
-        self.assertIn(f"--entrypoint polynovea-cms {REF_A} system restore-backup --set 20261124-010101F_20261124-020202I", calls)
+        self.assertIn(f"--entrypoint node -w /app {REF_A} scripts/polynovea-cms.mjs system restore-backup --set 20261124-010101F_20261124-020202I", calls)
         self.assertLess(calls.index("stop polynovea"), calls.index("restore-backup"))
         self.assertEqual(self.ref(), REF_A)
 
