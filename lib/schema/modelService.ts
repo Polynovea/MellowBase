@@ -235,7 +235,13 @@ export async function applyChange(params: {
 
   const { diff, proposedSchema, currentVersion } = proposed.data;
 
-  if (diff.entries.length === 0) {
+  // The diff lists changes that matter to stored data. A schema can still differ in what people see
+  // (a field's label, help text, default, order; the model's name or description): that is saved as a
+  // new version with no database change. Only an identical schema is "no changes" (it used to be any
+  // schema without a data-relevant change, so renaming a field's label could never be saved).
+  // Both normalised the same way (defaults filled in), so a stored older form never looks like a change.
+  const current = validateCanonicalSchema(currentVersion.schema_json).schema ?? currentVersion.schema_json;
+  if (diff.entries.length === 0 && computeSchemaHash(proposedSchema) === computeSchemaHash(current)) {
     return {
       ok: true,
       data: {

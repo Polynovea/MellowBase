@@ -23,6 +23,8 @@ misleads them or says nothing), **polish** (looks or reads worse than it should;
 
 | B4 | Every admin screen | **Busy pages signed people out.** The browser re-checked the session before nearly every API call; the server allows 100 session checks a minute per network address; and any error in that check signed the person out for good. The run lost its session on Setup & Infrastructure, and every later screen showed the sign-in page. A team behind one office connection shares that limit. | infrastructure-1440-light.jpg | Reuse a session check for 10 seconds (cleared on any sign-in, sign-out or step-up); on a failed check, retry (1, 3, 8 s) and then say what happened, never sign out. Server limit left as is (see note below). | Fixed in `lib/auth/builtinClient.ts`, `lib/admin/useAdminAccess.ts`; the audit and sign-out runs cover it |
 
+| B5 | Site Tree & Routes, entry editor, release detail | **Nothing could be published or released on a fresh install.** Publishing and releases require the entry's own address (an active canonical route; the Assurance policy turns this on by default), but the Register Route form had no way to choose the entry, although the server accepts one. The readiness panels said "Assign an active canonical route" with no way to do it. | release-detail-1440-light.jpg | An **Entry** picker in Register Route (required for "Routable Entry"); each "no canonical route" finding links to the form with the entry already chosen. | Fixed; `12-entries` and `13-releases` follow the link, add the route and then publish and release |
+
 Note on B4 for the coordinator: `/api/auth/get-session` falls under Better Auth's default 100 requests a
 minute per address (`lib/auth/betterAuth/server.ts`). With the client fix one page makes a handful of
 checks, but an office of 20 behind one address could still reach it. Raising that one route's limit
@@ -49,6 +51,7 @@ to the auth owner.
 | C14 | Localization | With no locales the page showed an empty area; the locale-code box had no label. | localization-1440-light.jpg | An empty state that says what to do; a label and hint on the box. | Fixed; `14-translate` checks the empty state |
 | C15 | Media details | "Where Used Impact Graph (1 references)"; the details panel was not a dialog. | media-details-1440-light.jpg | "Used in 1 entry" / "Not used yet"; dialog semantics (see B2). | Fixed; `12-entries` checks "Used in 1 entry" |
 | C17 | Setup wizard | When the database is already configured (server settings, or a wizard resumed after its database step), the setup code still led to "Choose the database", offering choices that no longer apply. | wizard-2-owner-details-1440-light.jpg | Go straight to the owner step; if the database page is opened anyway, say the database is ready and link on. | Fixed; unit test in app/api/setup/code/route.test.ts, and `01-wizard` expects the owner step next |
+| C18 | Model editor | Typing a new field's label lost focus after one letter: each row was keyed by its field key, which follows the label, so every keystroke rebuilt the row. | model-editor-1440-light.jpg | Key the rows by position. | Fixed; `10-models` types the label key by key |
 | C16 | Entry editor (workflow), release detail, records list | Unlabelled boxes: the reviewer note, the release decision note and assignment fields, the records search, filters and row checkboxes. | entries-1440-light.jpg | Labels on each. | Fixed |
 
 ### Sign-in wording changed (C10) — Payal to confirm
@@ -69,6 +72,8 @@ to the auth owner.
 | A3 | Blog, Metrics, Delivery Ops, Redirects, Developer | Tables and code blocks that scroll sideways could not be reached by keyboard (axe "serious"). | delivery-ops-390-light.jpg | They take focus (Tab), with a name for screen readers. | Fixed |
 | A4 | Content Intelligence, Delivery Ops, Operational Intelligence, Site Tree & Routes, Import | Unnamed dropdowns, an icon-only "save search" button and an icon-only back link (axe "critical"/"serious"). | content-intelligence-1440-light.jpg | Names on each. | Fixed |
 | A5 | Developer | At 390 px the page scrolled sideways: the long curl line and the OpenAPI text widened the columns. | developer-390-light.jpg | The columns may shrink; the code blocks scroll inside themselves. | Fixed |
+| A7 | Entry editor | Image and rich-text fields were wrapped in one label, so the first image button was named after the field ("Hero image media") instead of the image, and later controls had no name. | entry-new-1440-light.jpg | Named groups instead of labels; each rich-text box has its own name. | Fixed; `12-entries` picks the image by its name |
+| A8 | Access | The members table scrolls sideways at 390 px but could not be reached by keyboard. | access-390-light.jpg | It takes focus, with a name. | Fixed |
 | A6 | Model editor | The tab title fell back to "Polynovea Admin" after "Create model" (Next.js re-applies the layout's title on some navigations). | model-editor-1440-light.jpg | The screen's title is put back whenever it is changed. | Fixed |
 
 Moderate and minor axe findings (not gated, listed in [automated-checks.md](automated-checks.md)): content
@@ -86,3 +91,6 @@ level, an empty table header. They become polish rows below once the last run co
 | P5 | Confirm dialogs | The busy label always says "Deleting…", also when revoking a token. | Let each dialog set its busy label. |
 | P6 | Model editor | The Visual / Advanced / Migration / API switcher is plain buttons, not tabs. | Tab semantics (role="tablist", arrow keys). |
 | P7 | Calendar | A failed load's error stays on screen after a later load works. | Clear the error when a load succeeds. |
+| P8 | Site Tree & Routes | The locale dropdown is a fixed list (en, fr, es, de), not the workspace's locales. | List the locales from Localization. |
+| P9 | Release detail | Pinned versions show "entry:cc860647", not the entry's title. | Show the title, with the short ID under it (as the new-release picker now does). |
+| P10 | Setup wizard | At 390 px the SSH command in the address note runs to the box's edge. | Let it wrap, or scroll inside its own box. |

@@ -53,6 +53,7 @@ export default function RoutesPage() {
   // canonical route" of that entry. The form had no way to choose one, so that check could never pass.
   const [entries, setEntries] = useState<EntryChoice[]>([]);
   const [newEntryId, setNewEntryId] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
   const createRef = useRef<HTMLDivElement>(null);
   useDialogKeyboard(createRef, showCreateModal, () => setShowCreateModal(false));
 
@@ -136,6 +137,7 @@ export default function RoutesPage() {
 
   async function handleCreateRoute(e: React.FormEvent) {
     e.preventDefault();
+    setFormError(null);
     try {
       const res = await fetch("/api/routes", {
         method: "POST",
@@ -159,10 +161,10 @@ export default function RoutesPage() {
         setNewEntryId("");
         loadTree();
       } else {
-        setError(json.error);
+        setFormError(json.error);
       }
     } catch (e: any) {
-      setError(e.message);
+      setFormError(e.message);
     }
   }
 
@@ -388,6 +390,7 @@ export default function RoutesPage() {
                     <p id="route-entry-hint" className="mt-1 text-xs text-fg-muted">This becomes the entry&apos;s main (canonical) address, which publishing and releases need.</p>
                   </div>
                 )}
+                {formError && <p role="alert" className="ui-alert ui-alert-danger">{formError}</p>}
                 <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"

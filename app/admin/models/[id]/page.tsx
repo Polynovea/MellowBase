@@ -141,7 +141,10 @@ export default function ModelEditorPage() {
   if (!model || !schema) return <AdminLayout><div className="rounded-xl border border-danger bg-danger-muted p-5 text-danger">{error || "Model schema unavailable"}</div></AdminLayout>;
 
   const unsafe = diff && diff.overallClassification !== "SAFE";
-  const noChanges = diff?.entries.length === 0;
+  // Labels, help text, defaults and order are not in the diff (it lists what matters to stored data),
+  // but they are still a change worth saving as a new version.
+  const presentationChanged = Boolean(versions[0]) && JSON.stringify(schema) !== JSON.stringify(versions[0].schema_json);
+  const noChanges = diff?.entries.length === 0 && !presentationChanged;
   // Self-relations (e.g. Category -> parent Category) are valid — the schema/validation layer
   // already supports a relation field targeting the model it lives on, so the current model
   // belongs in its own target list, not just every OTHER model.
@@ -228,7 +231,7 @@ export default function ModelEditorPage() {
                   <div className="flex gap-3">{unsafe ? <AlertTriangle className="text-warning" size={20} /> : <Check className="text-success" size={20} />}<div><h2 className="font-bold">{diff.overallClassification.replaceAll("_", " ")}</h2><p className="mt-1 text-xs text-fg-muted">Server-validated migration preview. Nothing has been applied yet.</p></div></div>
                   <div className="flex flex-wrap gap-2">{unsafe&&environments.find(e=>e.id===environmentId)?.kind==="production"&&<button type="button" disabled={busy} onClick={()=>void requestSchemaApproval()} className="rounded-lg border border-warning px-3 py-2.5 text-xs font-bold uppercase tracking-wider text-warning">Request approval</button>}<button type="button" disabled={busy || noChanges} onClick={() => void apply(Boolean(unsafe))} className={`rounded-lg px-4 py-2.5 text-xs font-bold uppercase tracking-wider disabled:cursor-not-allowed disabled:opacity-50 ${unsafe ? "bg-warning-muted text-warning" : "bg-success-muted text-success"}`}>{noChanges ? "No changes to apply" : unsafe ? "Acknowledge & apply" : "Apply safe change"}</button></div>
                 </div>
-                {deploymentPlan?.rollbackGuidance&&<p className="mt-3 rounded-lg border border-subtle bg-field p-3 text-xs text-fg-muted"><strong className="text-fg-secondary">Rollback guidance:</strong> {deploymentPlan.rollbackGuidance}</p>}<div className="mt-4 space-y-2">{diff.entries.length === 0 ? <p className="text-sm text-fg-muted">No schema changes detected.</p> : diff.entries.map((entry, index) => <div key={`${entry.fieldKey}-${index}`} className="flex items-center justify-between gap-4 rounded-lg border border-subtle bg-field px-3 py-2 text-xs"><span className="font-mono text-fg-secondary">{entry.fieldKey}</span><span className="text-right text-fg-muted">{entry.reason || entry.summary}</span></div>)}</div>
+                {deploymentPlan?.rollbackGuidance&&<p className="mt-3 rounded-lg border border-subtle bg-field p-3 text-xs text-fg-muted"><strong className="text-fg-secondary">Rollback guidance:</strong> {deploymentPlan.rollbackGuidance}</p>}<div className="mt-4 space-y-2">{diff.entries.length === 0 ? <p className="text-sm text-fg-muted">{presentationChanged ? "Only names, help text, defaults or order changed. Applying saves a new version; the database does not change." : "No schema changes detected."}</p> : diff.entries.map((entry, index) => <div key={`${entry.fieldKey}-${index}`} className="flex items-center justify-between gap-4 rounded-lg border border-subtle bg-field px-3 py-2 text-xs"><span className="font-mono text-fg-secondary">{entry.fieldKey}</span><span className="text-right text-fg-muted">{entry.reason || entry.summary}</span></div>)}</div>
               </div>
             )}
           </section>
