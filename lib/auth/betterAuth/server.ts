@@ -29,6 +29,7 @@ import { passkey } from "@better-auth/passkey";
 import { sql, type Kysely } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import { AuthDateColumnsPlugin } from "@/lib/auth/betterAuth/dateColumns";
+import type { ClientAddressMode } from "@/lib/auth/settings";
 import { hashPassword, needsRehash, verifyPassword } from "@/lib/auth/betterAuth/passwordHash";
 import { createRateLimitLeaseStore, createSerialGate, holdForRequest, runSerialScope, SerialGateBusyError, SERIAL_VERIFICATION_PATHS, serialVerificationKey } from "@/lib/auth/betterAuth/serialVerification";
 import { assertAcceptablePassword, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH_WITH_MFA, PasswordPolicyError, type PwnedRangeFetch } from "@/lib/auth/passwordPolicy";
@@ -59,6 +60,11 @@ export interface PolynoveaAuthSettings {
    * X-Forwarded-For is walked right to left past these; the first other address is the client.
    */
   trustedProxies?: string[];
+  /**
+   * "tunnel": never read a client-supplied address header (settings.ts clientAddressMode): every
+   * sign-in shares one rate-limit bucket and no client address is recorded. Default "proxied".
+   */
+  clientAddressMode?: ClientAddressMode;
   /** Rate limiting is on unless a test switches it off. */
   rateLimit?: boolean;
   /** Called after a user row is created (managed provisioning). */
@@ -73,6 +79,19 @@ type HookUser = { id: string; email?: string | null; twoFactorEnabled?: boolean 
 
 function accountThrottleKey(email: string): string {
   return `account:${createHash("sha256").update(email.trim().toLowerCase()).digest("hex")}:/sign-in/email`;
+}
+
+/**
+ * Where the built-in auth reads a client's address. In tunnel mode no header at all: Better Auth then
+ * finds no address, keeps one shared bucket per path for its rate limits, and records none.
+ */
+export function clientAddressOptions(settings: Pick<PolynoveaAuthSettings, "trustedProxies" | "clientAddressMode">) {
+  if (settings.clientAddressMode === "tunnel") return { ipAddressHeaders: [] as string[], ipv6Subnet: 64 as const };
+  return {
+    ipAddressHeaders: ["x-forwarded-for"],
+    ipv6Subnet: 64 as const,
+    ...(settings.trustedProxies?.length ? { trustedProxies: settings.trustedProxies } : {}),
+  };
 }
 
 export function createPolynoveaAuth(settings: PolynoveaAuthSettings) {
@@ -141,11 +160,7 @@ export function createPolynoveaAuth(settings: PolynoveaAuthSettings) {
       // The __Host- prefix is in the name already; never add __Secure- in front of it.
       useSecureCookies: false,
       defaultCookieAttributes: { secure: true, httpOnly: true, sameSite: "lax", path: "/" },
-      ipAddress: {
-        ipAddressHeaders: ["x-forwarded-for"],
-        ipv6Subnet: 64,
-        ...(settings.trustedProxies?.length ? { trustedProxies: settings.trustedProxies } : {}),
-      },
+      ipAddress: clientAddressOptions(settings),
     },
     databaseHooks: {
       user: {
