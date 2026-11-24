@@ -119,6 +119,7 @@ class AgentTest(unittest.TestCase):
             "POLYNOVEA_UPGRADE_STATUS_DIR": self.status,
             "POLYNOVEA_UPGRADE_CMS_UID": str(os.getuid()),
             "POLYNOVEA_UPGRADE_ENV_FILE": os.path.join(self.root, "etc", "polynovea.env"),
+            "POLYNOVEA_UPGRADE_IMAGE_FILE": os.path.join(self.root, "etc", "image.env"),
             "POLYNOVEA_UPGRADE_PUBKEY": os.path.join(self.root, "etc", "release.pub"),
             "POLYNOVEA_UPGRADE_CHANNEL_URL": f"http://127.0.0.1:{port}/",
             "POLYNOVEA_UPGRADE_ALLOW_HTTP_CHANNEL": "1",
@@ -373,6 +374,19 @@ class AgentTest(unittest.TestCase):
     def test_health_url_is_loopback_http_only(self):
         self.assertIsNone(agent.health({**agent.DEFAULTS, "HEALTH_URL": "file:///etc/shadow"}))
         self.assertIsNone(agent.health({**agent.DEFAULTS, "HEALTH_URL": "http://169.254.169.254/latest"}))
+
+    def test_image_env_pin_is_used_until_polynovea_env_has_one(self):
+        self.write("etc/polynovea.env", "POLYNOVEA_DOMAIN=\n")
+        self.write("etc/image.env", f"POLYNOVEA_IMAGE_REF={REF_A}\n")
+        self.request()
+        self.assertEqual(self.run_agent(), 0)
+        self.assertEqual(self.ref(), REF_B)  # the new pin goes to polynovea.env, which wins
+        self.assertIn(f"POLYNOVEA_IMAGE_REF={REF_A}", read(os.path.join(self.root, "etc", "image.env")))
+
+    def test_mark_writes_the_agent_marker(self):
+        self.assertEqual(agent.main(["--mark"]), 0)
+        marker = json.loads(read(os.path.join(self.status, "agent.json")))
+        self.assertEqual(marker["runtime"], "systemd")
 
     def test_https_only_channel(self):
         self.assertFalse(agent._channel_url_ok("http://releases.example.com/x", False))

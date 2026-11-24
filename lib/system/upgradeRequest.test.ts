@@ -37,6 +37,7 @@ const check = (overrides: Partial<ChannelCheck["latest"] & object> = {}, extra: 
 beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), "upgrade-request-"));
   mkdirSync(path.join(root, "status"));
+  writeFileSync(path.join(root, "status", "agent.json"), "{}");
   env = { POLYNOVEA_UPGRADE_REQUEST_DIR: path.join(root, "data", "upgrade-requests"), POLYNOVEA_UPGRADE_STATUS_DIR: path.join(root, "status") };
   data.open = null;
   data.requested = [];
@@ -61,6 +62,8 @@ describe("startUpgrade", () => {
   });
 
   it("refuses without an agent, without a newer verified release, or when the channel moved", async () => {
+    mkdirSync(path.join(root, "empty-status"));
+    await expect(startUpgrade({ actorId: "a", releaseId: "0.4.1+bbbbbbb" }, { ...env, POLYNOVEA_UPGRADE_STATUS_DIR: path.join(root, "empty-status") }, check())).rejects.toMatchObject({ status: 409 });
     await expect(startUpgrade({ actorId: "a", releaseId: "0.4.1+bbbbbbb" }, { ...env, POLYNOVEA_UPGRADE_STATUS_DIR: path.join(root, "missing") }, check())).rejects.toMatchObject({ status: 409 });
     await expect(startUpgrade({ actorId: "a", releaseId: "0.4.1+bbbbbbb" }, env, check({}, { upgradeAvailable: false }))).rejects.toThrow(/No newer signed release/);
     await expect(startUpgrade({ actorId: "a", releaseId: "0.4.1+bbbbbbb" }, env, check({}, { latest: null, error: "release.json's signature does not verify" }))).rejects.toThrow(/signature/);
