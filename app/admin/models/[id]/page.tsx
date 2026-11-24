@@ -9,10 +9,11 @@ import CapabilitySelector from "@/components/admin/schema/CapabilitySelector";
 import FieldEditor, { toFieldKey } from "@/components/admin/schema/FieldEditor";
 import PermissionPolicyEditor from "@/components/admin/schema/PermissionPolicyEditor";
 import ApiContractView from "@/components/admin/schema/ApiContractView";
+import SchemaChangeStatus, { type SchemaChangeView } from "@/components/admin/schema/SchemaChangeStatus";
 import { AlertTriangle, ArrowLeft, Check, Clock3, Plus, RefreshCw, Save } from "lucide-react";
 import { resolveModelCapability, stripDisallowedPermissions, type CanonicalSchema, type FieldDefinition, type ModelCapability, type ModelPermissionPolicy } from "@/lib/schema/fields/types";
 
-interface Model { id: string; name: string; api_key: string; description: string | null; status: string; current_schema_version: number }
+interface Model { id: string; name: string; api_key: string; description: string | null; status: string; current_schema_version: number; schemaChanges?: SchemaChangeView[] }
 interface Version { id: string; version_number: number; schema_json: CanonicalSchema; change_summary: string | null; created_at: string }
 interface DiffEntry { fieldKey: string; kind: string; classification: string; summary?: string; reason?: string }
 interface SchemaDiff { overallClassification: string; entries: DiffEntry[] }
@@ -132,7 +133,7 @@ export default function ModelEditorPage() {
           <div className="flex items-center gap-4"><Link href="/admin/models" className="rounded-lg border border-subtle p-2 text-fg-muted hover:text-fg-primary"><ArrowLeft size={17} /></Link><div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-action">Schema studio / {model.api_key}</p><h1 className="mt-1 text-3xl font-extrabold">{schema.name}</h1></div></div>
           <div className="flex items-center gap-2"><span className="rounded-full border border-success bg-success-muted px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-success">v{model.current_schema_version} active</span><button disabled={busy} className="inline-flex items-center gap-2 rounded-lg ui-btn ui-btn-primary disabled:opacity-50"><Save size={14} /> Review changes</button></div>
         </header>
-        {error && <div className="rounded-xl border border-danger bg-danger-muted px-4 py-3 text-sm text-danger">{error}</div>}{notice&&<div className="rounded-xl border border-success bg-success-muted px-4 py-3 text-sm text-success">{notice}</div>}
+        <SchemaChangeStatus modelId={model.id} apiKey={model.api_key} changes={model.schemaChanges ?? []} onChanged={() => { void load(); }} />{error && <div className="rounded-xl border border-danger bg-danger-muted px-4 py-3 text-sm text-danger">{error}</div>}{notice&&<div className="rounded-xl border border-success bg-success-muted px-4 py-3 text-sm text-success">{notice}</div>}
 
         <nav className="flex gap-1 border-b border-subtle">
           {TABS.map((t) => (
