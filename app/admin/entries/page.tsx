@@ -231,9 +231,10 @@ export default function EntriesPage() {
         <section className="ui-section"><div className="flex flex-wrap items-center gap-3">
           <div className="relative">
             <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-muted" />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search records…" className="w-64 rounded-lg border border-default bg-field py-2.5 pl-9 pr-3 text-sm text-fg-primary outline-none focus:border-action/50" />
+            <input type="search" aria-label="Search records" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search records…" className="w-64 rounded-lg border border-default bg-field py-2.5 pl-9 pr-3 text-sm text-fg-primary outline-none focus:border-action/50" />
           </div>
           <select
+            aria-label="Model"
             value={modelFilter}
             onChange={(e) => setModelFilter(e.target.value)}
             className="rounded-lg border border-default bg-field px-3 py-2.5 text-sm text-fg-secondary outline-none"
@@ -241,11 +242,11 @@ export default function EntriesPage() {
             <option value="">All models</option>
             {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-default bg-field px-3 py-2.5 text-sm text-fg-secondary outline-none">
+          <select aria-label="Status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-default bg-field px-3 py-2.5 text-sm text-fg-secondary outline-none">
             <option value="">All statuses</option>
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
-          <select value={sort} onChange={(e) => setSort(e.target.value as "updated_desc" | "updated_asc")} className="rounded-lg border border-default bg-field px-3 py-2.5 text-sm text-fg-secondary outline-none">
+          <select aria-label="Sort order" value={sort} onChange={(e) => setSort(e.target.value as "updated_desc" | "updated_asc")} className="rounded-lg border border-default bg-field px-3 py-2.5 text-sm text-fg-secondary outline-none">
             <option value="updated_desc">Newest first</option><option value="updated_asc">Oldest first</option>
           </select>
           {modelFilter && <button type="button" disabled={busy} onClick={() => void exportModel()} className="ui-btn ui-btn-secondary disabled:opacity-50"><Download size={14} /> Export model</button>}
@@ -254,7 +255,7 @@ export default function EntriesPage() {
         <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-subtle pt-4">
           <Bookmark size={14} className="text-action" /><span className="mr-1 text-[10px] font-bold uppercase tracking-wider text-fg-muted">Saved views</span>
           {savedViews.map((view) => <span key={view.id} className="inline-flex items-center rounded-lg border border-subtle bg-field"><button type="button" onClick={() => applyView(view)} className="px-2.5 py-1.5 text-xs text-fg-secondary hover:text-action">{view.name}</button><button type="button" disabled={busy} aria-label={`Delete ${view.name}`} onClick={() => void deleteView(view.id)} className="border-l border-subtle px-1.5 py-1.5 text-fg-muted hover:text-danger"><Trash2 size={12} /></button></span>)}
-          <input value={viewName} onChange={(e) => setViewName(e.target.value)} maxLength={120} placeholder="Name current view" className="ml-auto min-w-40 rounded-lg px-3 py-2 text-xs" />
+          <input aria-label="Name for this view" value={viewName} onChange={(e) => setViewName(e.target.value)} maxLength={120} placeholder="Name current view" className="ml-auto min-w-40 rounded-lg px-3 py-2 text-xs" />
           <button type="button" disabled={busy || !viewName.trim()} onClick={() => void saveView()} className="ui-btn ui-btn-tertiary disabled:opacity-50">Save view</button>
         </div>
         </section>
@@ -284,13 +285,13 @@ export default function EntriesPage() {
         ) : (
           <div className="overflow-x-auto border-y border-subtle">
             <div className="grid min-w-[760px] grid-cols-[28px_minmax(0,1fr)_140px_130px_140px] gap-4 border-b border-default px-3 py-3 text-[11px] font-medium text-fg-muted">
-              <input type="checkbox" checked={selected.size > 0 && selected.size === docs.length} onChange={toggleAll} className="accent-primary" />
+              <input type="checkbox" aria-label="Select all records shown" checked={selected.size > 0 && selected.size === docs.length} onChange={toggleAll} className="accent-primary" />
               <span>Record</span><span>Model</span><span>State</span><span>Last change</span>
             </div>
             {docs.map((doc) => {
               return (
                 <div key={doc.entry_id} className="grid min-w-[760px] grid-cols-[28px_minmax(0,1fr)_140px_130px_140px] items-center gap-4 border-b border-subtle px-3 py-3 last:border-0 hover:bg-surface-2">
-                  <input type="checkbox" checked={selected.has(doc.entry_id)} onChange={() => toggle(doc.entry_id)} className="accent-primary" />
+                  <input type="checkbox" aria-label={`Select ${doc.search_text?.slice(0, 60) || doc.entry_id.slice(0, 8)}`} checked={selected.has(doc.entry_id)} onChange={() => toggle(doc.entry_id)} className="accent-primary" />
                   <Link href={`/admin/entries/${doc.entry_id}`} className="block truncate no-underline"><span className="block font-mono text-xs text-action">{doc.entry_id.slice(0, 8)}</span><span className="mt-1 block truncate text-sm text-fg-secondary">{doc.search_text?.slice(0, 80) || "(no preview text)"}</span></Link>
                   <span className="truncate text-sm text-fg-secondary">{modelName(doc, models)}</span>
                   <span className={doc.status === "published" ? "text-xs font-bold text-success" : doc.status === "archived" ? "text-xs font-bold text-fg-muted" : "text-xs font-bold text-warning"}>{doc.status}</span>

@@ -54,7 +54,7 @@ export default function ImportEntriesPage() {
     <AdminLayout>
       <div className="mx-auto flex max-w-4xl flex-col gap-6">
         <header className="flex items-center gap-4 border-b border-subtle pb-5">
-          <Link href="/admin/entries" className="rounded-lg border border-subtle p-2 text-fg-muted"><ArrowLeft size={17} /></Link>
+          <Link href="/admin/entries" aria-label="Back to records" className="rounded-lg border border-subtle p-2 text-fg-muted"><ArrowLeft size={17} aria-hidden /></Link>
           <div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-action">Data studio / Import</p><h1 className="mt-1 text-3xl font-extrabold">IMPORT RECORDS</h1></div>
         </header>
         <p className="text-sm text-fg-muted">Paste a JSON array of row objects keyed by field name. Every row runs through the same validation, uniqueness, and relation checks a manual save would — dry run first to review errors, then commit.</p>
