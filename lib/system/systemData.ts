@@ -136,7 +136,10 @@ export async function requestUpgrade(input: {
 export async function recordUpgradeProgress(input: { requestId: string; status: Exclude<UpgradeStatus, "requested">; steps: UpgradeStep[]; toDigest: string | null }): Promise<boolean> {
   if (!UUID.test(input.requestId)) return false;
   return withTransaction(async (trx) => {
-    const existing = await trx.selectFrom("system_upgrades").select(["steps_json", "status", "requested_by"]).where("request_id", "=", input.requestId).forUpdate().executeTakeFirst();
+    // The app may only read system_upgrades (no FOR UPDATE), so two CMS processes reading the same status
+    // file serialise on a transaction lock instead; the second then sees the steps already recorded.
+    await sql`select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('polynovea_system_upgrade_record'))`.execute(trx);
+    const existing = await trx.selectFrom("system_upgrades").select(["steps_json", "status", "requested_by"]).where("request_id", "=", input.requestId).executeTakeFirst();
     if (!existing) return false;
     const before = parsed<UpgradeStep[]>(existing.steps_json, []);
     const { rows } = await sql<{ ok: boolean }>`select public.polynovea_system_upgrade_record(

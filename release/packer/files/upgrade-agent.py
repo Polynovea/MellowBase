@@ -215,7 +215,8 @@ class StatusDir:
         info = os.fstat(self.fd)
         if info.st_uid != os.geteuid() or info.st_mode & 0o022:
             raise SystemExit(f"upgrade-agent: {path} must be owned by root and not group/other-writable")
-        os.fchmod(self.fd, 0o755)
+        # The CMS must read status.json through its read-only mount; nobody but root can write here.
+        os.fchmod(self.fd, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
 
     def read_json(self, name: str) -> dict | None:
         try:
@@ -436,7 +437,8 @@ def fetch_and_verify_release(config: dict, release_id: str, status: Status) -> d
     release_bytes = fetch(child_url(base, pointer.get("release")), MAX_RELEASE_BYTES, allow_http)
     signature = fetch(child_url(base, pointer.get("signature")), MAX_SIG_BYTES, allow_http)
     with tempfile.TemporaryDirectory(prefix="polynovea-release-") as work:
-        os.chmod(work, 0o755)
+        # Read-only bind mount into the cosign container (another uid): signed public files only.
+        os.chmod(work, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
         with open(os.path.join(work, "release.json"), "wb") as handle:
             handle.write(release_bytes)
         with open(os.path.join(work, "release.json.sig"), "wb") as handle:
@@ -477,11 +479,17 @@ def fetch_and_verify_release(config: dict, release_id: str, status: Status) -> d
 
 
 def health(config: dict) -> dict | None:
+    url = config["HEALTH_URL"]
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+        log("HEALTH_URL must be http(s) on this machine's loopback")
+        return None
     context = None
-    if config["HEALTH_URL"].startswith("https://"):
+    if parts.scheme == "https":
         context = ssl.create_default_context(cafile=config["HEALTH_CA_FILE"] or None)
     try:
-        with urllib.request.urlopen(config["HEALTH_URL"], timeout=5, context=context) as response:
+        # Scheme and host checked above: http(s) on loopback only.
+        with urllib.request.urlopen(url, timeout=5, context=context) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             value = json.loads(response.read(4096))
             return value if isinstance(value, dict) else None
     except (urllib.error.URLError, OSError, ValueError):
