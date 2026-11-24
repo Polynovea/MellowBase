@@ -30,7 +30,7 @@ function fakeHost(overrides: Partial<RestoreHost> & { freeBytes?: number; restor
     remove: async (dir) => void removed.push(dir),
     queryRestored: async (_socket, port, sql) => {
       calls.push(`restored:${port}`);
-      return sql.includes("ledger") && !sql.includes("count") ? overrides.restoredLedger ?? LEDGER : [{ n: overrides.restoredCounts ?? 5 }];
+      return sql.includes("ledger") && !sql.includes("count") ? overrides.restoredLedger ?? LEDGER : [{ n: overrides.restoredCounts ?? 7 }];
     },
     queryLive: async (sql) => (sql.includes("ledger") && !sql.includes("count") ? LEDGER : [{ n: 7 }]),
     ...overrides,
@@ -47,7 +47,7 @@ describe("restore test", () => {
     const { host, calls, removed } = fakeHost();
     const result = await run(host);
     expect(result).toMatchObject({ status: "passed", backupLabel: "20261124-020000F", errorCode: null });
-    expect(result.checks).toMatchObject({ ledger: { restored: 2, live: 2, notLive: 0, missingBeforeBackup: 0 }, rowCounts: { workspaces: { restored: 5, live: 7 } } });
+    expect(result.checks).toMatchObject({ ledger: { restored: 2, live: 2, notLive: 0, missingBeforeBackup: 0 }, rowCounts: { workspaces: { restored: 7, live: 7, liveBeforeBackup: 7 } } });
     const restore = calls.find((line) => line.includes(" restore"))!;
     expect(restore).toContain("--set=20261124-020000F");
     expect(restore).toContain("--archive-mode=off");
@@ -67,9 +67,24 @@ describe("restore test", () => {
     expect(removed).toEqual([`/var/lib/polynovea/restore-test/${ID}`]);
   });
 
-  it("fails when the restored ledger is missing a migration applied before the backup, or tables are empty", async () => {
+  it("fails when the restored ledger is missing a migration applied before the backup, or rows that existed then", async () => {
     expect(await run(fakeHost({ restoredLedger: LEDGER.slice(0, 1) }).host)).toMatchObject({ status: "failed", errorCode: "LEDGER_MISMATCH" });
-    expect(await run(fakeHost({ restoredCounts: 0 }).host)).toMatchObject({ status: "failed", errorCode: "ROWS_MISSING" });
+    // 7 rows live, all made before the backup; only 5 restored.
+    const short = await run(fakeHost({ restoredCounts: 5, queryLive: async (sql) => (sql.includes("ledger") && !sql.includes("count") ? LEDGER : [{ n: 7 }]) }).host);
+    expect(short).toMatchObject({ status: "failed", errorCode: "ROWS_MISSING" });
+  });
+
+  it("does not expect rows made after the backup (the installation row written after setup's first backup)", async () => {
+    const queryLive = async (sql: string) => {
+      if (sql.includes("ledger") && !sql.includes("count")) return LEDGER;
+      if (sql.includes("from public.installation")) return [{ n: sql.includes("<=") ? 0 : 1 }];
+      return [{ n: sql.includes("<=") ? 5 : 7 }];
+    };
+    const queryRestored = async (_socket: string, _port: number, sql: string) =>
+      sql.includes("ledger") && !sql.includes("count") ? LEDGER : [{ n: sql.includes("installation") ? 0 : 5 }];
+    const result = await run(fakeHost({ queryLive, queryRestored }).host);
+    expect(result).toMatchObject({ status: "passed", checks: { rowCounts: { installation: { restored: 0, live: 1, liveBeforeBackup: 0 } } } });
+    expect(String((await (async () => { const calls: string[] = []; await run(fakeHost({ queryLive: async (sql) => { calls.push(sql); return queryLive(sql); }, queryRestored }).host); return calls.find((c) => c.includes("<=")); })()))).toContain("<= '2026-11-24T02:00:00.000Z'::timestamptz");
   });
 
   it("accepts live migrations applied after the backup", async () => {

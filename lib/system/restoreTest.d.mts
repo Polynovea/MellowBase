@@ -1,6 +1,6 @@
 export const TEMP_PORT: number;
 export const DISK_FACTOR: number;
-export const CORE_TABLES: readonly string[];
+export const CORE_TABLES: ReadonlyArray<{ table: string; at: string }>;
 
 export class RestoreTestError extends Error {
   constructor(code: string, message: string);
