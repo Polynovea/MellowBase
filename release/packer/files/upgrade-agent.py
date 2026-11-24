@@ -58,6 +58,8 @@ MAX_POINTER_BYTES = 4096
 MAX_SIG_BYTES = 1024
 HEALTH_DEADLINE_S = 120
 HEALTH_INTERVAL_S = 3
+RESTORE_WAIT_INTERVAL_S = 10
+RESTORE_TEST_NAME = re.compile(r"^[0-9a-f-]{36}$")
 RELEASE_ID = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$")
 SEMVER = re.compile(r"^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:-([0-9A-Za-z.-]{1,64}))?$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -73,6 +75,9 @@ COSIGN_IMAGE = "ghcr.io/sigstore/cosign/cosign:v2.6.1@sha256:68839b7f13dac5a6744
 DEFAULTS = {
     "RUNTIME": "systemd",  # systemd | compose
     "REQUEST_DIR": "/var/lib/polynovea/upgrade-requests",
+    # A restore test works in a folder here; an upgrade waits for it (RESTORE_WAIT_S at most), then goes on.
+    "RESTORE_TEST_DIR": "/var/lib/polynovea/restore-test",
+    "RESTORE_WAIT_S": "900",
     "STATUS_DIR": "/var/lib/polynovea-upgrade",
     "DATA_DIR": "/var/lib/polynovea",  # the data disk as dockerd sees it (systemd runtime one-shots)
     "WORK_DIR": "",  # where release files are checked; must be a path dockerd can bind (default: /tmp)
@@ -560,6 +565,32 @@ def last_json_line(text: str) -> dict:
     return {}
 
 
+def restore_tests_running(path: str) -> int:
+    """How many restore-test folders exist (CMS-owned: listed through a no-follow descriptor, never changed)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return 0
+    try:
+        return sum(1 for name in os.listdir(fd) if RESTORE_TEST_NAME.match(name))
+    finally:
+        os.close(fd)
+
+
+def wait_for_restore_test(config: dict, status: "Status") -> None:
+    """A restore test takes minutes; an upgrade would cut it off. Wait for it, up to RESTORE_WAIT_S."""
+    if not restore_tests_running(config["RESTORE_TEST_DIR"]):
+        return
+    status.step("wait", "started", "a restore test is running; the upgrade waits for it")
+    deadline = time.monotonic() + float(config["RESTORE_WAIT_S"])
+    while time.monotonic() < deadline:
+        if not restore_tests_running(config["RESTORE_TEST_DIR"]):
+            status.step("wait", "ok", "the restore test finished")
+            return
+        time.sleep(RESTORE_WAIT_INTERVAL_S)
+    status.step("wait", "skipped", "still running (or left by an interrupted run); going on: it is recorded as interrupted and runs again")
+
+
 def upgrade(config: dict, folder: StatusDir, runtime: Runtime, release_id: str) -> str:
     previous_ref = runtime.current_ref()
     from_release = running_release(config)
@@ -580,6 +611,7 @@ def upgrade(config: dict, folder: StatusDir, runtime: Runtime, release_id: str) 
         status.value["rollback"] = release["rollback"]
         status.step("verify", "ok", f"signature verified; rollback {release['rollback']}")
 
+        wait_for_restore_test(config, status)
         status.step("backup", "started")
         backup = cms_command(config, None, ["system", "backup", "--reason", "pre-upgrade"], 3600)
         if backup.returncode != 0:

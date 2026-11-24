@@ -23,6 +23,7 @@ spec = importlib.util.spec_from_file_location("upgrade_agent", AGENT_PATH)
 agent = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(agent)
 agent.HEALTH_INTERVAL_S = 0.2
+agent.RESTORE_WAIT_INTERVAL_S = 0.2
 
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
@@ -125,6 +126,8 @@ class AgentTest(unittest.TestCase):
             "POLYNOVEA_UPGRADE_ALLOW_HTTP_CHANNEL": "1",
             "POLYNOVEA_UPGRADE_HEALTH_URL": f"http://127.0.0.1:{port}/api/health",
             "POLYNOVEA_UPGRADE_HEALTH_DEADLINE_S": "3",
+            "POLYNOVEA_UPGRADE_RESTORE_TEST_DIR": os.path.join(self.root, "restore-test"),
+            "POLYNOVEA_UPGRADE_RESTORE_WAIT_S": "2",
             "POLYNOVEA_UPGRADE_DOCKER": os.path.join(self.root, "bin", "docker"),
             "POLYNOVEA_UPGRADE_SYSTEMCTL": os.path.join(self.root, "bin", "systemctl"),
             "FAKE_ROOT": self.root,
@@ -387,6 +390,21 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(agent.main(["--mark"]), 0)
         marker = json.loads(read(os.path.join(self.status, "agent.json")))
         self.assertEqual(marker["runtime"], "systemd")
+
+    def test_upgrade_waits_for_a_running_restore_test(self):
+        folder = os.path.join(self.root, "restore-test", "0f0e0d0c-0b0a-4909-8807-060504030201")
+        os.makedirs(folder)
+        threading.Timer(0.6, lambda: shutil.rmtree(folder)).start()
+        self.request()
+        self.assertEqual(self.run_agent(), 0)
+        steps = [(s["step"], s["outcome"]) for s in self.status_json()["steps"]]
+        self.assertLess(steps.index(("wait", "ok")), steps.index(("backup", "started")))
+
+    def test_upgrade_goes_on_after_the_wait_limit(self):
+        os.makedirs(os.path.join(self.root, "restore-test", "0f0e0d0c-0b0a-4909-8807-060504030201"))
+        self.request()
+        self.assertEqual(self.run_agent(), 0)
+        self.assertIn(("wait", "skipped"), [(s["step"], s["outcome"]) for s in self.status_json()["steps"]])
 
     def test_https_only_channel(self):
         self.assertFalse(agent._channel_url_ok("http://releases.example.com/x", False))

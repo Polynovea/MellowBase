@@ -213,6 +213,20 @@ step_seconds() { # from-step from-outcome to-step to-outcome
   status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);const f=v.steps.find(x=>x.step==='$1'&&x.outcome==='$2');const t=[...v.steps].reverse().find(x=>x.step==='$3'&&x.outcome==='$4');console.log(f&&t?Math.round((Date.parse(t.at)-Date.parse(f.at))/1000):-1)})"
 }
 
+step "The worker's own restore test after setup's first backup (on A, before any upgrade)"
+# The wizard leaves restore-test-due; the worker starts a restore test by itself. Restarts during the
+# upgrades above cut it off (recorded as skipped, INTERRUPTED) and the worker starts it again. Wait for a
+# first-backup test that finished for a reason other than a restart.
+WORKER_TEST=""
+for _ in $(seq 1 150); do
+  WORKER_TEST="$(psql_cms "select reason || ' ' || status || ' ' || coalesce(error_code, '') from public.system_restore_tests where reason = 'first_backup' and status <> 'running' and coalesce(error_code, '') <> 'INTERRUPTED' order by started_at desc limit 1")"
+  [ -n "$WORKER_TEST" ] && break
+  sleep 4
+done
+echo "first-backup restore tests: $(psql_cms "select string_agg(status || coalesce('/' || error_code, ''), ', ' order by started_at) from public.system_restore_tests where reason = 'first_backup'")"
+echo "worker's restore test: ${WORKER_TEST:-none recorded}"
+case "$WORKER_TEST" in "first_backup passed"*) ok "the worker ran the first-backup restore test by itself, and it passed" ;; *) fail "worker restore test: ${WORKER_TEST:-none}" ;; esac
+
 step "Forced failure: upgrade A -> B' (health never reports 0.4.2; no compatible rollback)"
 point_channel 0.4.2+ccccccc 0.4.2
 request 0.4.2+ccccccc
@@ -239,19 +253,16 @@ wait_state running 0.4.1+bbbbbbb && ok "B is serving (/api/health reports 0.4.1+
 docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_B" /etc/polynovea/polynovea.env && ok "the pin is B's digest"
 docker exec "$AGENT" python3 -I -B /opt/polynovea/upgrade-agent.py && ok "the same request is not run twice"
 
-step "The worker's own restore test after setup's first backup"
-# The wizard leaves restore-test-due; the worker starts a restore test by itself. Restarts during the
-# upgrades above cut it off (recorded as skipped, INTERRUPTED) and the worker starts it again. Wait for a
-# first-backup test that finished for a reason other than a restart.
-WORKER_TEST=""
-for _ in $(seq 1 150); do
-  WORKER_TEST="$(psql_cms "select reason || ' ' || status || ' ' || coalesce(error_code, '') from public.system_restore_tests where reason = 'first_backup' and status <> 'running' and coalesce(error_code, '') <> 'INTERRUPTED' order by started_at desc limit 1")"
-  [ -n "$WORKER_TEST" ] && break
-  sleep 4
-done
-echo "first-backup restore tests: $(psql_cms "select string_agg(status || coalesce('/' || error_code, ''), ', ' order by started_at) from public.system_restore_tests where reason = 'first_backup'")"
-echo "worker's restore test: ${WORKER_TEST:-none recorded}"
-case "$WORKER_TEST" in "first_backup passed"*) ok "the worker ran the first-backup restore test by itself, and it passed" ;; *) fail "worker restore test: ${WORKER_TEST:-none}" ;; esac
+step "A restart in the middle of a restore test leaves it skipped (INTERRUPTED), not failed"
+docker exec -d -w /app "$CMS" node scripts/polynovea-cms.mjs system restore-test --reason manual
+for _ in $(seq 1 60); do [ "$(psql_cms "select count(*) from public.system_restore_tests where status = 'running'")" = 1 ] && break; sleep 1; done
+[ "$(psql_cms "select count(*) from public.system_restore_tests where status = 'running'")" = 1 ] || fail "the manual restore test did not start"
+sleep 3
+docker exec "$AGENT" systemctl restart polynovea   # what an upgrade's switch does to the running container
+wait_state running 0.4.1+bbbbbbb
+for _ in $(seq 1 60); do [ "$(psql_cms "select count(*) from public.system_restore_tests where status = 'running'")" = 0 ] && break; sleep 1; done
+CUT="$(psql_cms "select status || ' ' || coalesce(error_code, '') from public.system_restore_tests where reason = 'manual' order by started_at desc limit 1")"
+[ "$CUT" = "skipped INTERRUPTED" ] && ok "the cut-off restore test is recorded as skipped (INTERRUPTED), not as a failed backup" || fail "cut-off restore test recorded as: $CUT"
 
 step "Restore test on a healthy backup"
 docker exec -w /app "$CMS" node scripts/polynovea-cms.mjs system restore-test --reason manual || fail "restore test did not pass on a healthy backup"
