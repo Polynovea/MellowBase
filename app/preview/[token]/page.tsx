@@ -101,6 +101,18 @@ export default async function PreviewPage({ params, searchParams }: Params) {
   const preview = await resolvePreviewToken(token);
 
   if (!preview) notFound();
+  // Fail closed (phase 4): a preview shows what its issuer may read; once the issuer has left the
+  // workspace the link shows nothing, and says so.
+  if (preview.issuer_active === false) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#0a0a0a] px-6 text-zinc-100">
+        <div className="max-w-md text-center">
+          <h1 className="text-lg font-semibold">This preview link is no longer valid</h1>
+          <p className="mt-3 text-sm text-zinc-400">Ask someone on the team for a new preview link.</p>
+        </div>
+      </main>
+    );
+  }
 
   const width = widths[viewport] ?? widths.desktop;
 

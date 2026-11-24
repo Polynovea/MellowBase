@@ -67,9 +67,11 @@ export async function resolvePreviewToken(token: string): Promise<any | null> {
     : null;
   await db.updateTable("preview_tokens").set({ last_used_at: new Date().toISOString() }).where("id", "=", row.id).execute();
   const { e_id, m_name, m_api_key, ...tokenRow } = row;
-  const accesses = version && m_api_key ? await adminAccesses(db, row.workspace_id, row.created_by, "preview", [m_api_key], PREVIEW_GRANT) : null;
+  // Null when the issuer is no longer an active member: the page then says the link is no longer valid.
+  const accesses = await adminAccesses(db, row.workspace_id, row.created_by, "preview", m_api_key ? [m_api_key] : [], PREVIEW_GRANT);
   return {
     ...tokenRow,
+    issuer_active: accesses !== null,
     content_entry_versions: version ? { ...version, data_jsonb: sanitiseFor(accesses, m_api_key, version.data_jsonb) } : null,
     content_entries: e_id ? { content_models: m_api_key ? { name: m_name, api_key: m_api_key } : null } : null,
   };

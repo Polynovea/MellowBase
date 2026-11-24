@@ -61,8 +61,11 @@ describeWithDatabase("preview tokens, release previews and saved entry views", (
     const { token } = await createPreviewToken({ workspaceId, entryId, actorId: adminUserId });
     const resolved = await resolvePreviewToken(token);
     expect(resolved.content_entry_versions.data_jsonb).toEqual({ title: "Preview me" });
+    expect(resolved.issuer_active).toBe(true);
     await backend.query("update workspace_members set status = 'suspended' where workspace_id = $1 and admin_user_id = $2", [workspaceId, adminUserId]);
-    expect((await resolvePreviewToken(token)).content_entry_versions.data_jsonb).toEqual({});
+    const stale = await resolvePreviewToken(token);
+    expect(stale.issuer_active).toBe(false);
+    expect(stale.content_entry_versions.data_jsonb).toEqual({});
   });
 
   it("saves, lists and deletes saved entry views per user", async () => {
