@@ -1,0 +1,2 @@
+# Templates and scripts run on Linux servers and are compared byte for byte: Unix line endings everywhere.
+* text eol=lf

@@ -1,0 +1,13 @@
+[Unit]
+Description=Polynovea CMS data disk
+Requires=polynovea-data-disk.service
+After=polynovea-data-disk.service
+
+[Mount]
+What=/dev/disk/by-label/POLYNOVEA_DATA
+Where=/var/lib/polynovea
+Type=ext4
+Options=defaults,noatime,nodev,nosuid
+
+[Install]
+WantedBy=multi-user.target

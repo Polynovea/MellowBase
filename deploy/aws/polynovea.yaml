@@ -1,0 +1,828 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Polynovea CMS on one EC2 server in your own AWS account, with an RDS PostgreSQL 16 database
+  (or PostgreSQL on the server itself), an S3 bucket, a budget alert and a narrowly scoped role.
+  Expected monthly cost, estimated from AWS on-demand list prices for us-east-1 in November 2026,
+  before tax, with light traffic: about US$34 with DatabaseMode=managed (t4g.small server,
+  db.t4g.micro single-zone database, 2 x 20 GB disks, public IPv4, one secret) or about US$20 with
+  DatabaseMode=on-this-server. Other regions and heavy traffic cost more; your AWS bill is what counts.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Database" }
+        Parameters: [DatabaseMode, DatabaseInstanceClass, DatabaseStorageGb, PostgresVersion]
+      - Label: { default: "Budget alert" }
+        Parameters: [BudgetEmail, BudgetMonthlyUsd]
+      - Label: { default: "How you reach the site (set a domain, or your IP address for the SSH tunnel)" }
+        Parameters: [Domain, AcmeEmail, AdminCidr, KeyPairName]
+      - Label: { default: "Server" }
+        Parameters: [InstanceType, Architecture, DataVolumeGb]
+      - Label: { default: "Release package (filled in by the release's link; leave as they are)" }
+        Parameters: [ContainerImage, CaddyImage]
+    ParameterLabels:
+      DatabaseMode: { default: "Where the database runs" }
+      DatabaseInstanceClass: { default: "Database size (managed only)" }
+      DatabaseStorageGb: { default: "Database storage in GB (managed only)" }
+      PostgresVersion: { default: "PostgreSQL 16 version (managed only; leave as it is)" }
+      BudgetEmail: { default: "Email for the budget alert" }
+      BudgetMonthlyUsd: { default: "Monthly budget in US dollars" }
+      InstanceType: { default: "Server size" }
+      Architecture: { default: "Processor type (must match the server size)" }
+      DataVolumeGb: { default: "Data disk in GB" }
+      Domain: { default: "Your domain for the site (optional, for example cms.example.com)" }
+      AcmeEmail: { default: "Email for HTTPS certificate notices (optional)" }
+      AdminCidr: { default: "Your IP address for SSH (optional, for example 203.0.113.7/32)" }
+      KeyPairName: { default: "EC2 key pair for SSH (optional)" }
+      ContainerImage: { default: "Polynovea CMS image, pinned by digest" }
+      CaddyImage: { default: "HTTPS proxy (Caddy) image, pinned by digest" }
+
+Parameters:
+  DatabaseMode:
+    Type: String
+    Default: managed
+    AllowedValues: [managed, on-this-server]
+    Description: >-
+      managed = an RDS PostgreSQL 16 database the setup wizard finds by itself ("Created for you").
+      on-this-server = PostgreSQL on the server's data disk, backed up to the S3 bucket (cheaper, for
+      trials and small sites).
+  DatabaseInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t4g.small, db.t4g.medium, db.t3.micro, db.t3.small, db.t3.medium]
+  PostgresVersion:
+    Type: String
+    Default: "16.15"
+    AllowedPattern: "^16\\.[0-9]+$"
+    ConstraintDescription: A PostgreSQL 16 minor version that RDS can create, such as 16.15.
+    Description: >-
+      RDS no longer creates databases from the bare "16", so the template names a current 16.x
+      minor. Each release bumps this default to the newest one; automatic minor upgrades keep a
+      running database patched after that.
+  DatabaseStorageGb:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 1000
+  BudgetEmail:
+    Type: String
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    ConstraintDescription: Enter an email address.
+    Description: AWS emails this address when spending passes 80% of the budget, or is forecast to pass 100%.
+  BudgetMonthlyUsd:
+    Type: Number
+    Default: 50
+    MinValue: 1
+  InstanceType:
+    Type: String
+    Default: t4g.small
+    AllowedValues: [t4g.small, t4g.medium, t4g.large, t3.small, t3.medium, t3.large]
+    Description: t4g sizes are arm64 (cheaper), t3 sizes are amd64. On-this-server sites with real traffic should use t4g.medium.
+  Architecture:
+    Type: String
+    Default: arm64
+    AllowedValues: [arm64, amd64]
+    Description: arm64 for t4g sizes, amd64 for t3 sizes.
+  DataVolumeGb:
+    Type: Number
+    Default: 20
+    MinValue: 10
+    MaxValue: 2000
+    Description: The separate disk mounted at /var/lib/polynovea (settings, uploads, and the database when it runs on this server).
+  Domain:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+    ConstraintDescription: Leave blank, or enter a lowercase domain name such as cms.example.com.
+    Description: >-
+      With a domain, the server gets a free HTTPS certificate (Let's Encrypt) once the domain's A record
+      points at the PublicIp output, and setup is at https://<domain>/setup. Without one, ports 80 and
+      443 stay closed and setup goes through the SSH tunnel, which needs AdminCidr and KeyPairName.
+  AcmeEmail:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    Description: Optional. Let's Encrypt may email this address about the certificate.
+  AdminCidr:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^(25[0-5]|2[0-4]\\d|1?\\d?\\d)(\\.(25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}/(3[0-2]|[12]?\\d)$"
+    ConstraintDescription: Leave blank, or enter one IPv4 range such as 203.0.113.7/32.
+    Description: >-
+      Leave blank for no SSH access at all. Set it to your own address (ending /32) to allow SSH from
+      that address only. Needed for the free SSH-tunnel route into the setup wizard when there is no domain.
+  KeyPairName:
+    Type: String
+    Default: ""
+    Description: An existing EC2 key pair in this region, needed only for SSH. Leave blank for none.
+  # Images come only from the release (deploy/release-images.json, baked in by
+  # deploy/scripts/release-templates.mjs). The patterns stop a quick-create link from swapping in
+  # anyone else's image: the CMS only from ghcr.io/polynovea/, the proxy only Caddy's official image,
+  # both pinned by digest. The CMS image's signature is checked again on the server before every start.
+  ContainerImage:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^ghcr\\.io/polynovea/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$"
+    ConstraintDescription: Only the Polynovea CMS image from ghcr.io/polynovea/, pinned by digest (name@sha256:...).
+    Description: Set by the release. Leave as it is.
+  CaddyImage:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^(docker\\.io/library/)?caddy@sha256:[a-f0-9]{64}$"
+    ConstraintDescription: Only Caddy's official image, pinned by digest (caddy@sha256:...).
+    Description: Set by the release. Leave as it is.
+
+Rules:
+  SomeWayIn:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - Fn::Not: [Fn::Equals: [!Ref Domain, ""]]
+            - Fn::And:
+                - Fn::Not: [Fn::Equals: [!Ref AdminCidr, ""]]
+                - Fn::Not: [Fn::Equals: [!Ref KeyPairName, ""]]
+        AssertDescription: >-
+          Set a Domain (setup at https://<domain>/setup), or set both AdminCidr and KeyPairName (setup
+          through the SSH tunnel). Without either, nobody could reach the setup wizard.
+  ArchitectureMatchesServerSize:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - Fn::And:
+                - Fn::Equals: [!Ref Architecture, arm64]
+                - Fn::Contains: [[t4g.small, t4g.medium, t4g.large], !Ref InstanceType]
+            - Fn::And:
+                - Fn::Equals: [!Ref Architecture, amd64]
+                - Fn::Contains: [[t3.small, t3.medium, t3.large], !Ref InstanceType]
+        AssertDescription: Processor type must match the server size (arm64 for t4g, amd64 for t3).
+
+Mappings:
+  # The release's published Polynovea AMIs; "none" = not published in that region (Ubuntu is used).
+  # BEGIN GENERATED release-amis
+  ReleaseAmis:
+    af-south-1: { arm64: none, amd64: none }
+    ap-east-1: { arm64: none, amd64: none }
+    ap-east-2: { arm64: none, amd64: none }
+    ap-northeast-1: { arm64: none, amd64: none }
+    ap-northeast-2: { arm64: none, amd64: none }
+    ap-northeast-3: { arm64: none, amd64: none }
+    ap-south-1: { arm64: none, amd64: none }
+    ap-south-2: { arm64: none, amd64: none }
+    ap-southeast-1: { arm64: none, amd64: none }
+    ap-southeast-2: { arm64: none, amd64: none }
+    ap-southeast-3: { arm64: none, amd64: none }
+    ap-southeast-4: { arm64: none, amd64: none }
+    ap-southeast-5: { arm64: none, amd64: none }
+    ap-southeast-6: { arm64: none, amd64: none }
+    ap-southeast-7: { arm64: none, amd64: none }
+    ca-central-1: { arm64: none, amd64: none }
+    ca-west-1: { arm64: none, amd64: none }
+    eu-central-1: { arm64: none, amd64: none }
+    eu-central-2: { arm64: none, amd64: none }
+    eu-north-1: { arm64: none, amd64: none }
+    eu-south-1: { arm64: none, amd64: none }
+    eu-south-2: { arm64: none, amd64: none }
+    eu-west-1: { arm64: none, amd64: none }
+    eu-west-2: { arm64: none, amd64: none }
+    eu-west-3: { arm64: none, amd64: none }
+    il-central-1: { arm64: none, amd64: none }
+    me-central-1: { arm64: none, amd64: none }
+    me-south-1: { arm64: none, amd64: none }
+    mx-central-1: { arm64: none, amd64: none }
+    sa-east-1: { arm64: none, amd64: none }
+    us-east-1: { arm64: none, amd64: none }
+    us-east-2: { arm64: none, amd64: none }
+    us-west-1: { arm64: none, amd64: none }
+    us-west-2: { arm64: none, amd64: none }
+  # END GENERATED release-amis
+
+Conditions:
+  ManagedDb: !Equals [!Ref DatabaseMode, managed]
+  HasAdminCidr: !Not [!Equals [!Ref AdminCidr, ""]]
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
+  # The release's Polynovea AMI for this region and processor, if it published one.
+  HasReleaseAmi: !Not [!Equals [!FindInMap [ReleaseAmis, !Ref AWS::Region, !Ref Architecture], none]]
+  HasDomain: !Not [!Equals [!Ref Domain, ""]]
+  HasAcmeEmail: !Not [!Equals [!Ref AcmeEmail, ""]]
+  HasContainerImage: !Not [!Equals [!Ref ContainerImage, ""]]
+  HasCaddyImage: !Not [!Equals [!Ref CaddyImage, ""]]
+
+Resources:
+  # ---------------------------------------------------------------- network (no NAT gateway: free)
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-vpc" }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-igw" }]
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  ServerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-server" }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-public" }]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  ServerSubnetRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ServerSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # The database subnets have no route to the internet at all.
+  DatabaseRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: ManagedDb
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }]
+
+  DatabaseSubnetA:
+    Type: AWS::EC2::Subnet
+    Condition: ManagedDb
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database-a" }]
+
+  DatabaseSubnetB:
+    Type: AWS::EC2::Subnet
+    Condition: ManagedDb
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database-b" }]
+
+  DatabaseSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: ManagedDb
+    Properties:
+      SubnetId: !Ref DatabaseSubnetA
+      RouteTableId: !Ref DatabaseRouteTable
+
+  DatabaseSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: ManagedDb
+    Properties:
+      SubnetId: !Ref DatabaseSubnetB
+      RouteTableId: !Ref DatabaseRouteTable
+
+  # ---------------------------------------------------------------- security groups
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Polynovea server - web in only with a domain, SSH only from AdminCidr, out to HTTPS, HTTP and the database
+      VpcId: !Ref Vpc
+      # Without a domain nothing answers on 80/443 (the CMS listens on 127.0.0.1 only), so they stay closed.
+      SecurityGroupIngress:
+        - !If
+          - HasDomain
+          - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: "HTTP: Let's Encrypt validation and redirect to HTTPS (Caddy)" }
+          - !Ref AWS::NoValue
+        - !If
+          - HasDomain
+          - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "Website (HTTPS, Caddy)" }
+          - !Ref AWS::NoValue
+        - !If
+          - HasAdminCidr
+          - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref AdminCidr, Description: "SSH from the owner's address only" }
+          - !Ref AWS::NoValue
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS: AWS APIs, image registry, updates" }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: "Ubuntu package mirrors" }
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-server" }]
+
+  ServerToDatabaseEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: ManagedDb
+    Properties:
+      GroupId: !Ref ServerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+      Description: PostgreSQL to the database only
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ManagedDb
+    Properties:
+      GroupDescription: Polynovea database - reachable only from the Polynovea server
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref ServerSecurityGroup, Description: "PostgreSQL from the Polynovea server only" }
+      # A rule to an unused loopback address replaces AWS's default allow-all egress: the database starts no connections.
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 127.0.0.1/32, Description: "No outbound traffic" }
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }]
+
+  # ---------------------------------------------------------------- database ("Created for you")
+  # Not the RDS-managed master password: that secret holds only username and password, and RDS
+  # forbids adding fields. The setup wizard also needs host and port, so this stack owns the secret,
+  # AWS generates the password inside it, RDS reads it by dynamic reference, and the attachment below
+  # adds host, port and engine (the shape of an RDS secret attached to its instance).
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: ManagedDb
+    # Kept if the stack is deleted or the secret replaced: the database's final snapshot is useless
+    # without its admin login.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub "polynovea/${AWS::StackName}/database-admin"
+      Description: Polynovea database admin login. Read once by the setup wizard through the server's role.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"polynovea_admin","dbname":"polynovea","port":5432}'
+        GenerateStringKey: password
+        PasswordLength: 40
+        ExcludePunctuation: true
+        ExcludeCharacters: "\"@/\\'"
+        IncludeSpace: false
+        RequireEachIncludedType: true
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Condition: ManagedDb
+    Properties:
+      DBSubnetGroupDescription: Polynovea database subnets (no internet route)
+      SubnetIds: [!Ref DatabaseSubnetA, !Ref DatabaseSubnetB]
+
+  # The database's own log (errors, slow autovacuum, checkpoints) goes to CloudWatch, kept 14 days, so
+  # it survives the instance and support can read it. Made here, before RDS would make it with no
+  # expiry, so the database has a fixed lowercase name: polynovea-<this stack's ID>.
+  # That name is fixed when the stack is created and must never change in a later template version:
+  # a new name makes CloudFormation replace the database, which deletion protection then blocks.
+  DatabaseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ManagedDb
+    Properties:
+      LogGroupName: !Join ["", ["/aws/rds/instance/polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]], "/postgresql"]]
+      RetentionInDays: 14
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    Condition: ManagedDb
+    DependsOn: DatabaseLogGroup
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Join ["", ["polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]
+      Engine: postgres
+      EngineVersion: !Ref PostgresVersion
+      AutoMinorVersionUpgrade: true
+      DBInstanceClass: !Ref DatabaseInstanceClass
+      DBName: polynovea
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}"
+      AllocatedStorage: !Ref DatabaseStorageGb
+      MaxAllocatedStorage: 200
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: false
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups: [!Ref DatabaseSecurityGroup]
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: "03:00-04:00"
+      DeletionProtection: true
+      CopyTagsToSnapshot: true
+      EnableCloudwatchLogsExports: [postgresql]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }]
+
+  DatabaseSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Condition: ManagedDb
+    Properties:
+      SecretId: !Ref DatabaseSecret
+      TargetId: !Ref Database
+      TargetType: AWS::RDS::DBInstance
+
+  # ---------------------------------------------------------------- bucket
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      VersioningConfiguration: { Status: Enabled }
+      LifecycleConfiguration:
+        Rules:
+          - Id: keep-deleted-backups-14-days
+            Status: Enabled
+            NoncurrentVersionExpiration: { NoncurrentDays: 14 }
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-bucket" }]
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: HttpsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt Bucket.Arn, !Sub "${Bucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+
+  # ---------------------------------------------------------------- server identity: one secret, one bucket
+  ServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Polynovea server - reads the one database secret and uses the one bucket. Nothing else.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: one-bucket
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ListTheBucket
+                Effect: Allow
+                Action: [s3:ListBucket, s3:GetBucketLocation]
+                Resource: !GetAtt Bucket.Arn
+              - Sid: ReadWriteTheBucket
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !Sub "${Bucket.Arn}/*"
+        - !If
+          - ManagedDb
+          - PolicyName: one-secret
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: ReadTheDatabaseSecret
+                  Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref DatabaseSecret
+          - !Ref AWS::NoValue
+
+  ServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref ServerRole]
+
+  # ---------------------------------------------------------------- server
+  # A separate encrypted disk for /var/lib/polynovea. It survives the server being replaced, and a
+  # final snapshot is taken if the stack is deleted.
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !GetAtt ServerSubnet.AvailabilityZone
+      Size: !Ref DataVolumeGb
+      VolumeType: gp3
+      Encrypted: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-data" }]
+
+  ServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        # IMDSv2 tokens are always required. Hop limit 2, not 1: the release package's bridged
+        # container profile runs pgBackRest inside a container, one network hop from the instance,
+        # and it needs the instance role from IMDS to reach the bucket.
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 2
+          InstanceMetadataTags: disabled
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs: { VolumeSize: 20, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+
+  Server:
+    Type: AWS::EC2::Instance
+    DependsOn: PublicDefaultRoute
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ServerLaunchTemplate
+        Version: !GetAtt ServerLaunchTemplate.LatestVersionNumber
+      # The release's AMI for this region, or else Ubuntu 24.04 from Canonical's public parameter. No
+      # parameter can name another image.
+      ImageId: !If
+        - HasReleaseAmi
+        - !FindInMap [ReleaseAmis, !Ref AWS::Region, !Ref Architecture]
+        - !Sub "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/${Architecture}/hvm/ebs-gp3/ami-id}}"
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ServerInstanceProfile
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref AWS::NoValue]
+      EbsOptimized: true
+      Monitoring: false
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          SubnetId: !Ref ServerSubnet
+          GroupSet: [!Ref ServerSecurityGroup]
+          AssociatePublicIpAddress: false
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-server" }]
+      # User data is readable through the metadata service and copied to disk by cloud-init, so it
+      # holds no secrets: only the secret's ARN, the bucket's name, the region, the domain and the
+      # image digests. The release package's own files do the rest (see the generated block).
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+            - ""
+            - - Fn::Sub:
+                  - |
+                    #!/bin/sh
+                    set -eu
+                    install -d -m 0755 /etc/polynovea
+                    cat > /etc/polynovea/polynovea.env <<'SETTINGS'
+                    # Written by the Polynovea CloudFormation template. Non-secret values only.
+                    AWS_REGION=${AWS::Region}
+                    ${SecretRefLine}
+                    POLYNOVEA_BACKUP_BUCKET=${Bucket}
+                    ${DomainLine}
+                    ${AcmeEmailLine}
+                    ${ImageLine}
+                    ${CaddyImageLine}
+                    SETTINGS
+                    chmod 0640 /etc/polynovea/polynovea.env
+                  - SecretRefLine: !If [ManagedDb, !Sub "POLYNOVEA_DB_SECRET_REF=${DatabaseSecret}", "# POLYNOVEA_DB_SECRET_REF is not set: the database runs on this server."]
+                    DomainLine: !If [HasDomain, !Sub "POLYNOVEA_DOMAIN=${Domain}", "# POLYNOVEA_DOMAIN is not set: setup goes through the SSH tunnel."]
+                    AcmeEmailLine: !If [HasAcmeEmail, !Sub "POLYNOVEA_ACME_EMAIL=${AcmeEmail}", "# POLYNOVEA_ACME_EMAIL is not set."]
+                    ImageLine: !If [HasContainerImage, !Sub "POLYNOVEA_IMAGE_REF=${ContainerImage}", "# POLYNOVEA_IMAGE_REF: the server image's own."]
+                    CaddyImageLine: !If [HasCaddyImage, !Sub "POLYNOVEA_CADDY_IMAGE_REF=${CaddyImage}", "# POLYNOVEA_CADDY_IMAGE_REF: the server image's own."]
+              - |
+                # BEGIN GENERATED vm-bootstrap
+                # deploy/scripts/vm-bootstrap.sh (sha256 1a01573decd9f7c9b6aa49f009d7b8420dda1dcf58647e71f01c34b35116ce06), gzipped and base64-encoded to fit EC2's 16 KB limit.
+                base64 -d > /usr/local/sbin/polynovea-bootstrap.gz <<'POLYNOVEA_BOOTSTRAP_END'
+                H4sIAAAAAAACCt19+3fbuNH2z+VfMUurtZQVdbGdm7za1rGVXX/17VhK9t0vcV2YhCTUFMElQDva
+                xP/7d2YA3iTKcbp93/ecrz1tbBLEZTAYPDPzAN76rnsjoq6aO1vw0+hsdHkwGR3BzRICHody2VV+
+                ImKtumoZ+d7dwruRUiudsLiz+JeCaSIXoOccEh5ypjjEzL9lM76t4P0pTEXIVQeOJERSAw+EHjhb
+                4M9ZNOOg51JxUwRYFECSRlSTaRDYjImoA2/pvZqznecvBvD61d7zvT7fexX4/u7z6cu9oLez6+/1
+                +JT7/Zvd1zu7L3ZYEPCd3Z0bzl4+f/n85cuXr/zX/elu0Hv1wne2nC14KxKlAccBcgoMLmS4jOQd
+                Z6B4cscTWLCAowQY+KFMA9B8EYdM8w5M5jz/DeZMAQsTzoIl3CdCax45W9Dl2u/GWZXFTx0e3UEz
+                kpGnuJ9wDXcsTLkCGYXLFgkgZkpxRTIw7TbZvQKZAPs9TXgLmIJGv+NsgQfnUV2/xYLNOPA7niz1
+                XEQzEApEpDQLQx4MQGmWaBBWtKAk/ozdN21G/B4U11pEM5W3EodY9N1NGukUdvY6vb12ViXwT8zX
+                4RLu50ybmSt3w5ZS0IwTeSeUkFFHzVttLBnlfemYGWEiVDhohf2k7xWwhEOqeEASIoUUM650m2RV
+                o3Lgz7l/a8ZyeDo21WwrZwuUmEVMpwmH5h1PxHTpmSawP5CI2VwDm2qeQJyGIcoNWzBCuuFTmViZ
+                mk63UXAM0khouEcVJo3m/i1MaRQRljVFlVGYUNqZgH/JNIlY6OsQvBRy1SitKUdxDR5PncOT83dH
+                Q7fxuT/4a6rYjA+gsvjUHNi9+kKq8eA6o7P312+PT0bDx9TPcUjnmi34DChYLwJXdf/R6A+73dgF
+                t5HV4sIX0EyE4PXxpwS8ALZd+u+HgYqZzwdX2/vw4ExlArd8iWO7OD/59ez8/ejg+vj04KfR9eXo
+                benZ4cHR0a/Fm30IpAOQ8OnQbTSpV+A2bvnSbbkOgI/T6jYSPnVBRA4AgIt9evY3awietWB/n54/
+                awH35xLcGmkOAKuERYrLnUMsoogHhSZBM2ILnlXZ6XRaLvz4l5194J+Ehr5pgSvmO4GMuOOIKXyA
+                78CbmjWulkrzRWD/LUkal4HwOVztk647ACjT8bCrF3FRzCPLh0JYgJdMwW1QKRx+tsC8ALwF9F72
+                esVbn2n4Mfu1u9NjqZZeGs8SFnDlwg8/bBdCxzLXo7OjbefgYjIYXPBEyED4g8G7OGCaexdm4Xgn
+                QmkFbt/dXysYMTRrAQ+8d6aN2mIHqZZ+yFl0HGme3LEQ3JfuvrPek5XuP98pxJEWTX11ON1uyfjh
+                Wn9/apb7IJed4n6aCL2ElMaq7BIO2LINCSfjzzT09ga9HjSt4dJiwVtwj/aJRdiI+RYizgOFxrJ5
+                y5OIh20IxY3fMqsbm0d7IbSCgGl2g7qbcGPg7oWek0F6f9px1oU5GByEobzngXeeiJmIFHwmpSaF
+                b3wOhNKJvBbBwyD/xZcBR7V98LIRuvv134zGpwdxrOo+ZXGsnvJ93bcimias/PHDfu3ILvlC3nHv
+                XYQ23Ps7CS7TOAWuTlLuPuXLIx7j+8gXX/kMlXDBtPC9SzO/31LYm4gFB5f04SmaGzC+kFHnX0pG
+                G7UU59IN5cwLEnHHE3cArt0AAreN7yLpRfzeixNxJ0I+48odAPbZefh6B7KavMLu+DKabuzM1sYV
+                c8t5jHuUgqaI/DANcAckECIjzUTEE7XdArT0/T1cP6rjfPg/pvUr55R9uuSaR1rIaMz9YX8vYEtn
+                TCbxlH16p/iw/9PXR5OkkecvcEPePIASTh3T7kqdrI4q7zI01+yxXa9KRLOQg5Jp4nMEgFjLPwPp
+                3/IEMeg/IRQR33e2IJC+6ioeTr25VAiLuneLDDksAvgtlWhXMgzzs1QaIq7vZXIrotkgxyGhUJpH
+                CPSgv/Oy0+v0Ov3Bbq/XyxrHqdDYDkELA6R0GsO9+J0lwbaC8fhnT6dRxENnCxKZag7YijJQ6JAF
+                wbI0Xs/HB9mo28aeFRI9Oj89OD5DQKK4biH+8+c0DMLyzlbRSQScDBVSaR5AnMhPywKfPBFxmB2/
+                rhwJchWVbBGawJ3RAfiAW63b2HHhCr58gYTrNImg50A9eNl5EmpxHhyHmi6ARx1yKWGhlut8oNYa
+                9J3tzZPqKEaPtVhUY2shXLMGaHI4Y1fEoLbmP4BoCM84gVwwEdV136pHdfyEfEgE5kOUwV/+At9B
+                nIhIT2H7z2q79PILzBIegzf6Dbb/8YF5v/e811dN+4N39Sx71Ppr82Pn0fet7xvbOYraKJhCpdHN
+                ZOhZiQBMbwAlQlLAGkgMzlSgBGjB575KzH1dTM6P3YDfdaM0DGHnx7/0ccLtB+gi5OWyWhDCTQs8
+                X/c52XWzejzHanYBt0mc5iW4jb+54Hk8uiOIWC7nbKEJUxzuRQQSIQuLMlfPOM/oZOJXhfkhXTE2
+                CE1QKGV8w/xb8qrscs7a5PDz+XhydnA6GhZGwEPtuJwM0WLVKUI+PStVucX8XLx7c3J8eP3u8mQ4
+                1zpWg243/94rK9/k8t14Mjq6vrg8/6/j0bjoBU7ZFlxyFnjkDeJuZAc4qPiCaD6aQgP5eYgY7Ava
+                qTNvTk6nPDF+Hlis2cq8SmcrewRsxiO9rSBBfCDvcaUpzXSqYCrDAPeYTMa+jAXZUAVK8xh9PW0s
+                OUsDoXF3bXXMrK9Ywax7cXpTowR3jxQfPPIqkdhYAN07lnRDcVPyOrLB1Ta2sfjgkVeJdBz+iftQ
+                7KHgebgkPFx7pWXx0QF8aPZIwE3VPsrQpCdjDWuoaIBrx5b0WewFiYzh4OQk+1jL2EPoLlMNr3v2
+                aYG7Mq87sE+xDc1mw5V+1Q2/ZthUmARmfrCG4GkIx2zM34RxHt/dW4/u7gP4eTK5GOOy39vbNc4I
+                gxOOSj2K/GQZawxe8ESLqfDR02niB16vj5/EMtHwqtdq42q7Z4nBhTI3LGt45v8PcPCNW+P/xA6I
+                A/xc3QBRCeq3wIVQCHExbvi03fDB2YLzGAE8CweoTwmv6ggoHgWqrCce/xSLZAn3LIkoXAi/CD3H
+                9Sd0u1zQRPGUFmEIQqmUBx2HL5gI6+R7cHg6uh6dHhyfrMiYvriW1MehW4Yj9Ka8CVWnw76uzsaB
+                93+NdDvXf/7eu/r+b6Un3tX3Hzv296vPO+2HQviPir/U9RUUQl0AFgQJVyqTfC57gAeciMr4zBe2
+                77jxbYSaK0G1PwBa12v6o9DVSIhsBVkwA7Q2AdeNMPW/D6SZLm6Gak/a0mwl/+mNzfzKggDORpPr
+                N8dnR9fj0eX748PRt+9u5S5WUJkxGcPcZq2XKLR6mC2l9UJGdajU9fnF5Pj8zBa2Cu3m22vVxJNa
+                EFSlF9TL0sNEbt6WrXZ1Mdz2jdvwnCnPDPip+/DoE/cPZRQIHAwBzw178YDUxGg7gdTHtuaOUzJJ
+                a3PS+X778TzSTqG2T4lVaeYFQt0+dchvRWRzQu9Pt01UE/B7wsgzcWfCBRR9KXp+MDmAkN1gdFRJ
+                uGOJF4qbUnRqIdNIg88ioJ+cLcpE6Zrp7cBlGil8Z2K2FMwrIaDSeDIUhB0LJCfTS+6QjHwODIM4
+                2G8bhmXa9BDtjNLKxG2ONU7qgmkMdlDp87OTX20UOAxtkEZxmMsQk1MaZ5Bh6ifkVL5N9p6cEOyo
+                eYS5wUg6WxCzRJPqKCxn0p0UHcMNWuo55oqy9FQ72zxIQjxo28AyPsb6SatU6s9RjIHA2DQm6g6z
+                X6pO8cHk4PpoREaDsrSPKhQNV3G9DzxUHA4wrVSeemcL5+Pk3Rn0siK/jGH0Zgx3MkwXXEHTJL4o
+                /h75HGF5YgSkWh04MKKlOchypigjakDYrJmzBVqm/hyTgNp2qH5EbZSemUuhYSnTBONn0OQ75uEP
+                AUfF+HHl61YJop4cvBmdDKvvn4hbfzk4nlyPR4fnZ0dj9IsdJ5QzgqirqahcVQfQeOZixsyCFw4u
+                rWB8171ZetTtboM6VcYztCP2KGKB4V0xSxMeFBhoJYqQf1Yu22haRLytuv+olSaC5O1vTf+1CJtY
+                YFC0Z9EBpetohCV4gIlQt15DM2DA6COImZ6763gAF9g1igxHFaqb8Ba8SMLF3zFmAW6jORVRsIg0
+                PR2fv7s8HEG35ZbNJXyBOWcBeP2W6zj5OlI4fZh6y6FleUiFYIES5qGIbo3wS6XsW/RDHICpwP/L
+                kvcYninmmx6RWaapT6Nub+2t8pXod8M06tlcadY3FDcVqXZrtWOmSP7K9sr2i/KZAFaCQRxJQAm2
+                J79ejNqn50ejE/gC7P4Wths7MByCix1zMWLQPViw32UEo5ApLXx4E0r/Fsa41rvw2cBvaPThgXyp
+                VLGbMHPezJLE1vnd0G30XePF3aDbxO+qflyf3rmNJmbTCHKZQi0XvhtiZjhThA2fFbqBQ8paKE09
+                DI1B+srXVq/s1/c+eGELY1a/Qb/6KeT/2UIzX1h9M8jfq9Wenr87m1ycH59NxkXtdp2VV1hN90xV
+                9yLmU4WYU3rM1/QDjg2dsazGktKv1pR1syBGIBEmWsKtiAIHCm/6wXHumdA8GPac+zlGIwdWHacy
+                jcgQobFJIz3sWX3H5SsiaDSLtdUqq7DRCdvJigLbKumFfWSqbjSb9AN8D/1Wa02Nv25OUXOtJbXL
+                CFduGul8LksduUk4u81W8ErhmV4pTCZtgTudnjMMsHLgi1gvSbv2N29gJKIirltxCcsNG+ljyyiy
+                8sbjrvcjklnjOWIjmXbgQGvmY/BH8ZglGOmxb5Ma/FXENe/Rb0dAkipeRTitTl2nVYi5xOcOgNWa
+                RrNpfoLv4XmrZYkU1FkDujCtBg3qJaab+Ce9B00zby3XWdxOVYeeeb+Bh2EBO6PeAvrgmu9cJw34
+                HQsWxF4K+dcBsS8jJUPuYVL7qZj40IR4DQzjFG+0aTqsJYuLEV5WPBEsBNuK4QtFgAHkhPAvGuos
+                31awvTASZ76AJmIr9yeuwULFUM7ctgFlK7W3CNti5GU8/rlTdk0qYzQ42dmCaUZlsFO8rUh1MOWp
+                BoSHocJS8qYSGQroXGKRYQ88T6Y6TvUQZXo9/nU8GZ0eXb87O54Mjbec818Oz88mB8dno8trSikU
+                +vUFVmaAGj4RCwygN0lQiD25T6yxNlzMEWU8bw2IlUYoOM+SUhXU/3YO/gmf5tIN5cwA6UhmgJsI
+                ePtFbca0dVksunPOQj0HxZYlJhmRt8xsL7DHcI7uhXkgFExFJNSc06QiEbDwQ9okUELx07w6n0W4
+                phDtqFtE+WufQRO5ZJYQ1zIdNRn5gJMDSTlsD1cl1k3ROIy1EYmNRTCXadKGm1SjUUebZLNDhlbI
+                fGNN7+cy10fqZ6Z/ZoLpneIcu5dGWoQ1A26u58ipULeYm84iaBlPaxTdiURGCx5paGqutGqVHZbD
+                87Px+ckImgGfsjTUBhJlet4ulfx5dHAy+RnzSc5WURxTS4NutxqTLs1pXRVoUJH+48soUG3Iqnrd
+                yzyF1HFsv5CLt9bZgVfu5IPrFF2rli+eD7yvdfTBJQ+jtgJ8MfBe9x5cxyQDc50g6MUDq8slOqah
+                Iraz5Bd63ZG654naJytNmwAuPPO044jommbvGlXdwuIcBICtv7I3hdneRHuS3eoxVUaxRj9NQvCm
+                agyet2CfjOncBbdRyGQVoRcOS+eZSxW58GwAz9yPFCO/evax5XaedT/2u/F2y2xE1hGxhUWGKWgk
+                rRzQZKxBwFgNhq7hC6QRu2MiRFTSKhCSLUh+B1VEW5sJ3tZsbjuESywgyQEbwicS1/Hb8dDYfS8x
+                /BIjJgwvGRJtYY9XzNp+aeUTSwQn+zCR/u1UJgEgQN7dwQU+S2Qaqw4BsoAkXwTDP0bo32F1bkW8
+                //j4gZr7eAXjfDMbwMdmERP3rj5+7r9ov+p9fPjYAnjWJOoJBVg6zxqlOcj9piALNyMbR0QpN3Cm
+                olcl6JL1ssrkUaXu/FlBqdW24SKRkdsHlnPtKL+AoRkkMsuIt8ygTX9+dBt2yboGrNBUfRUprNKF
+                nwYVCh6ypTKvs4ihiXFFyvFdGPi9zh8lTviGvB9uLBJJ4O9PDV2dtjuZZsFy/FYao5/x1dW2YXN7
+                ls2d02SBheKWd+AgWhKHGVEG4jqkTiNf/XeeSEIxlvGaR9rsULARokNXdq2ORROrIsz8pApNe7BO
+                ZTk4OyL/BE1axqIsVKSU769vxUS9VxMQNe00TXyNCm0rhGmmqAnr2R7cLCFVLRrRBPlQsGDa4DCB
+                AMpnIUl8Kj7Z2FVBTk9vQuFbkrSl4mN1ZVI8ML1+cKCUzzfwxZfYmXIX1waTMdwyr64wGHaPz0GR
+                JcdTXU1TDRq/GbI9l/tVJIUbPtcYljNxPBIbRfIsyyIw4VacJgzhzYUyZwPMqLHxBV/c8AQBQ000
+                P6ulZan1OXk238myjoFAnUwjIq2RG2lSi6rgA9pcURFlJG5+Fks1MUr0jZACgkBERnwTOjFHM8oQ
+                ZTQ5LMGTynxV0MX70eXx2+PR0fXR8WUZojw2+HL2fHJY3fxHk8OBV22vzPl3G6PJYTVG6ZaT6+Z9
+                nlN3nYt3b/4++tU+Lyma65R7Xu1D+c3Ae2QkD65zeD4+/unM5BOH7mzuJx0hu0rMKCjcNZps/xnc
+                7XRedPpZNvHFq1e7r29eTvu7AfOfsxcv9/bY8+DVq/4r/vrVXhDsvu6/2t19ucd3X756/tzvv+b9
+                veDFzm7w+sZ/3dt96ToXx2dno6NhkXe3/3a6g2vvKk9bfuh5r5k3vfr8Yu+hse04aLtKMdyKQaHo
+                bTlFSZHc/xXa4nXCp0Wb62co+u5KGjjfmOk0he3S+ifVfO9qIp2+LaXR3YaRsovVkdV3G/0a9sHj
+                BMUfXuzBnH/6cUODOOYtuEi4wjVJVjZcQhoh9YrnsEmovG5mEr9Fa6UTQYhFsBo61qOQqNDqODxS
+                acKvqWor1IRPCcjVJp77X006e7+tFcsl5Ms0DIxY8DlGQB+cLIL+uT9AWuODxa60fbVsSJlmK5/9
+                zWl7C4XLo8pEWfAXVhS7nJ03szWA0idZ0AwMIPYXqgjnm1Flh5NWN+AP/kJ9oWFcuaUI/ubBlIch
+                pvCd1bbfwH0z+un4DAyLEP4++hX11ZiwiuNgMKXtViTrtmCmwX65j3JNleU0mQ0H6YBRvqeZlPI+
+                gsVbvrxW6YJyKaS6Kl2U+vAF/FSD5/e9F3st1zHKh9Yz4dOtrdziPLjOgiW3PBm6jbI17Tbs7t2w
+                7biOUzeHRcrHVFPJE9UaLRRwtg/m47JoSqgyiHKruaYN+l+2609bChu/2LQqcK1aq2H2BzsPDk8S
+                mSicgsUtQtpMS2ooGmUehneXT9RghSPprvUPuQRGhuB5qC8VfqbniYgIHdwTs0gm3NOhnA2JxGFN
+                ZEUkbsP0uYhyGzP/HPI3uKfklBOwFJX8LXoqJCNdQXVyamY2h+G2y4/D5P0CsRNfWFP+brVFJ10w
+                dQu9ly+dxW0gEvBiqGqr6wzQm7Iq6GxWvKLDmeo9gZ+RE0AeOchiSI0iQjQb0RnequvYNCrR9eUi
+                lop3lmwRgkvnF1zE3Vh9cYoUQ7aYp9/gaHWshZxxbY8p84jfq1UeZYVFif7pKqcDYaDQ9igZUisV
+                vOpRhXt7u4bAYGmW6lGSZRu5ZDiB/+W9NeV5gD+hQ1h+dJFILana8lM8pIInQoQ/z5u44aHgd/Yk
+                Mtxwn2FccSMpG4kbquiUAc+P0YGwOBcUeDXZCZmAJbn9YHlxP7oYrRRhKSYuLSOxUnmJZnezhDKl
+                FprvT1tYczb3+Nwjbae3VhdabbiReo46Y4RAJD2muaWjRME6YWeKx8UzNVDpjdJCp9rkAhTPfPuY
+                JbiZZNF+O1IaBISc3XHjTWd8QPRPwsGKDtkIRoU/mYX3JUaCaIVLDHWLjJW5ysR0Pjt/YsECzwdM
+                p86fPjcem5oHBCDlImbID/DZ+ROPKOb0u9IBzH4XsfOnBJ0nxa9pJa2o5VOOrD3C4Nm42j+8i4S+
+                co64uRUACZKVxT6AOMGUlvETi7xXjZ/Zco6MG1Y+UTiMpHOAYfOhDW54mEzyTCYpj8TQNuxNlRcn
+                vKNZMuPaeUPzPtxAdHKcD2Pz8ZUzWcZ8KCOu5lI7l6gAETU5+iT0cMmVk4eChl0Z61IMoMzcciaG
+                4k4F8ajd7m7PcT4cm6DClfMLw/Dvm+VwkYZaYG4gybr69TBX/SD+7Vkp8YYu+W8pJieGj8y+nYHH
+                SjgfTrFHV84vc6aHNbneFSLPL0hjHq4rgZkMTCk6hvOshtY5V+1IMoxNtyMZ8Lt2JFUqgv+UhB9P
+                zP0B9Vdzeb8xK2kjgNWUoY2rVDJaK2sg45TmC6Ca2ct0fy1kuab1SiziEI3r+cak3WMJOJdKu2i+
+                K/nCVofOAtkti0c6EWRfcy6sDXwxrRNxY4y1tIMIoFnJWho6X3bKcSp4WMoUxon0uVI2FaZbGEKz
+                R4+Ko6bo0pYitfsw/nV8cv7T9fHR6GyCuOkSDMi9IWgwMw4x0i0MvP9nKGcznvyzUzYEJpoMng/b
+                /wP52BW7syLubefShOSGLLxnS5X9ilbouXMmz/j9RU5qJouG6IP72pwDHiqdCF9nD3+WC24LiTum
+                +WQR06//6ZX2hxdXYbtWBLnJ5ptF9LTC2VFhPM8monxXwZGrYf27rDtkCdVbmdTZt40rcFLZH294
+                KJErZKFmocwoa2imIujORAD9Xq/Xb7UxOINThcXxvHM5dzHspiohdS1fWyHNp+DNsh/sRRY1Xd6C
+                C+Pw2ajN97nbUmLG1qVQ1i5z6VRuklntZ1XHVz/evAsXh9NtGRkXg7buJx5CA88Y4Ne9whg8snL6
+                vbUt/UWv9EzGVGqn99+wB5VdnD+w+RhPrEnQOLs4IztpZHjum9ZQ/VpZz4F9+yrZsAAqNP7VGa6c
+                CljTxzrVW0sX7a+ki3JJtb5NDU3k7yvKaJ2ep6njTm/Vuf02pSSC839IA0tJryelUidpgicBqjdQ
+                wcnE3F+Bh2wZrOaNkfTQgck9klvCkCeqTbQ8o8RtUMgm5ZE5y8sN58kDvJiEJ20LRNAXza/BODg9
+                RsfSsK9MRAwv5urEt0ln7odtw/DNfs1umTA6SOffKEHJI8xXBeRiZuktbhO4mENkaYQZtpUMnbmH
+                a5JTd0q53CJ9S3ngykVd70/bxlcs5DueHFxOrs/Ofxn2TYKS5ECnlQ1JiWKnutx1GxTVJtdvDqQS
+                VwlrzqAixt2oz7Rx4AZjEqeCFqVpijxoagTbI/qEIhxFg/IE5o61tKyiLDxxT5ApQFIzUoxFpETA
+                y18YjGfiD2M2pc0Je2Mu7iKh3MhPJlEpipvaMMuWxhSMMRfRFayr1aJ0NRhFitB3p9ShOZ+gHj9M
+                YRFivttuqyz9oGxa/AzDQPV3OzRXcyaVzOJKxL/86nJ0MjoYj66Pj9rViAzeJEYqa24LaxWxL3P5
+                Hk2f3XK7MS2ErnkTh6nKIip5ZA4TFFtQd5kVNCuBL1rzZj3YS7jM/TLl83OVLHcpb25vbcNZueVo
+                aG0Qf87C6SAPihCPETcac2UgWj0iOpkQViTtcs3RdxaILOVaB1DJcuaSHfz1wa2+WhH9eoFiAmo+
+                xknAx1m+p6ZJTP2sHKssDlV+yzUgq6cpDYtpreGVAT2x+dWjot/WCXMTWkU09Gjg1SnU/3Yq+dEM
+                1CqoKufRq3y28untfAscwGM1GA72egarVUqyrp3j5p/ozP7R6M3xwdn128vzs8no7GgYyQipgQnz
+                tbjjmFM94bpsSY3hJRIg4hkWa7pfyEY+nVJJe/+F5xFzcOPZ2S3od+CCEWeEGGptODLAhGyN2aW2
+                cXP05+KOQ9PcRUkx9vzl6g1u1m6x7OYu2lDWSnUcFmtvRkaeArvZr94SvZKj+HY2GNjQz2AwRIc6
+                8dHTjfBSDzTXOrvZArMCSz2X0a7Zxir3gkDT/urRr5142UbpRAFLArweLmGJOQbaKnqUO0hLc3LD
+                /u4l3JeLBYVzLSAWEmruwwOfeZXgMFEr+c5UxQne35VqEWJcIP2UddzJm1xA78Xe3uaLA2lDY7HG
+                /9FNYp1gtdDGyr56jV9d5V/5CJVop2PVZmDuJ7POqo2H4G18sc4uJWt1IBR33EPykKQ7BzCAJKdT
+                usoiTTD6X1yKk+ABU0OKNmqECB8JlEibq+PiNVfSjIarRBAuCytZ2pKCJkIb/omh30FHLoyGmoaM
+                VuLnlkyXf1bCXqTo657BCq+wekWp0Nmlo87q/ZHPn5sZsGOo3F6Zh/rMtGyc48qFd6Xayi82frzx
+                srrHutKtFkaF2O0UaH9gd33VJvKhMvDBeKSUoTCoayos+9+gSiM4Ag3ZDXjgswTjh/Vyq3hfK7Cv
+                Ml4sXXedXf0FMBvOo9cf2d54bmUzTXXFa9zY01UjtvblaoGNc1zK3G466b/x2w2b6GZGpENUKoEU
+                5o9Jo9vdXu32M1wwXxnKxn4+dknTv2HKnmRbyVHedAsO/PDD6PytswW/mGumVwmkncf9kQVb0m1h
+                CXpQNUCy49Q8HNZBVGcjDhxuBpZOHUQuly+eOiuIuVIrPnBQDv58IQOjQRvvDSpn9K2Qc2NuDudD
+                HtMY1JTFE8gZr1RYZz3bPZi6VR0HQ+zjoftI1mpj7PfxbFDN9rMhdLep32uPCWLcFZE2l25uJtI2
+                HkSkoWwWmD2ssGn1NrAeF9y6W5HNu4z7WF6wjxUncv4WnFph4Zni/KbLbWUiNx044VNMo2NwJ5ue
+                pbnawaDnItqNCyBz6m94dr2CuZKt7pY0e1tOzXawHr3edNGaIaDXVlQbBrehuU3V5fStb6gx+8ZG
+                /1fvtVu5zK645q6dSYho4+bGvfxGu8PTcSu/8NjNOe0uGEZQdReV5sSoN7P/bhRjjrktcAXvGLw3
+                X7XgeKIouUVosGfibmYLbBOXrEo8tREYz1JOiG6exUFK18Wv5x4yBrnBb5G8tzR1ChJirKeIxNkb
+                1m6YZQ+aiARgLtp0j5CKvS5+0wXzHccsBsz3magheQv3q0nY6l1HdfGEjUVWPf+VghVSnPO1vMnT
+                AtqlQRnEiFu9pEMJas7D0MgkEHQ6fDg+3Om9egFbYCwTpWjxDst10axkEIwpQ4V43oFDvJIc0rhT
+                dgJx203ohmnwvDhNZoWLSFeYO/Y+9lxHcePGtlX3WXENu7MFLzpwUX+eBhdM9ucWcOKaK8d0CgRf
+                QP8FBlqxilbHsWe/P9dEbwde7wEvLyifQv82CQIUMjRdJF/0hqKsVnxTURfL34IzWR+6M66UUNma
+                mNb9fYZB9cwL0W9NYh6dKhvSIx4WLbAsKJs7VaWzRfY8asFvVHMRm/s3i1BJxyHZVBrN/iiFMRCq
+                /Fcl8htDWRQ8Fj1vl0+b0HrGI3d1AOqxy4Fbhmy6GU59/ZK2tSpK4MqEbPK/VLLSlP3TEvTvaiVZ
+                gM7o+crLkhjoDYCa1yd3HDw5RPI/2PR3SkiM3Owjxi7aFZAne/OUAtwjdSDjj9BfKBlkjjM1QgvI
+                XJ69NOcsy2WhieeFrLYn3CPvv1iEtHBancrKqNqo9TXzb6C+Si3ZGaf/FBLEJfv/AMN1Q/XKZwAA
+                POLYNOVEA_BOOTSTRAP_END
+                gunzip -f /usr/local/sbin/polynovea-bootstrap.gz
+                systemd-run --unit=polynovea-bootstrap --description="Polynovea first boot" /bin/sh /usr/local/sbin/polynovea-bootstrap aws
+                # END GENERATED vm-bootstrap
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref Server
+      VolumeId: !Ref DataVolume
+      Device: /dev/sdf
+
+  ServerAddress:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Server
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-address" }]
+
+  # ---------------------------------------------------------------- budget alert
+  Budget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "polynovea-${AWS::StackName}"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref BudgetMonthlyUsd, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
+        - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
+
+Outputs:
+  SetupAddress:
+    Description: >-
+      Where to open the setup wizard. With a domain, first point its A record at PublicIp; HTTPS
+      starts within minutes of that.
+    Value: !If
+      - HasDomain
+      - !Sub "https://${Domain}/setup (after the domain's A record points at ${ServerAddress})"
+      - "http://localhost:3000/setup, through the SshTunnel command below"
+  SetupCode:
+    Description: >-
+      Where to find the one-time setup code the wizard asks for. It is shown only until setup is
+      finished, works once and expires after an hour. Anyone in this AWS account who can read the
+      server's system log can see it during that time.
+    Value: !Sub "AWS console > EC2 > Instances > select ${AWS::StackName}-server > Actions > Monitor and troubleshoot > Get system log. Look for the line with \"Setup code\" (it appears a few minutes after the server starts; refresh the log if it isn't there yet)."
+  SshTunnel:
+    Condition: HasAdminCidr
+    Description: SSH from AdminCidr with your key pair. Without a domain this is also the route into the setup wizard.
+    Value: !If
+      - HasDomain
+      - !Sub "ssh ubuntu@${ServerAddress}"
+      - !Sub "ssh -L 3000:127.0.0.1:3000 ubuntu@${ServerAddress}"
+  PublicIp:
+    Description: The server's fixed public address. Point your domain's A record here.
+    Value: !Ref ServerAddress
+  DatabaseMode:
+    Value: !Ref DatabaseMode
+  DatabaseSecretArn:
+    Condition: ManagedDb
+    Description: Set on the server as POLYNOVEA_DB_SECRET_REF. An address, not the secret itself.
+    Value: !Ref DatabaseSecret
+  DatabaseEndpoint:
+    Condition: ManagedDb
+    Description: Private; reachable only from the Polynovea server.
+    Value: !GetAtt Database.Endpoint.Address
+  BucketName:
+    Description: Set on the server as POLYNOVEA_BACKUP_BUCKET; the setup wizard suggests it for "On this server" backups.
+    Value: !Ref Bucket
+  BucketRegion:
+    Value: !Ref AWS::Region
+  ServerRoleArn:
+    Description: The server's only identity. It can read the one database secret and use the one bucket.
+    Value: !GetAtt ServerRole.Arn

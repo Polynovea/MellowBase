@@ -63,6 +63,7 @@ const PATH_RULES: { prefix: string; module?: AdminModule; surface?: AdminSurface
   { prefix: "/admin/environments", module: "cms.environments" },
   { prefix: "/admin/connections", module: "cms.connections" },
   { prefix: "/admin/infrastructure", module: "cms.infrastructure" },
+  { prefix: "/admin/system", module: "cms.infrastructure" },
   { prefix: "/admin/taxonomy", module: "cms.taxonomy" },
   { prefix: "/admin/routes", module: "cms.routes" },
   { prefix: "/admin/redirects", module: "cms.redirects" },

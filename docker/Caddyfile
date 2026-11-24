@@ -1,0 +1,19 @@
+# HTTPS in front of Polynovea CMS (docker/compose.yaml "proxy" profile, and the VM's
+# polynovea-caddy.service). Caddy gets and renews a Let's Encrypt certificate for POLYNOVEA_DOMAIN
+# (it needs ports 80 and 443) and forwards to the CMS on 127.0.0.1:3000, adding X-Forwarded-For,
+# X-Forwarded-Proto and X-Forwarded-Host, which the CMS believes only because POLYNOVEA_TRUSTED_PROXIES
+# is 127.0.0.1.
+#
+# POLYNOVEA_CADDY_EMAIL_OPTION is either empty or "email <address>", built from the optional
+# POLYNOVEA_ACME_EMAIL by run-caddy.sh (VM) or docker/caddy-start.sh (compose), both of which validate
+# it and POLYNOVEA_DOMAIN first. Caddy substitutes these before parsing, so an empty option leaves
+# no email at all: Let's Encrypt issues certificates without one; with one, it sends expiry warnings.
+{
+	admin off
+	{$POLYNOVEA_CADDY_EMAIL_OPTION}
+}
+
+{$POLYNOVEA_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:3000
+}

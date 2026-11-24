@@ -268,7 +268,7 @@ The sections above each carry their own controls; this table is the single check
 | An expensive query takes the site down | Per-role caps on page size, filter depth, joins; per-request statement timeout; rate limits |
 | Secrets entered in the UI are stolen from the database | Envelope encryption: AES-256-GCM per secret, data keys wrapped by a master key kept outside the database (file, KMS or Key Vault); write-only fields; key rotation command ([OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html)) |
 | Errors leak internals | `clientErrorMessage` (from the October audit) everywhere; wizard checks report plain hints, not raw driver errors |
-| A tampered release is installed | Images signed with cosign keyless signing and verified by identity before an upgrade; images pinned by digest; an SBOM per release ([Sigstore](https://docs.sigstore.dev/cosign/signing/overview/)) |
+| A tampered release is installed | Images signed with cosign using a key on a local release machine (keyless signing would need GitHub Actions' identity, which we do not use) and verified with the published public key before an install or upgrade; images pinned by digest; a signed SPDX SBOM per release ([Sigstore](https://docs.sigstore.dev/cosign/signing/overview/)) |
 | A cloud template is over-privileged | The user runs it in their own account; one role that reads one secret; no keys in user data; deletion protection on data |
 | Nobody notices an attack | Audit log for sign-ins, role and schema changes, secret changes and setup; alerts on repeated failures |
 

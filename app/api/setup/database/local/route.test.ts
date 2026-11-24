@@ -16,7 +16,7 @@ beforeEach(() => {
 });
 
 describe("POST /api/setup/database/local", () => {
-  it("answers 501 with a plain message until the server image includes the bundled database", async () => {
+  it("answers 501 with a plain message on a server that is not running the server image", async () => {
     const token = startSetupSession("loopback").token;
     const response = await POST(new Request("http://localhost:3000/api/setup/database/local", {
       method: "POST", headers: stampedHeaders({ ...headers, cookie: `${SETUP_SESSION_COOKIE}=${token}` }), body: JSON.stringify({ kind: "same-server" }),

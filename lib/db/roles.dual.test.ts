@@ -44,12 +44,12 @@ function catalogChecks(label: string, url: () => string | undefined) {
         where n.nspname = 'public' and c.relkind in ('r', 'p')`);
       expect(rows.length).toBeGreaterThanOrEqual(140);
       expect(rows.filter((row) => !row.can_select).map((row) => row.relname)).toEqual([]);
-      // 0074: tables the migration worker and the engine's bookkeeping act on; the app may only read them
-      // (schema_migration_ledger: read, and insert the request columns only; see appAccess.dual.test.ts).
+      // Read-only for the app: Phase 3's tables (0073-0076) and 0077's system tables. The app may only read
+      // them (schema_migration_ledger: read, and insert the request columns only; see appAccess.dual.test.ts).
       expect(rows.filter((row) => !row.can_write).map((row) => row.relname).sort()).toEqual([
-        "content_model_move_runs", "content_model_storage",
-        "content_model_tables", "polynovea_migration_ledger", "schema_expand_contract_tasks", "schema_migration_confirmations",
-        "schema_migration_ledger", "schema_migration_runs", "schema_name_reservations",
+        "content_model_move_runs", "content_model_storage", "content_model_tables", "polynovea_migration_ledger",
+        "schema_expand_contract_tasks", "schema_migration_confirmations", "schema_migration_ledger", "schema_migration_runs",
+        "schema_name_reservations", "system_restore_tests", "system_upgrades",
       ]);
       // 0074: model versions are history the migration worker rebuilds plans from: insert-only.
       const { rows: [versions] } = await db.query(`

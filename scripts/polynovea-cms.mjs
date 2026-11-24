@@ -57,6 +57,10 @@ if (area === "auth") {
   } finally {
     await db?.end().catch(() => {});
   }
+} else if (area === "system") {
+  // The upgrade agent's steps inside a CMS container (scripts/system/commands.mjs).
+  const { main } = await import("./system/commands.mjs");
+  process.exitCode = await main(action, process.argv.slice(4));
 } else {
   await import("../packages/cms-cli/bin/polynovea-cms.mjs");
 }

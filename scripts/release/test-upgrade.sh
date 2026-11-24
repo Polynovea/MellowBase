@@ -1,0 +1,421 @@
+#!/usr/bin/env bash
+# End-to-end test of in-app upgrades, the forced-failure switch-back and the restore test, entirely on
+# this machine. Heavy (one image build, several containers): run under the heavy-job lock.
+#
+#   scripts/release/test-upgrade.sh
+#
+# The layout mirrors a Polynovea VM (release/packer/files):
+# - Release A is built and signed by the real scripts/release/build-and-sign.mjs (--rollback compatible),
+#   pushed to a throwaway registry on 127.0.0.1, signed with a throwaway cosign key.
+# - Releases B (0.4.1) and B' (0.4.2, its health never reports 0.4.2) are restore mode (no "rollback");
+#   C (0.4.3) and C' (0.4.4, its health never reports 0.4.4) are "rollback": "compatible". All four are A
+#   with a different POLYNOVEA_RELEASE_ID, pushed and signed with the real cosign; their release.json
+#   files are signed with the real `cosign sign-blob` and served as a channel.
+# - The CMS runs with host networking, the data disk and the agent's status folder as on the VM.
+# - The real upgrade-agent.py runs as root in a small container standing in for the VM host, with the
+#   Docker socket; systemctl is a stand-in that starts the CMS the way run-cms.sh does.
+#   Not covered here: systemd itself and verify-images.sh as ExecStartPre (the agent verifies first).
+#
+# Checks: the native release.json verifier against the real cosign signature (and a changed byte);
+# setup "On this server" (bundled PostgreSQL + pgBackRest); the worker's first-backup restore test.
+# Restore mode: a forced-failed upgrade A -> B' switches back to A, restoring the pre-upgrade backup to the
+# recorded position (writes refused during the trial, nothing committed before it lost); A -> B succeeds,
+# writes paused until B passes its health check. Compatible mode: B -> C succeeds with B serving and
+# taking writes through the backup and migrations; a forced-failed C -> C' switches back to C without a
+# restore, keeping the changes made during C''s trial. The restore test passes on a healthy backup, is
+# skipped when a restart cuts it off, and fails (an alert row and audit event) on a corrupted one,
+# leaving nothing behind.
+# Removes every container, volume, image and folder it made.
+set -euo pipefail
+
+export PATH="/c/Program Files/Docker/Docker/resources/bin:$PATH"
+export MSYS_NO_PATHCONV=1
+cd "$(dirname "$0")/../.."
+ROOT="$(pwd)"
+winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+
+PREFIX=p5w3-e2e
+REG_PORT=35100
+CH_PORT=35101
+IMAGE="localhost:$REG_PORT/polynovea-cms"
+CMS="$PREFIX-cms"
+AGENT="$PREFIX-agent"
+VMDATA=/var/lib/$PREFIX-data       # paths inside Docker's VM (what dockerd binds), like /var/lib/polynovea
+VMSTATUS=/var/lib/$PREFIX-status
+VMETC=/var/lib/$PREFIX-etc
+REGISTRY_IMAGE="registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+PY_IMAGE=python:3.12-slim
+DOCKER_CLI_IMAGE=docker:27-cli
+COSIGN="$(node -e "import('./scripts/release/build-and-sign.mjs').then(m=>console.log(m.TOOLS.cosign))")"
+BUILDER_IMAGE="$(node -e "import('./scripts/release/build-and-sign.mjs').then(m=>console.log(m.BUILDER.image))")"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/$PREFIX.XXXXXX")"
+KEYS="$WORK/keys"; OUT_A="$WORK/release-a"; CHANNEL="$WORK/channel"
+mkdir -p "$KEYS" "$OUT_A" "$CHANNEL/0.4.1" "$CHANNEL/0.4.2" "$CHANNEL/0.4.3" "$CHANNEL/0.4.4"
+
+BUILDER_EXISTED=0
+docker buildx inspect polynovea-release >/dev/null 2>&1 && BUILDER_EXISTED=1
+DOCKER_CLI_EXISTED=0
+docker image inspect "$DOCKER_CLI_IMAGE" >/dev/null 2>&1 && DOCKER_CLI_EXISTED=1
+cleanup() {
+  docker rm -f "$CMS" "$AGENT" "$PREFIX-registry" "$PREFIX-channel" >/dev/null 2>&1 || true
+  docker volume rm "$PREFIX-registry-data" >/dev/null 2>&1 || true
+  docker run --rm -v /var/lib:/vl "$PY_IMAGE" rm -rf "/vl/$PREFIX-data" "/vl/$PREFIX-status" "/vl/$PREFIX-etc" >/dev/null 2>&1 || true
+  docker image ls -q --filter "reference=localhost:$REG_PORT/*" | sort -u | xargs -r docker rmi -f >/dev/null 2>&1 || true
+  docker rmi -f "$PREFIX-agent-image" >/dev/null 2>&1 || true
+  [ "$DOCKER_CLI_EXISTED" = 0 ] && docker rmi -f "$DOCKER_CLI_IMAGE" >/dev/null 2>&1 || true
+  if [ "$BUILDER_EXISTED" = 0 ]; then
+    docker buildx rm polynovea-release >/dev/null 2>&1 || true
+    docker rmi -f "$BUILDER_IMAGE" >/dev/null 2>&1 || true
+  fi
+  docker builder prune -f >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+# A signal (Ctrl-C, timeout's SIGTERM) also ends in cleanup: the Docker-socket stand-in never outlives us.
+trap 'exit 130' INT TERM HUP
+# Leftovers of an earlier, killed run.
+docker rm -f "$CMS" "$AGENT" "$PREFIX-registry" "$PREFIX-channel" >/dev/null 2>&1 || true
+
+step() { printf '\n== %s\n' "$*"; }
+ok() { echo "ok    $*"; }
+diagnose() { # what the CMS and its bundled PostgreSQL said, before cleanup removes them
+  echo "--- CMS log (last 60 lines)" >&2; docker logs "$CMS" 2>&1 | tail -60 >&2 || true
+  echo "--- Restore test records (newest last)" >&2
+  docker exec "$CMS" psql -h /var/run/postgresql -U postgres -d polynovea -Atc "select started_at || ' ' || reason || ' ' || status || ' ' || coalesce(error_code, '') || ' ' || coalesce(checks_json->>'startLog', '') from public.system_restore_tests order by started_at" >&2 2>/dev/null || true
+  echo "--- PostgreSQL and pgBackRest logs (last 40 lines each)" >&2
+  docker run --rm -v "$VMDATA:/d:ro" "$PY_IMAGE" sh -c 'for f in /d/log/postgresql/*.log /d/log/pgbackrest/*.log; do [ -f "$f" ] && { echo "## $f"; tail -40 "$f"; }; done; ls -la /d/postgresql 2>/dev/null | head -40' >&2 || true
+}
+fail() { echo "FAIL  $*" >&2; diagnose; exit 1; }
+field() { node -e "console.log(require(process.argv[1])[process.argv[2]])" "$(winpath "$1")" "$2"; }
+health() { docker exec "$AGENT" python3 -c "import urllib.request,json;print(urllib.request.urlopen('http://127.0.0.1:3000/api/health',timeout=5).read().decode())" 2>/dev/null || echo '{}'; }
+wait_state() { # state [release]
+  for _ in $(seq 1 90); do
+    local h; h="$(health)"
+    if echo "$h" | grep -q "\"state\":\"$1\"" && { [ -z "${2:-}" ] || echo "$h" | grep -q "\"release\":\"$2\""; }; then return 0; fi
+    sleep 2
+  done
+  echo "health: $(health)" >&2; docker logs "$CMS" 2>&1 | tail -30 >&2; return 1
+}
+psql_cms() { docker exec "$CMS" psql -h /var/run/postgresql -U postgres -d polynovea -Atc "$1"; }
+cosign_key() { docker run --rm --network host -e COSIGN_PASSWORD -v "$(winpath "$KEYS"):/keys:ro" "$@"; }
+
+COSIGN_PASSWORD="$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")"
+export COSIGN_PASSWORD
+
+step "Throwaway registry (127.0.0.1:$REG_PORT) and key pair"
+docker run -d --name "$PREFIX-registry" -p "127.0.0.1:$REG_PORT:5000" -v "$PREFIX-registry-data:/var/lib/registry" "$REGISTRY_IMAGE" >/dev/null
+docker run --rm -e COSIGN_PASSWORD -v "$(winpath "$KEYS"):/keys" -w /keys "$COSIGN" generate-key-pair >/dev/null
+PUB_SHA="$(node -e "console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync(process.argv[1])).digest('hex'))" "$(winpath "$KEYS/cosign.pub")")"
+
+step "Release A: the real build-and-sign.mjs (0.4.0, rollback compatible)"
+start=$(date +%s)
+node scripts/release/build-and-sign.mjs --image "$IMAGE" --version 0.4.0 --key "$(winpath "$KEYS/cosign.key")" \
+  --platforms linux/amd64 --out "$(winpath "$OUT_A")" --rollback compatible --allow-dirty
+echo "release A built and signed in $(( $(date +%s) - start ))s"
+REF_A="$(field "$OUT_A/release.json" image)@$(field "$OUT_A/release.json" digest)"
+RELEASE_A="$(field "$OUT_A/release.json" releaseId)"
+[ "$(field "$OUT_A/release.json" rollback)" = compatible ] && ok "release.json records rollback: compatible"
+
+make_release() { # version releaseId healthRelease rollback(compatible|"") dir
+  local version="$1" release_id="$2" health_release="$3" rollback="$4" dir="$5"
+  printf 'FROM %s\nENV POLYNOVEA_RELEASE_ID=%s\nLABEL io.polynovea.release-id=%s org.opencontainers.image.version=%s\n' "$REF_A" "$health_release" "$health_release" "$version" \
+    | docker build -q -t "$IMAGE:$version" - >/dev/null
+  docker push -q "$IMAGE:$version" >/dev/null
+  local digest; digest="$(docker image inspect "$IMAGE:$version" --format '{{index .RepoDigests 0}}')"; digest="${digest##*@}"
+  cosign_key "$COSIGN" sign --yes --key /keys/cosign.key --tlog-upload=false "$IMAGE@$digest" >/dev/null 2>&1
+  printf '## %s\n- End-to-end test release.\n' "$version" > "$dir/CHANGELOG.md"
+  node -e '
+    const [dir, version, releaseId, image, digest, rollback, pub] = process.argv.slice(1);
+    const fs = require("fs"), crypto = require("crypto"), path = require("path");
+    const changelog = fs.readFileSync(path.join(dir, "CHANGELOG.md"));
+    const release = { schema: 1, releaseId, version, image, digest, ref: `${image}@${digest}`, tag: `${image}:${version}`,
+      ...(rollback ? { rollback } : {}), changelog: { file: "CHANGELOG.md", sha256: crypto.createHash("sha256").update(changelog).digest("hex") },
+      publicKeySha256: pub, createdAt: new Date().toISOString() };
+    fs.writeFileSync(path.join(dir, "release.json"), JSON.stringify(release, null, 2) + "\n");
+  ' "$(winpath "$dir")" "$version" "$release_id" "$IMAGE" "$digest" "$rollback" "$PUB_SHA"
+  docker run --rm --network host -e COSIGN_PASSWORD -v "$(winpath "$KEYS"):/keys:ro" -v "$(winpath "$dir"):/out" "$COSIGN" \
+    sign-blob --yes --key /keys/cosign.key --tlog-upload=false --output-signature /out/release.json.sig /out/release.json >/dev/null 2>&1
+  cp "$KEYS/cosign.pub" "$dir/cosign.pub"
+  echo "$IMAGE@$digest"
+}
+point_channel() { # releaseId folder
+  printf '{"schema":1,"releaseId":"%s","release":"%s/release.json","signature":"%s/release.json.sig"}\n' "$1" "$2" "$2" > "$CHANNEL/latest.json"
+}
+
+step "Releases B (0.4.1, restore mode) and B' (0.4.2, restore mode; its health never reports 0.4.2)"
+REF_B="$(make_release 0.4.1 0.4.1+bbbbbbb 0.4.1+bbbbbbb "" "$CHANNEL/0.4.1")"
+REF_BAD="$(make_release 0.4.2 0.4.2+ccccccc 0.4.2+broken "" "$CHANNEL/0.4.2")"
+step "Releases C (0.4.3, rollback compatible) and C' (0.4.4, rollback compatible; its health never reports 0.4.4)"
+REF_C="$(make_release 0.4.3 0.4.3+ddddddd 0.4.3+ddddddd compatible "$CHANNEL/0.4.3")"
+REF_CBAD="$(make_release 0.4.4 0.4.4+eeeeeee 0.4.4+broken compatible "$CHANNEL/0.4.4")"
+echo "A  $REF_A ($RELEASE_A)"; echo "B  $REF_B"; echo "B' $REF_BAD"; echo "C  $REF_C"; echo "C' $REF_CBAD"
+
+step "Native release.json verifier against the real cosign sign-blob signature"
+POLYNOVEA_COSIGN_FIXTURE="$(winpath "$CHANNEL/0.4.1")" npx vitest run lib/system/releaseChannel.cosign.test.ts 2>&1 | grep -E "Tests|✓|×|FAIL" || true
+POLYNOVEA_COSIGN_FIXTURE="$(winpath "$CHANNEL/0.4.1")" npx vitest run lib/system/releaseChannel.cosign.test.ts >/dev/null 2>&1 \
+  && ok "real cosign signature accepted; one changed byte refused (3 positions)" || fail "native verifier vs real cosign"
+
+step "Release channel on 127.0.0.1:$CH_PORT and the host stand-in (agent container)"
+docker run -d --name "$PREFIX-channel" --network host -v "$(winpath "$CHANNEL"):/srv:ro" "$PY_IMAGE" \
+  python3 -m http.server "$CH_PORT" --bind 127.0.0.1 --directory /srv >/dev/null
+docker run --rm -v /var/lib:/vl "$PY_IMAGE" sh -ec "
+  mkdir -p /vl/$PREFIX-data /vl/$PREFIX-status /vl/$PREFIX-etc/work
+  chown 10001:10001 /vl/$PREFIX-data; chmod 0700 /vl/$PREFIX-data
+  chown 0:0 /vl/$PREFIX-status /vl/$PREFIX-etc; chmod 0755 /vl/$PREFIX-status /vl/$PREFIX-etc"
+printf 'FROM %s AS cli\nFROM %s\nCOPY --from=cli /usr/local/bin/docker /usr/local/bin/docker\n' "$DOCKER_CLI_IMAGE" "$PY_IMAGE" \
+  | docker build -q -t "$PREFIX-agent-image" - >/dev/null
+docker run -d --name "$AGENT" --network host \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$VMDATA:/var/lib/polynovea" -v "$VMSTATUS:/var/lib/polynovea-upgrade" -v "$VMETC:$VMETC" \
+  -v "$(winpath "$ROOT/release/packer/files/upgrade-agent.py"):/opt/polynovea/upgrade-agent.py:ro" \
+  "$PREFIX-agent-image" sleep infinity >/dev/null
+docker exec -i "$AGENT" sh -c "cat > $VMETC/release.pub" < "$KEYS/cosign.pub"
+docker exec -i "$AGENT" sh -c 'mkdir -p /etc/polynovea && cat > /etc/polynovea/upgrade.env' <<EOF
+RUNTIME=systemd
+CONTAINER=$CMS
+SERVICE=polynovea
+PUBKEY=$VMETC/release.pub
+WORK_DIR=$VMETC/work
+DATA_DIR=$VMDATA
+CHANNEL_URL=http://127.0.0.1:$CH_PORT/
+ALLOW_HTTP_CHANNEL=1
+HEALTH_URL=http://127.0.0.1:3000/api/health
+EOF
+docker exec -i "$AGENT" sh -c 'cat > /etc/polynovea/polynovea.env' <<EOF
+POLYNOVEA_IMAGE_REF=$REF_A
+EOF
+# systemctl stand-in: start/stop the CMS exactly as run-cms.sh does (host networking, loopback, data disk,
+# read-only release key and status folder).
+docker exec -i "$AGENT" sh -c 'cat > /usr/local/bin/systemctl && chmod 0755 /usr/local/bin/systemctl' <<EOF
+#!/bin/sh
+set -eu
+ref="\$(sed -n 's/^POLYNOVEA_IMAGE_REF=//p' /etc/polynovea/polynovea.env | tail -1)"
+case "\$1" in
+  stop) docker stop -t 90 $CMS >/dev/null 2>&1 || true; docker rm -f $CMS >/dev/null 2>&1 || true ;;
+  start|restart)
+    docker stop -t 90 $CMS >/dev/null 2>&1 || true; docker rm -f $CMS >/dev/null 2>&1 || true
+    docker run -d --name $CMS --network host --security-opt no-new-privileges:true --cap-drop ALL --stop-timeout 90 \
+      -v $VMDATA:/var/lib/polynovea -v $VMSTATUS:/var/lib/polynovea-upgrade:ro -v $VMETC/release.pub:/etc/polynovea/release.pub:ro \
+      --env-file /etc/polynovea/polynovea.env -e HOSTNAME=127.0.0.1 -e PORT=3000 "\$ref" >/dev/null ;;
+  *) echo "systemctl stand-in: \$*" >&2; exit 2 ;;
+esac
+EOF
+docker exec "$AGENT" python3 -I -B /opt/polynovea/upgrade-agent.py --mark && ok "agent installed (marker written)"
+
+step "Install A: setup with \"On this server\" (bundled PostgreSQL, pgBackRest), then the installation row"
+docker exec "$AGENT" systemctl restart polynovea
+wait_state setup "$RELEASE_A"
+CODE=""
+for _ in $(seq 1 60); do CODE="$(docker logs "$CMS" 2>&1 | sed -n 's/.*Setup code: \([^ ]*\).*/\1/p' | tail -1)"; [ -n "$CODE" ] && break; sleep 2; done
+[ -n "$CODE" ] || fail "no setup code in the CMS log"
+docker exec -i -e SETUP_CODE="$CODE" -e STEPS=code,local "$CMS" node --input-type=module - < scripts/image/smoke-test.mjs
+psql_cms "insert into public.installation (organisation_name, database_mode) values ('Upgrade E2E', 'local')" >/dev/null
+docker exec "$AGENT" systemctl restart polynovea
+wait_state running "$RELEASE_A" && ok "A is installed and running ($RELEASE_A)"
+
+request() { # releaseId: written by the CMS user (uid 10001) into its own data disk, as the System page does
+  docker exec "$CMS" node -e "const fs=require('fs');fs.mkdirSync('/var/lib/polynovea/upgrade-requests',{recursive:true,mode:0o700});fs.writeFileSync('/var/lib/polynovea/upgrade-requests/request.json',JSON.stringify({releaseId:process.argv[1],requestId:require('crypto').randomUUID()})+'\n',{mode:0o600})" "$1"
+}
+status_json() { docker exec "$AGENT" cat /var/lib/polynovea-upgrade/status.json; }
+step_seconds() { # from-step from-outcome to-step to-outcome
+  status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);const f=v.steps.find(x=>x.step==='$1'&&x.outcome==='$2');const t=[...v.steps].reverse().find(x=>x.step==='$3'&&x.outcome==='$4');console.log(f&&t?Math.round((Date.parse(t.at)-Date.parse(f.at))/1000):-1)})"
+}
+
+step "The worker's own restore test after setup's first backup (on A, before any upgrade)"
+# The wizard leaves restore-test-due; the worker starts a restore test by itself. Restarts during the
+# upgrades above cut it off (recorded as skipped, INTERRUPTED) and the worker starts it again. Wait for a
+# first-backup test that finished for a reason other than a restart.
+WORKER_TEST=""
+for _ in $(seq 1 150); do
+  WORKER_TEST="$(psql_cms "select reason || ' ' || status || ' ' || coalesce(error_code, '') from public.system_restore_tests where reason = 'first_backup' and status <> 'running' and coalesce(error_code, '') <> 'INTERRUPTED' order by started_at desc limit 1")"
+  [ -n "$WORKER_TEST" ] && break
+  sleep 4
+done
+echo "first-backup restore tests: $(psql_cms "select string_agg(status || coalesce('/' || error_code, ''), ', ' order by started_at) from public.system_restore_tests where reason = 'first_backup'")"
+echo "worker's restore test: ${WORKER_TEST:-none recorded}"
+case "$WORKER_TEST" in "first_backup passed"*) ok "the worker ran the first-backup restore test by itself, and it passed" ;; *) fail "worker restore test: ${WORKER_TEST:-none}" ;; esac
+
+step "Forced failure: upgrade A -> B' (health never reports 0.4.2; no compatible rollback)"
+point_channel 0.4.2+ccccccc 0.4.2
+request 0.4.2+ccccccc
+# A change committed before the upgrade must survive the switch-back; one attempted during B''s trial
+# must be refused (the app's login is read-only until the new release passes its health check).
+psql_cms "insert into public.workspaces (name, slug) values ('Before upgrade', 'e2e-before-upgrade')" >/dev/null
+app_write() { # container slug -> COMMITTED | REFUSED <sqlstate> | ERROR <code>
+  docker exec -w /app "$1" node --input-type=module -e "
+    const { installDatabase } = await import('/app/lib/system/serverHost.mjs');
+    const pg = (await import('pg')).default;
+    const client = new pg.Client(installDatabase().connection('app'));
+    await client.connect();
+    try { await client.query(\"insert into public.workspaces (name, slug) values ('During upgrade', '\$1')\".replace('\$1', process.argv[1])); console.log('COMMITTED'); }
+    catch (error) { console.log((error.code === '25006' ? 'REFUSED ' : 'ERROR ') + error.code); }
+    finally { await client.end(); }" "$2" 2>/dev/null || echo "ERROR unreachable"
+}
+start=$(date +%s)
+docker exec -d "$AGENT" sh -c 'python3 -I -B /opt/polynovea/upgrade-agent.py > /var/lib/polynovea-upgrade/agent.log 2>&1; echo $? > /var/lib/polynovea-upgrade/agent.exit'
+DURING=""
+for _ in $(seq 1 150); do
+  if health | grep -q '"release":"0.4.2+broken"'; then DURING="$(app_write "$CMS" e2e-during-upgrade)"; break; fi
+  sleep 1
+done
+echo "write during B' trial: ${DURING:-not attempted}"
+case "$DURING" in "REFUSED 25006") ok "a write during the new release's trial is refused (read-only login, SQLSTATE 25006)" ;; *) fail "write during the trial: ${DURING:-the new release never came up}" ;; esac
+for _ in $(seq 1 300); do docker exec "$AGENT" test -f /var/lib/polynovea-upgrade/agent.exit && break; sleep 1; done
+docker exec "$AGENT" cat /var/lib/polynovea-upgrade/agent.log | grep -E "upgrade-agent: (maintenance|backup|checkpoint|migrate|start|health|rollback|restore)" || true
+[ "$(docker exec "$AGENT" cat /var/lib/polynovea-upgrade/agent.exit)" != 0 ] || fail "the upgrade to B' reported success"
+echo "agent run: $(( $(date +%s) - start ))s"
+status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);console.log('status',v.status,'rollback',v.rollback);for(const x of v.steps)console.log('  ',x.at,x.step,x.outcome,x.detail||'')})"
+[ "$(status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).status))")" = rolled_back ] || fail "status is not rolled_back"
+DETECT="$(step_seconds start started health failed)"
+BACK="$(step_seconds start started rollback ok)"
+[ "$DETECT" -ge 0 ] && [ "$DETECT" -le 125 ] || fail "the failed health check took ${DETECT}s to detect"
+ok "B' declared unhealthy ${DETECT}s after it was started (deadline 120 s); A healthy again ${BACK}s after B' started"
+status_json | grep -q '"step": "restore"' && ok "the pre-upgrade pgBackRest backup was restored before A started (no compatible rollback)"
+wait_state running "$RELEASE_A" && ok "A is serving again"
+docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_A" /etc/polynovea/polynovea.env && ok "the pin is back on A's digest"
+[ "$(psql_cms "select count(*) from public.workspaces where slug = 'e2e-before-upgrade'")" = 1 ] && ok "the change committed before the upgrade survived the switch-back" || fail "a committed change was lost"
+[ "$(psql_cms "select count(*) from public.workspaces where slug = 'e2e-during-upgrade'")" = 0 ] && ok "nothing attempted during the trial was committed" || fail "a write during the trial was committed"
+status_json | grep -q '"step": "maintenance"' && status_json | grep -q '"step": "checkpoint"' && ok "the CMS stopped taking changes before the backup; the restore point was recorded" || fail "restore-mode order not followed"
+[ "$(app_write "$CMS" e2e-after-rollback)" = COMMITTED ] && ok "A takes changes again after the switch-back (read-only undone by the restore)" || fail "A is still read-only after the switch-back"
+
+step "Upgrade A -> B (0.4.1, restore mode: changes paused until B passes its health check)"
+point_channel 0.4.1+bbbbbbb 0.4.1
+request 0.4.1+bbbbbbb
+start=$(date +%s)
+docker exec "$AGENT" rm -f /var/lib/polynovea-upgrade/agent.exit
+docker exec -d "$AGENT" sh -c 'python3 -I -B /opt/polynovea/upgrade-agent.py > /var/lib/polynovea-upgrade/agent.log 2>&1; echo $? > /var/lib/polynovea-upgrade/agent.exit'
+# Probe B's database as the app as soon as B's container runs, until a write commits. During B's trial
+# (before its health check passes and the agent resumes changes) every attempt must be refused.
+PROBES=""
+for _ in $(seq 1 600); do
+  if docker inspect --format '{{.Config.Image}}' "$CMS" 2>/dev/null | grep -q "$REF_B"; then
+    RESULT="$(app_write "$CMS" "e2e-b-probe-$(date +%s%N)")"
+    case "$RESULT" in "ERROR unreachable"|ERROR\ ECONNREFUSED|ERROR\ 57P03|ERROR\ undefined) ;; *) PROBES="$PROBES $RESULT" ;; esac
+    case "$RESULT" in COMMITTED) break ;; esac
+  fi
+  docker exec "$AGENT" test -f /var/lib/polynovea-upgrade/agent.exit && [ -n "$PROBES" ] && case "$PROBES" in *COMMITTED*) break ;; esac
+  sleep 0.2
+done
+for _ in $(seq 1 300); do docker exec "$AGENT" test -f /var/lib/polynovea-upgrade/agent.exit && break; sleep 1; done
+[ "$(docker exec "$AGENT" cat /var/lib/polynovea-upgrade/agent.exit)" = 0 ] || fail "the upgrade to B failed: $(status_json)"
+echo "agent run: $(( $(date +%s) - start ))s; writes paused (maintenance -> writes resumed): $(step_seconds maintenance started writes ok)s; CMS down (maintenance -> start): $(step_seconds maintenance started start started)s; start -> healthy: $(step_seconds start started health ok)s"
+echo "app writes on B, in order:$PROBES"
+case "$PROBES" in " REFUSED 25006"*) ok "writes were refused during B's trial (read-only login)" ;; *) fail "first app write on B was not refused during the trial:$PROBES" ;; esac
+case "$PROBES" in *COMMITTED) ok "a write succeeds on B once the trial is over" ;; *) fail "no write committed on B after the upgrade:$PROBES" ;; esac
+status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s).steps.map(x=>x.step+':'+x.outcome);const h=v.indexOf('health:ok'),w=v.indexOf('writes:ok');process.exit(h>=0&&w>h?0:1)})" \
+  && ok "'read-only off' (writes resumed) is recorded after the health check passed" || fail "writes resumed is not recorded after health ok: $(status_json)"
+[ "$(psql_cms "select count(*) from pg_catalog.pg_db_role_setting s join pg_catalog.pg_roles r on r.oid = s.setrole where r.rolname = 'polynovea_app' and array_to_string(s.setconfig, ',') like '%default_transaction_read_only%'")" = 0 ] \
+  && ok "default_transaction_read_only is not set for polynovea_app (pg_db_role_setting)" || fail "polynovea_app is still read-only"
+wait_state running 0.4.1+bbbbbbb && ok "B is serving (/api/health reports 0.4.1+bbbbbbb)"
+docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_B" /etc/polynovea/polynovea.env && ok "the pin is B's digest"
+docker exec "$AGENT" python3 -I -B /opt/polynovea/upgrade-agent.py && ok "the same request is not run twice"
+
+status_field() { status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s)[process.argv[1]]))" "$1"; }
+steps_in_order() { # step:outcome ... -> exit 0 if each was recorded, in this order
+  status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s).steps.map(x=>x.step+':'+x.outcome);const i=process.argv.slice(1).map(k=>v.indexOf(k));process.exit(i.every((n,j)=>n>=0&&(j===0||n>i[j-1]))?0:1)})" "$@"
+}
+no_restore_mode_steps() { local s; s="$(status_json)"; ! grep -qE '"step": "(maintenance|checkpoint|writes|restore)"' <<<"$s"; }
+no_read_only_setting() {
+  [ "$(psql_cms "select count(*) from pg_catalog.pg_db_role_setting s join pg_catalog.pg_roles r on r.oid = s.setrole where r.rolname = 'polynovea_app' and array_to_string(s.setconfig, ',') like '%default_transaction_read_only%'")" = 0 ]
+}
+
+step "Upgrade B -> C (0.4.3, rollback compatible: B keeps serving and taking changes through backup and migrations)"
+point_channel 0.4.3+ddddddd 0.4.3
+request 0.4.3+ddddddd
+start=$(date +%s)
+docker exec "$AGENT" rm -f /var/lib/polynovea-upgrade/agent.exit
+docker exec -d "$AGENT" sh -c 'python3 -I -B /opt/polynovea/upgrade-agent.py > /var/lib/polynovea-upgrade/agent.log 2>&1; echo $? > /var/lib/polynovea-upgrade/agent.exit'
+# Write as the app for the whole run, tagging each result with the release that served it. In compatible
+# mode no write is ever refused; connection errors while the container is replaced are ignored.
+PROBES=""
+for _ in $(seq 1 600); do
+  docker exec "$AGENT" test -f /var/lib/polynovea-upgrade/agent.exit && break
+  SERVING="$(docker inspect --format '{{.Config.Image}}' "$CMS" 2>/dev/null || true)"
+  case "$SERVING" in *"$REF_B"*) TAG=B ;; *"$REF_C"*) TAG=C ;; *) TAG=- ;; esac
+  RESULT="$(app_write "$CMS" "e2e-c-probe-$(date +%s%N)")"
+  case "$RESULT" in COMMITTED|REFUSED*) PROBES="$PROBES $TAG:${RESULT// /_}" ;; esac
+  sleep 0.2
+done
+for _ in $(seq 1 300); do docker exec "$AGENT" test -f /var/lib/polynovea-upgrade/agent.exit && break; sleep 1; done
+[ "$(docker exec "$AGENT" cat /var/lib/polynovea-upgrade/agent.exit)" = 0 ] || fail "the compatible upgrade to C failed: $(status_json)"
+echo "agent run: $(( $(date +%s) - start ))s; CMS down (start -> healthy): $(step_seconds start started health ok)s; backup + migrate while B served: $(step_seconds backup started migrate ok)s"
+echo "app writes during the upgrade, in order:$PROBES"
+case "$PROBES" in *REFUSED*) fail "a write was refused during a compatible upgrade:$PROBES" ;; esac
+case "$PROBES" in *B:COMMITTED*) ok "B took changes while the upgrade ran (none refused)" ;; *) fail "no write committed on B during the compatible upgrade:$PROBES" ;; esac
+[ "$(status_field rollback)" = compatible ] && ok "status records rollback: compatible" || fail "status rollback is $(status_field rollback)"
+steps_in_order backup:ok migrate:ok start:started health:ok switch:ok \
+  && ok "backup and migrations ran before the switch (B serving), then start, health, switch" || fail "compatible step order: $(status_json)"
+no_restore_mode_steps && ok "no maintenance, checkpoint, read-only or restore step (changes never paused)" || fail "restore-mode steps in a compatible upgrade: $(status_json)"
+no_read_only_setting && ok "default_transaction_read_only is not set for polynovea_app" || fail "polynovea_app is read-only after a compatible upgrade"
+wait_state running 0.4.3+ddddddd && ok "C is serving (/api/health reports 0.4.3+ddddddd)" || fail "C is not serving"
+docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_C" /etc/polynovea/polynovea.env && ok "the pin is C's digest" || fail "the pin is not C's digest"
+docker exec "$AGENT" python3 -I -B /opt/polynovea/upgrade-agent.py && ok "the same request is not run twice"
+
+step "Forced failure: upgrade C -> C' (0.4.4, rollback compatible; health never reports 0.4.4)"
+point_channel 0.4.4+eeeeeee 0.4.4
+request 0.4.4+eeeeeee
+start=$(date +%s)
+docker exec "$AGENT" rm -f /var/lib/polynovea-upgrade/agent.exit
+docker exec -d "$AGENT" sh -c 'python3 -I -B /opt/polynovea/upgrade-agent.py > /var/lib/polynovea-upgrade/agent.log 2>&1; echo $? > /var/lib/polynovea-upgrade/agent.exit'
+DURING=""
+for _ in $(seq 1 150); do
+  if health | grep -q '"release":"0.4.4+broken"'; then DURING="$(app_write "$CMS" e2e-during-compatible)"; break; fi
+  sleep 1
+done
+echo "write during C' trial: ${DURING:-not attempted}"
+[ "$DURING" = COMMITTED ] && ok "a write during C''s trial commits (compatible mode never pauses changes)" || fail "write during the compatible trial: ${DURING:-the new release never came up}"
+for _ in $(seq 1 300); do docker exec "$AGENT" test -f /var/lib/polynovea-upgrade/agent.exit && break; sleep 1; done
+[ "$(docker exec "$AGENT" cat /var/lib/polynovea-upgrade/agent.exit)" != 0 ] || fail "the upgrade to C' reported success"
+echo "agent run: $(( $(date +%s) - start ))s"
+status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);console.log('status',v.status,'rollback',v.rollback);for(const x of v.steps)console.log('  ',x.at,x.step,x.outcome,x.detail||'')})"
+[ "$(status_field status)" = rolled_back ] || fail "status is not rolled_back"
+DETECT="$(step_seconds start started health failed)"
+BACK="$(step_seconds start started rollback ok)"
+[ "$DETECT" -ge 0 ] && [ "$DETECT" -le 125 ] || fail "the failed health check took ${DETECT}s to detect"
+[ "$BACK" -ge 0 ] && [ "$BACK" -le 180 ] || fail "C was not healthy again in time (${BACK}s after C' started)"
+ok "C' declared unhealthy ${DETECT}s after it was started (deadline 120 s); C healthy again ${BACK}s after C' started"
+no_restore_mode_steps && ok "switched back without a restore (no maintenance, checkpoint or restore step)" || fail "a compatible switch-back ran restore-mode steps: $(status_json)"
+wait_state running 0.4.3+ddddddd && ok "C is serving again" || fail "C is not serving after the switch-back"
+docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_C" /etc/polynovea/polynovea.env && ok "the pin is back on C's digest" || fail "the pin is not back on C"
+[ "$(psql_cms "select count(*) from public.workspaces where slug = 'e2e-during-compatible'")" = 1 ] \
+  && ok "the change made during C''s trial is kept (C runs on the migrated schema; nothing restored)" || fail "a change made during the compatible trial was lost"
+[ "$(app_write "$CMS" e2e-after-compatible-rollback)" = COMMITTED ] && ok "C takes changes after the switch-back" || fail "C does not take changes after the switch-back"
+
+step "A restart in the middle of a restore test leaves it skipped (INTERRUPTED), not failed"
+docker exec -d -w /app "$CMS" node scripts/polynovea-cms.mjs system restore-test --reason manual
+for _ in $(seq 1 60); do [ "$(psql_cms "select count(*) from public.system_restore_tests where status = 'running'")" = 1 ] && break; sleep 1; done
+[ "$(psql_cms "select count(*) from public.system_restore_tests where status = 'running'")" = 1 ] || fail "the manual restore test did not start"
+sleep 3
+docker exec "$AGENT" systemctl restart polynovea   # what an upgrade's switch does to the running container
+wait_state running 0.4.3+ddddddd
+for _ in $(seq 1 60); do [ "$(psql_cms "select count(*) from public.system_restore_tests where status = 'running'")" = 0 ] && break; sleep 1; done
+CUT="$(psql_cms "select status || ' ' || coalesce(error_code, '') from public.system_restore_tests where reason = 'manual' order by started_at desc limit 1")"
+[ "$CUT" = "skipped INTERRUPTED" ] && ok "the cut-off restore test is recorded as skipped (INTERRUPTED), not as a failed backup" || fail "cut-off restore test recorded as: $CUT"
+
+step "Restore test on a healthy backup"
+docker exec -w /app "$CMS" node scripts/polynovea-cms.mjs system restore-test --reason manual || fail "restore test did not pass on a healthy backup"
+[ "$(psql_cms "select status from public.system_restore_tests order by started_at desc limit 1")" = passed ] && ok "restore test passed and recorded" || fail "the newest restore test row is not passed"
+psql_cms "select checks_json->'ledger' from public.system_restore_tests order by started_at desc limit 1"
+[ -z "$(docker exec "$CMS" sh -c 'ls -A /var/lib/polynovea/restore-test 2>/dev/null')" ] && ok "temporary restore folder removed"
+
+step "Restore test on a corrupted backup raises an alert"
+docker exec "$CMS" sh -ec '
+  repo=/var/lib/polynovea/pgbackrest/backup/polynovea
+  full="$(ls -1 "$repo" | grep -E "F$" | sort | tail -1)"
+  # Data files only (pg_data/ or bundle/), not the manifest: the damage pgBackRest must catch on restore.
+  find "$repo/$full" -type f -size +8k ! -name "backup.manifest*" | head -40 | while read -r f; do
+    size=$(stat -c %s "$f"); printf "\377\377\377\377" | dd of="$f" bs=1 seek=$((size / 2)) conv=notrunc 2>/dev/null
+  done
+  echo "corrupted files in backup $full"'
+set +e
+docker exec -w /app "$CMS" node scripts/polynovea-cms.mjs system restore-test --reason manual
+CODE_CORRUPT=$?
+set -e
+[ "$CODE_CORRUPT" = 1 ] || fail "restore test on a corrupted backup exited $CODE_CORRUPT (expected 1: failed)"
+ROW="$(psql_cms "select status || ' ' || coalesce(error_code, '') from public.system_restore_tests order by started_at desc limit 1")"
+[ "$ROW" = "failed RESTORE_FAILED" ] && ok "restore test recorded as failed (RESTORE_FAILED): a blocking Doctor finding and a System page banner" || fail "unexpected restore test row: $ROW"
+[ "$(psql_cms "select count(*) from public.platform_audit_events where action = 'system.restore_test.failed'")" -ge 0 ] && echo "audit events: $(psql_cms "select string_agg(action, ', ' order by created_at) from public.platform_audit_events where action like 'system.%'")"
+[ -z "$(docker exec "$CMS" sh -c 'ls -A /var/lib/polynovea/restore-test 2>/dev/null')" ] && ok "temporary restore folder removed after the failure"
+
+step "All upgrade checks passed"

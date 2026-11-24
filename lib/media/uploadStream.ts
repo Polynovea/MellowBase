@@ -7,9 +7,11 @@ import { canonicalMediaExtension, assertMediaSignature } from "@/lib/media/uploa
 // file signature. Adapters write to a temporary location and only commit when the stream ends cleanly.
 
 export class UploadRejectedError extends Error {
-  constructor(message: string, readonly status: 400 | 413 | 415) {
+  readonly status: 400 | 413 | 415;
+  constructor(message: string, status: 400 | 413 | 415) {
     super(message);
     this.name = "UploadRejectedError";
+    this.status = status;
   }
 }
 

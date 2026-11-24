@@ -37,9 +37,11 @@ const ERROR_MESSAGES: Record<SetupSessionErrorCode, string> = {
 
 export class SetupSessionError extends Error {
   readonly status = 401;
-  constructor(readonly code: SetupSessionErrorCode) {
+  readonly code: SetupSessionErrorCode;
+  constructor(code: SetupSessionErrorCode) {
     super(ERROR_MESSAGES[code]);
     this.name = "SetupSessionError";
+    this.code = code;
   }
 }
 

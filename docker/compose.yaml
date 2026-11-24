@@ -1,0 +1,91 @@
+# Polynovea CMS with Docker Compose. Two ways to reach the setup wizard; pick one profile.
+#
+#   tunnel  The CMS uses the machine's own network (host networking) and listens on 127.0.0.1:3000
+#           only. Reach it with an SSH tunnel: ssh -L 3000:localhost:3000 you@server, then open
+#           http://localhost:3000/setup. Linux hosts only (Docker Desktop has no real host networking).
+#
+#   proxy   Caddy serves HTTPS for POLYNOVEA_DOMAIN with a Let's Encrypt certificate and forwards to
+#           the CMS over 127.0.0.1: the CMS joins Caddy's network namespace, so the CMS trusts it as
+#           its proxy. Caddy owns the namespace, so restarting or upgrading the CMS never takes HTTPS
+#           down with it. Ports 80 and 443 must reach this machine, and the domain must point here.
+#
+#   POLYNOVEA_IMAGE=polynovea-cms@sha256:... docker compose --profile tunnel up -d
+#   POLYNOVEA_IMAGE=polynovea-cms@sha256:... POLYNOVEA_DOMAIN=cms.example.com [POLYNOVEA_ACME_EMAIL=you@example.com] \
+#     docker compose --profile proxy up -d
+#
+# Why not just publish port 3000? With Docker's published ports, every connection reaches the CMS
+# from Docker's gateway address, not from 127.0.0.1, and the CMS has to listen on 0.0.0.0. The setup
+# wizard then cannot tell a real SSH tunnel from anyone on the network, so it refuses plain HTTP by
+# design. See docs/self-hosting/container.md.
+#
+# Everything the CMS keeps (master key, settings, the bundled database, local backups) is in the
+# polynovea-data volume. Back up the master key separately: docs/self-hosting/container.md.
+
+name: polynovea
+
+x-cms: &cms
+  image: ${POLYNOVEA_IMAGE:?Set POLYNOVEA_IMAGE to the signed image, pinned by digest (name@sha256:...)}
+  restart: unless-stopped
+  stop_grace_period: 90s
+  read_only: false
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  volumes:
+    - polynovea-data:/var/lib/polynovea
+  env_file:
+    - path: ./polynovea.env
+      required: false
+
+services:
+  cms-tunnel:
+    <<: *cms
+    profiles: ["tunnel"]
+    network_mode: host
+
+  cms:
+    <<: *cms
+    profiles: ["proxy"]
+    # The CMS joins Caddy's network namespace and still listens on 127.0.0.1:3000 only. If Caddy is
+    # recreated, Compose restarts the CMS so it joins the new namespace.
+    network_mode: "service:caddy"
+    depends_on:
+      caddy:
+        condition: service_started
+        restart: true
+    environment:
+      POLYNOVEA_TRUSTED_PROXIES: "127.0.0.1"
+      POLYNOVEA_PUBLIC_URL: "https://${POLYNOVEA_DOMAIN:?Set POLYNOVEA_DOMAIN for the proxy profile}"
+
+  caddy:
+    profiles: ["proxy"]
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: unless-stopped
+    # Caddy owns the network namespace (and the published ports); the CMS joins it.
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    # caddy-start.sh checks POLYNOVEA_DOMAIN and POLYNOVEA_ACME_EMAIL before Caddy reads them.
+    entrypoint: ["/bin/sh", "/etc/caddy/caddy-start.sh"]
+    environment:
+      POLYNOVEA_DOMAIN: "${POLYNOVEA_DOMAIN:?Set POLYNOVEA_DOMAIN for the proxy profile}"
+      # Optional: Let's Encrypt's expiry warnings go there. Unset: no email option.
+      POLYNOVEA_ACME_EMAIL: "${POLYNOVEA_ACME_EMAIL:-}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-start.sh:/etc/caddy/caddy-start.sh:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  polynovea-data:
+  caddy-data:
+  caddy-config:

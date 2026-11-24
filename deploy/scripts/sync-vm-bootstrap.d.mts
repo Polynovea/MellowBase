@@ -1,0 +1,13 @@
+export const DEFAULT_SOURCES: string[];
+export const VM_FILES: string[];
+export const OUTPUT: string;
+export const COPIES: string[];
+export const CFN: string;
+export function START_COMMAND(cloud: "aws" | "azure"): string;
+export function findSources(sources?: string[], root?: string): Record<string, string> | null;
+export function renderBootstrap(contents: Record<string, string>): string;
+export function renderCfn(cfn: string, bootstrap: string): string;
+export function expectedOutputs(contents: Record<string, string>, root?: string): Record<string, string>;
+export function contentsAtCommit(rev: string, root?: string): Record<string, string> | null;
+export const RELEASE_KEY: string;
+export function checkReleaseKey(text: string): void;

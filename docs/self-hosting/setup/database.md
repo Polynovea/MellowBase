@@ -92,7 +92,9 @@ The secret must be JSON with `host`, `username` and `password`, and optionally `
 
 ## On this server
 
-The bundled PostgreSQL runs on this server's **data disk**; the wizard refuses to continue if the database folder is on the root disk. It listens on this server only (127.0.0.1 or a local socket) and the wizard checks that before using it.
+This option needs the Polynovea server image (the container image, or our AWS and Azure VM images built from it), which carries PostgreSQL 16 and pgBackRest. On any other server the wizard shows it as unavailable.
+
+The bundled PostgreSQL runs on this server's **data disk** (`/var/lib/polynovea/postgresql`); the wizard refuses to continue if the database folder is on the root disk (in a container: not on a volume). It listens on this server only (127.0.0.1 and a private local socket), and the wizard checks that before using it. Its administrator signs in through the socket only, as the CMS's own system user, with no password; `polynovea_owner` and `polynovea_app` may sign in only to the `polynovea` database, from 127.0.0.1, with SCRAM passwords. The details are in [../container.md](../container.md#on-this-server-the-bundled-database).
 
 Backups use pgBackRest, encrypted on this server with a generated repository password (saved in `config.enc`). Choose where they go:
 

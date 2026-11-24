@@ -1,0 +1,15 @@
+{
+  "_comment": "Filled in at release time from the signed release manifest (W1's dist/release/<id>/release.json: its ref and publicKeySha256) plus the published AMIs and Azure gallery images. Not hand-edited during development. Baked into the templates by deploy/scripts/release-templates.mjs; checked against the signed manifest by its --release-check.",
+  "release": false,
+  "cmsImage": "",
+  "caddyImage": "",
+  "aws": {
+    "amis": {}
+  },
+  "azure": {
+    "galleryImages": {
+      "x64": "",
+      "arm64": ""
+    }
+  }
+}
