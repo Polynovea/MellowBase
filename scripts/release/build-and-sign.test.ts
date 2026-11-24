@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import * as release from "./build-and-sign.mjs";
@@ -87,5 +89,33 @@ describe("pinned base images", () => {
     const caddy = /image: (caddy:\S+)/.exec(compose)?.[1];
     expect(caddy).toMatch(/@sha256:[0-9a-f]{64}$/);
     expect(packer).toContain(caddy);
+  });
+});
+
+describe("release.json upgrade fields (System page and upgrade agent)", () => {
+  const upgradeFields = release.upgradeFields as (options: { rollback: string; changelog?: string }, out: string) => Record<string, unknown>;
+
+  it("defaults to restore and accepts only compatible or restore", () => {
+    expect(parseArgs(base).rollback).toBe("restore");
+    expect(parseArgs([...base, "--rollback", "compatible"]).rollback).toBe("compatible");
+    expect(() => parseArgs([...base, "--rollback", "yes"])).toThrow(/--rollback/);
+  });
+
+  it("copies the changelog next to release.json and records its SHA-256", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "release-fields-"));
+    try {
+      const source = path.join(dir, "notes.md");
+      writeFileSync(source, "## 0.4.1\n- Fixes.\n");
+      const out = path.join(dir, "out");
+      mkdirSync(out);
+      const fields = upgradeFields({ rollback: "compatible", changelog: source }, out);
+      const copied = readFileSync(path.join(out, "CHANGELOG.md"));
+      expect(fields).toEqual({ rollback: "compatible", changelog: { file: "CHANGELOG.md", sha256: createHash("sha256").update(copied).digest("hex") } });
+      expect(upgradeFields({ rollback: "restore" }, out)).toEqual({ rollback: "restore" });
+      writeFileSync(source, "x".repeat(256 * 1024 + 1));
+      expect(() => upgradeFields({ rollback: "restore", changelog: source }, out)).toThrow(/256 KB/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

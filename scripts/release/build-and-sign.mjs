@@ -19,6 +19,11 @@
  *                             (they cannot use Docker Desktop's credential helper). Omit for a registry
  *                             that needs no login.
  *   --allow-dirty             build even with uncommitted changes (tests only; the release ID says so)
+ *   --rollback <mode>         compatible: the previous release runs correctly on this release's database
+ *                             schema, so a failed upgrade just switches back. restore (default): a failed
+ *                             upgrade restores the pre-upgrade backup. Recorded in release.json.
+ *   --changelog <file>        Markdown/text shown on the System page; copied next to release.json and
+ *                             named there with its SHA-256 (at most 256 KB).
  *
  * What it does, in order, stopping at the first failure:
  *   1. checks the working tree is clean and the key pair is present (never reads or prints the key);
@@ -69,7 +74,7 @@ export const TOOLS = Object.freeze({
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 export function parseArgs(argv) {
-  const options = { platforms: "linux/amd64,linux/arm64", tlog: false, allowDirty: false };
+  const options = { platforms: "linux/amd64,linux/arm64", tlog: false, allowDirty: false, rollback: "restore" };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => {
@@ -86,6 +91,8 @@ export function parseArgs(argv) {
       case "--tlog": options.tlog = true; break;
       case "--docker-config": options.dockerConfig = next(); break;
       case "--allow-dirty": options.allowDirty = true; break;
+      case "--rollback": options.rollback = next(); break;
+      case "--changelog": options.changelog = next(); break;
       default: throw new Error(`Unknown option ${arg}`);
     }
   }
@@ -94,6 +101,7 @@ export function parseArgs(argv) {
   }
   if (!options.version || !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(options.version)) throw new Error("--version must be a version such as 0.4.0 or 0.4.0-rc.1");
   if (!options.key) throw new Error("--key is required");
+  if (!["compatible", "restore"].includes(options.rollback)) throw new Error("--rollback takes compatible or restore");
   const platforms = options.platforms.split(",").map((p) => p.trim()).filter(Boolean);
   if (platforms.length === 0 || !platforms.every((p) => /^linux\/(amd64|arm64)$/.test(p))) throw new Error("--platforms takes linux/amd64 and/or linux/arm64");
   options.platforms = platforms;
@@ -123,6 +131,25 @@ function run(program, args, { capture = false } = {}) {
 }
 
 const sha256File = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+
+export const CHANGELOG_FILE = "CHANGELOG.md";
+const CHANGELOG_MAX_BYTES = 256 * 1024;
+
+/**
+ * The upgrade fields of release.json (read by the System page and the host upgrade agent): rollback,
+ * and the changelog copied into the release folder with its SHA-256, so it is covered by release.json's
+ * signature.
+ */
+export function upgradeFields({ rollback, changelog }, out) {
+  const fields = { rollback };
+  if (changelog) {
+    const text = readFileSync(changelog);
+    if (text.length > CHANGELOG_MAX_BYTES) throw new Error("--changelog is larger than 256 KB");
+    writeFileSync(path.join(out, CHANGELOG_FILE), text);
+    fields.changelog = { file: CHANGELOG_FILE, sha256: createHash("sha256").update(text).digest("hex") };
+  }
+  return fields;
+}
 const step = (message) => console.log(`\n== ${message}`);
 
 let dockerConfigDir = null;
@@ -176,6 +203,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (process.env.COSIGN_PASSWORD === undefined) throw new Error("Set COSIGN_PASSWORD in this command's environment (from your password manager).");
 
   step("1. Checks");
+  if (options.changelog && !existsSync(options.changelog)) throw new Error("--changelog file not found");
   if (options.dockerConfig) {
     dockerConfigDir = path.resolve(options.dockerConfig);
     if (!existsSync(path.join(dockerConfigDir, "config.json"))) throw new Error("--docker-config must be a folder holding config.json");
@@ -253,6 +281,7 @@ export async function main(argv = process.argv.slice(2)) {
     tools: TOOLS,
     publicKeySha256: sha256File(pubFile),
     transparencyLog: options.tlog,
+    ...upgradeFields(options, out),
     buildSeconds,
     createdAt: new Date().toISOString(),
   };
