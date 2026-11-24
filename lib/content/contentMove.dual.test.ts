@@ -19,7 +19,7 @@ import { uniqueKey } from "@/lib/schema/engine/testing";
 import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
 import { requestSchemaChange } from "@/lib/schema/runner/request";
 import { TEST_LIMITS } from "@/lib/schema/engine/testing";
-import { backfillModel, moveRun, readSourceOf, setReadSource, syncEntries, verifyModel } from "@/lib/content/contentMove";
+import { backfillModel, modelsNeedingResync, moveRun, readSourceOf, resyncChangedModels, setReadSource, syncEntries, verifyModel } from "@/lib/content/contentMove";
 import { bringModelTableUp, closeTableMoveSession, runWorker } from "@/lib/content/testing/tableMove";
 import { createEntry } from "@/lib/content/entryService";
 import { searchContent } from "@/lib/content/searchService";
@@ -625,6 +625,67 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     await backfillModel(getDb(), { workspaceId, modelId });
     expect(await verifyModel(getDb(), { workspaceId, modelId })).toMatchObject({ matched: true, mismatches: [] });
     expect(await tableSource(workspaceId, modelId)).not.toBeNull();
+  });
+
+  it("the worker's re-sync records a failed run and backs off per model, doubling up to an hour", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Backoff", apiKey: uniqueKey("backoff"), fields: [field({ key: "title", type: "text" }), field({ key: "count", type: "integer" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    const ids = Array.from({ length: 20 }, () => randomUUID()).sort();
+    await insertEntries(backend, workspaceId, modelId, ids.map((id, n) => ({ id, status: "published", published: { data: { title: `T${n}`, count: n }, locale: "en" } })));
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId })).verify.matched).toBe(true);
+    const db = getDb();
+    const due = async () => (await modelsNeedingResync(db, { modelId })).map((m) => m.modelId);
+    const events: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const resync = () => resyncChangedModels(db, { modelId, log: (event, fields) => events.push({ event, fields }) });
+    const age = (seconds: number) => owner.query(
+      "update content_model_move_runs set finished_at = finished_at - make_interval(secs => $2) where id = (select last_run_id from content_model_storage where content_model_id = $1)", [modelId, seconds]);
+    expect(await due()).toEqual([]);
+
+    // A save that cannot reach the table: due at once.
+    const [bad] = await backend.query<{ id: string }>("select published_version_id as id from content_entries where id = $1", [ids[4]]);
+    await backend.query("update content_entry_versions set data_jsonb = $1 where id = $2", [JSON.stringify({ title: "T4", count: "four" }), bad.id]);
+    await syncEntries(db, [ids[4]]);
+    expect(await due()).toEqual([modelId]);
+    expect(await resync()).toBe(1);
+    expect(events.at(-1)).toMatchObject({ event: "content_resynced", fields: { modelId, matched: false, failedEntries: 1 } });
+    // Unmatched once: 1 minute's pause.
+    expect(await due()).toEqual([]);
+    await age(61);
+    expect(await due()).toEqual([modelId]);
+    expect(await resync()).toBe(1);
+    // Unmatched twice in a row: 2 minutes.
+    await age(61);
+    expect(await due()).toEqual([]);
+    await age(60);
+    expect(await due()).toEqual([modelId]);
+
+    // A re-sync that fails part-way (the model's intent is 'table', so the bad entry fails its batch)
+    // is still verified: the failure is a recorded, unmatched run, and the pause doubles again.
+    await owner.query("update content_model_storage set read_source = 'table' where content_model_id = $1", [modelId]);
+    expect(await resync()).toBe(1);
+    expect(events.at(-1)).toMatchObject({ event: "content_resync_failed", fields: { modelId, matched: false, code: "22P02:content_table_write_failed" } });
+    expect(events.at(-1)!.fields.runId).toEqual(expect.any(String));
+    await age(3 * 60 + 1);
+    expect(await due()).toEqual([]);
+    await age(60);
+    expect(await due()).toEqual([modelId]);
+
+    // The pause never exceeds an hour, however many runs failed.
+    for (let n = 0; n < 4; n += 1) { await age(3_601); expect(await resync()).toBe(1); }
+    expect(await due()).toEqual([]);
+    await age(3_601);
+    expect(await due()).toEqual([modelId]);
+
+    // Fixed content: the next try matches, and reads return to the table.
+    await backend.query("update content_entry_versions set data_jsonb = $1 where id = $2", [JSON.stringify({ title: "T4", count: 4 }), bad.id]);
+    expect(await resync()).toBe(1);
+    expect(events.at(-1)).toMatchObject({ event: "content_resynced", fields: { modelId, matched: true, reads: "table" } });
+    expect(await tableSource(workspaceId, modelId)).not.toBeNull();
+    expect(await due()).toEqual([]);
+    await owner.query("update content_model_storage set read_source = 'snapshot' where content_model_id = $1", [modelId]);
   });
 
   it("random sequences of model changes, each applied and reverted, keep the table matching the snapshots", async () => {

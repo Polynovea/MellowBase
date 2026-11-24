@@ -233,8 +233,10 @@ export async function moveModel(
 
 /**
  * Models already moved (they have a run) whose table no longer matches their latest run: a schema stage
- * or a contract changed the table's shape, or a save failed to reach the table since that run. Models
- * with a schema stage queued or running are left until it finishes. Oldest first.
+ * or a contract changed the table's shape, or a save failed to reach the table since that run (at once);
+ * or whose latest run did not match (again only after a pause that doubles with each unmatched run in a
+ * row: 1 minute, 2, 4 ... at most 1 hour, so a broken model is not re-synced on every pass). Models with
+ * a schema stage queued or running are left until it finishes. Oldest first.
  */
 export async function modelsNeedingResync(db: DbExecutor, options: { modelId?: string; limit?: number } = {}): Promise<Array<{ modelId: string; workspaceId: string; readSource: ReadSource }>> {
   const { rows } = await sql<{ content_model_id: string; workspace_id: string; read_source: string }>`
@@ -242,8 +244,15 @@ export async function modelsNeedingResync(db: DbExecutor, options: { modelId?: s
       from public.content_model_storage s
       join public.content_model_tables t on t.content_model_id = s.content_model_id and t.workspace_id = s.workspace_id
       left join public.content_model_move_runs r on r.id = s.last_run_id
+      left join lateral (
+        select count(*)::int as n from public.content_model_move_runs f
+         where f.content_model_id = s.content_model_id and not f.matched
+           and f.started_at > coalesce((select max(g.started_at) from public.content_model_move_runs g
+                                         where g.content_model_id = s.content_model_id and g.matched), '-infinity'::timestamptz)
+      ) unmatched on not r.matched
      where s.last_run_id is not null
-       and (r.id is null or r.shape_hash <> t.applied_shape_hash or s.sync_failures <> r.sync_failures)
+       and (r.id is null or r.shape_hash <> t.applied_shape_hash or s.sync_failures <> r.sync_failures
+            or (not r.matched and r.finished_at <= now() - least(interval '1 hour', interval '1 minute' * power(2, greatest(unmatched.n, 1) - 1))))
        and not exists (select 1 from public.schema_migration_ledger l where l.content_model_id = s.content_model_id and l.status in ('pending', 'running'))
        ${options.modelId ? sql`and s.content_model_id = ${options.modelId}::uuid` : sql``}
      order by s.updated_at, s.content_model_id
@@ -262,27 +271,51 @@ function resyncErrorCode(error: unknown): string {
 }
 
 /**
+ * Models whose verification itself failed (nothing could be recorded), by id: skipped until `until`,
+ * with the same doubling pause as unmatched runs. In the worker's memory only; a recorded run is the
+ * durable back-off (modelsNeedingResync).
+ */
+const verifyBackoff = new Map<string, { failures: number; until: number }>();
+const pauseMs = (failures: number) => Math.min(60 * 60_000, 60_000 * 2 ** Math.max(0, failures - 1));
+
+/**
  * Run by the migration worker (owner side) after each pass: re-syncs (1,000-entry batches) and
  * re-verifies every model from modelsNeedingResync. A model whose intent is 'table' reads from its table
  * again as soon as the new run matches the table's current shape (tableStore requires exactly that);
  * a run that does not match keeps its reads on the snapshots and is recorded in content_model_move_runs
- * with its mismatches. Logs ids, counts and codes only. Returns how many models it re-synced.
+ * with its mismatches. A re-sync that fails part-way is still verified, so the failure is a recorded
+ * run (the table as it is, against the snapshots) and the model waits out its pause before the next
+ * try. Logs ids, counts and codes only. Returns how many models it re-synced.
  */
-export async function resyncChangedModels(db: Kysely<DB>, options: { modelId?: string; log?: ResyncLog } = {}): Promise<number> {
+export async function resyncChangedModels(db: Kysely<DB>, options: { modelId?: string; log?: ResyncLog; now?: () => number } = {}): Promise<number> {
   const log: ResyncLog = options.log ?? (() => undefined);
+  const now = options.now ?? Date.now;
   let done = 0;
   for (const model of await modelsNeedingResync(db, { modelId: options.modelId })) {
+    const paused = verifyBackoff.get(model.modelId);
+    if (paused && paused.until > now()) continue;
+    let backfill: BackfillResult | undefined;
+    let backfillCode: string | null = null;
     try {
-      const backfill = await backfillModel(db, { workspaceId: model.workspaceId, modelId: model.modelId });
+      backfill = await backfillModel(db, { workspaceId: model.workspaceId, modelId: model.modelId });
+    } catch (error) {
+      backfillCode = resyncErrorCode(error);
+    }
+    try {
       const verify = await verifyModel(db, { workspaceId: model.workspaceId, modelId: model.modelId, backfill });
+      verifyBackoff.delete(model.modelId);
       done += 1;
-      log("content_resynced", {
-        modelId: model.modelId, runId: verify.runId, matched: verify.matched, batches: backfill.batches, entries: backfill.entries,
-        failedEntries: backfill.failed.length, mismatches: verify.mismatches.map((m) => m.kind),
+      log(backfillCode ? "content_resync_failed" : "content_resynced", {
+        modelId: model.modelId, runId: verify.runId, matched: verify.matched,
+        ...(backfillCode ? { code: backfillCode } : {}),
+        batches: backfill?.batches, entries: backfill?.entries, failedEntries: backfill?.failed.length, retries: backfill?.retries,
+        mismatches: verify.mismatches.map((m) => m.kind),
         reads: model.readSource === "table" && verify.matched ? "table" : "snapshot",
       });
     } catch (error) {
-      log("content_resync_failed", { modelId: model.modelId, code: resyncErrorCode(error) });
+      const failures = (paused?.failures ?? 0) + 1;
+      verifyBackoff.set(model.modelId, { failures, until: now() + pauseMs(failures) });
+      log("content_resync_failed", { modelId: model.modelId, code: backfillCode ?? resyncErrorCode(error), verifyCode: resyncErrorCode(error), pauseMs: pauseMs(failures) });
     }
   }
   return done;
