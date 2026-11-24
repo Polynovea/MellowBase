@@ -125,6 +125,10 @@ docker exec -it polynovea node scripts/polynovea-cms.mjs --help
 docker exec -it polynovea node scripts/run-migrations.mjs --all
 ```
 
+## What is tested where
+
+The image itself is checked end to end on a developer machine (`scripts/image/run-smoke.sh`): setup over the SSH-tunnel route and through Caddy, "On this server" with a full backup to the data disk, and the restart cases. Not run locally, by design: backups to a real S3 bucket or Azure container, a real Let's Encrypt certificate, and host networking on a real Linux server. Subrojit's first Azure deployment covers them. See also [vm-images.md](vm-images.md#what-is-tested-where).
+
 ## Building the image yourself
 
 ```
