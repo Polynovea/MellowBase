@@ -50,7 +50,10 @@ The secret holds JSON with `host`, `port`, `username`, `password` and `dbname`, 
 
 First boot **fails closed**. Images are pulled only by digest (`name@sha256:...`). When the release package ships a signature check at `/opt/polynovea/verify-images.sh`, it runs before anything starts. If any step fails, the CMS and Caddy are stopped and disabled, so nothing unverified runs, even after a reboot.
 
-Plain Ubuntu plus a pinned container image is the default, because it works from a one-click link in every region. AMIs are per region and Azure images per subscription, so a Polynovea server image needs publishing (copied AMIs, or an Azure community gallery) before a link can use it. `CustomImageId` / `customImageId` takes one when it exists.
+Plain Ubuntu plus a pinned container image is the default, because it works from a one-click link in every region. A Polynovea server image can be used only once it's published (see "Publishing" in `docs/self-hosting/vm-images.md`; a decision for the project lead):
+
+- **AWS:** a public AMI in each region, built with `aws_publishable = true` (an unencrypted root snapshot with no secrets on it). The template still encrypts every volume at launch. Pass the region's AMI ID, from the release notes, as `CustomImageId`.
+- **Azure:** an image version in an Azure Compute Gallery shared with the community. Pass `/CommunityGalleries/<public name>/Images/<definition>/Versions/<version>` as `customImageId`. A managed image only works inside its own subscription. Trusted Launch is used only with the Ubuntu marketplace image, because a gallery image supports it only if its definition declares `SecurityType=TrustedLaunchSupported`.
 
 ## Paid hardening upgrades
 

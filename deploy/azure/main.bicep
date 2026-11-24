@@ -63,7 +63,7 @@ param containerImage string = ''
 @description('HTTPS proxy (Caddy) image pinned by digest. Required on plain Ubuntu; on a Polynovea server image, blank uses the image it carries.')
 param caddyImage string = ''
 
-@description('Optional resource ID of a Polynovea server image (managed image or gallery image version). When blank, Ubuntu 24.04 LTS is used.')
+@description('Optional Polynovea server image: the published community gallery image (/CommunityGalleries/<public name>/Images/<definition>/Versions/<version>), or the resource ID of a managed image or gallery image version in your subscription. When blank, Ubuntu 24.04 LTS is used.')
 param customImageId string = ''
 
 @description('Location for all resources.')
@@ -461,8 +461,10 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   identity: { type: 'SystemAssigned' }
   properties: {
     hardwareProfile: { vmSize: vmSize }
-    // Trusted Launch (secure boot and a virtual TPM) on x64; Azure's Arm64 sizes don't offer it.
-    securityProfile: architecture == 'x64'
+    // Trusted Launch (secure boot and a virtual TPM) on x64 with the Ubuntu marketplace image. Azure's
+    // Arm64 sizes don't offer it, and a gallery image supports it only if its definition declares
+    // SecurityType=TrustedLaunchSupported.
+    securityProfile: architecture == 'x64' && empty(customImageId)
       ? {
           securityType: 'TrustedLaunch'
           uefiSettings: { secureBootEnabled: true, vTpmEnabled: true }
@@ -481,7 +483,13 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
       allowExtensionOperations: false
     }
     storageProfile: {
-      imageReference: empty(customImageId) ? ubuntuImage : { id: customImageId }
+      // A community gallery image (the published Polynovea image) is referenced by its public name;
+      // a managed image or a gallery in your own subscription by its resource ID.
+      imageReference: empty(customImageId)
+        ? ubuntuImage
+        : startsWith(customImageId, '/CommunityGalleries/')
+            ? { communityGalleryImageId: customImageId }
+            : { id: customImageId }
       osDisk: {
         name: '${prefix}-os'
         createOption: 'FromImage'

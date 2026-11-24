@@ -107,7 +107,7 @@ variable "container_image" {
 }
 
 variable "custom_image_id" {
-  description = "Optional Polynovea server image resource ID. Blank = Ubuntu 24.04 LTS."
+  description = "Optional Polynovea server image: the community gallery image ID (/CommunityGalleries/<public name>/Images/<definition>/Versions/<version>) or a managed or gallery image resource ID. Blank = Ubuntu 24.04 LTS."
   type        = string
   default     = ""
 }
