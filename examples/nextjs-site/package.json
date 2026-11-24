@@ -4,11 +4,16 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "npm run sdk:build && npm run types:check",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sdk:build": "npm --prefix ../../packages/cms-sdk run build",
+    "types:check": "node scripts/check-types.mjs",
+    "types:pull": "node ../../packages/cms-cli/bin/polynovea-cms.mjs types pull --out polynovea-cms.ts"
   },
   "dependencies": {
+    "@polynovea/cms-sdk": "file:../../packages/cms-sdk",
     "next": "^15.5.29",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
