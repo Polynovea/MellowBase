@@ -19,7 +19,7 @@ import { uniqueKey } from "@/lib/schema/engine/testing";
 import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
 import { requestSchemaChange } from "@/lib/schema/runner/request";
 import { TEST_LIMITS } from "@/lib/schema/engine/testing";
-import { backfillModel, modelsNeedingResync, moveRun, readSourceOf, resyncChangedModels, setReadSource, syncEntries, verifyModel } from "@/lib/content/contentMove";
+import { backfillModel, describeTableStatus, modelsNeedingResync, moveModel, moveRun, readSourceOf, resyncChangedModels, setReadSource, syncEntries, verifyModel } from "@/lib/content/contentMove";
 import { bringModelTableUp, closeTableMoveSession, runWorker } from "@/lib/content/testing/tableMove";
 import { createEntry } from "@/lib/content/entryService";
 import { searchContent } from "@/lib/content/searchService";
@@ -598,6 +598,38 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(after).not.toContain(derivedName("tg", table, "title"));
     expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId, switchReads: true })).verify.matched).toBe(true);
     expect(await search()).toBe(1);
+  });
+
+  it("content:move reports a table part-way through a change as such, instead of failing with 42703", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const apiKey = uniqueKey("midway");
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Midway", apiKey, fields: [field({ key: "title", type: "text" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    await insertEntries(backend, workspaceId, modelId, Array.from({ length: 3 }, (_, n) => ({ id: randomUUID(), status: "draft", draft: { data: { title: `T${n}` }, locale: "en" } })));
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId })).verify.matched).toBe(true);
+
+    // A new field is saved and its change queued, but the worker has not added the column yet.
+    const model = (await getModel(workspaceId, modelId))!;
+    const changed = await applyChange({ model, proposedSchema: { name: "Midway", apiKey, fields: [field({ key: "title", type: "text" }), field({ key: "extra", type: "text" })] }, acknowledgeUnsafe: true, actorAdminUserId: adminUserId });
+    if (!changed.ok || !changed.data.version) throw new Error("version 2 not created");
+    const { expandLedgerId } = await requestSchemaChange(getDb(), { contentModelId: modelId, targetVersionId: changed.data.version.id, requestedBy: adminUserId, limits: TEST_LIMITS });
+    const [runsBefore] = await backend.query<{ n: number }>("select count(*)::int as n from content_model_move_runs where content_model_id = $1", [modelId]);
+
+    const midway = await moveModel(getDb(), { workspaceId, modelId, requestedBy: adminUserId, switchReads: true });
+    expect(midway.table).toMatchObject({ status: "change_in_progress", ledgerId: expandLedgerId, stage: "expand", stageStatus: "pending" });
+    expect(midway.switched).toBe(false);
+    expect(describeTableStatus(midway.table)).toMatch(/waiting for the schema worker/);
+    // Nothing was copied or recorded while the table was mid-change.
+    const [runsAfter] = await backend.query<{ n: number }>("select count(*)::int as n from content_model_move_runs where content_model_id = $1", [modelId]);
+    expect(runsAfter.n).toBe(runsBefore.n);
+
+    // Once the worker has finished, the same command moves the model.
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    const done = await moveModel(getDb(), { workspaceId, modelId, requestedBy: adminUserId });
+    expect(done.table.status).toBe("exists");
+    expect(done.verify?.matched).toBe(true);
   });
 
   it("after a schema change (rename + add) the worker re-syncs the model by itself and its reads return to the table", async () => {

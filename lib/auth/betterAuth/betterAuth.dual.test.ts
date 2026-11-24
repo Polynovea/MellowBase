@@ -307,7 +307,9 @@ describe("built-in auth: second factors [postgres]", () => {
     const bodies = await Promise.all(results.map((r) => r.json().catch(() => ({}))));
     const checked = bodies.filter((b) => b.code === "INVALID_CODE").length;
     expect(results.every((r) => r.status !== 200)).toBe(true);
-    expect(checked).toBeLessThanOrEqual(5);
+    // Checks are strictly serial per account, so exactly the challenge's 5 attempts are checked,
+    // whatever the load: parallel callers wait their turn instead of slipping past uncounted.
+    expect(checked).toBe(5);
     const { rows: [after] } = await owner.query(`select "failedVerificationCount" as n from ${AUTH_SCHEMA}."twoFactor" where "userId" = $1`, [user.id]);
     expect(after.n).toBe(checked);
 
@@ -317,7 +319,7 @@ describe("built-in auth: second factors [postgres]", () => {
       await Promise.all(Array.from({ length: 10 }, () => next.browser.call("POST", "/two-factor/verify-totp", { code: "000000" })));
     }
     const { rows: [locked] } = await owner.query(`select "failedVerificationCount" as n, "lockedUntil" from ${AUTH_SCHEMA}."twoFactor" where "userId" = $1`, [user.id]);
-    expect(locked.n).toBeLessThanOrEqual(15);
+    expect(locked.n).toBe(10);
     expect(locked.lockedUntil).not.toBeNull();
     const last = await signIn(auth, email);
     expect((await last.browser.call("POST", "/two-factor/verify-totp", { code: await code() })).status).toBe(429);
@@ -325,17 +327,20 @@ describe("built-in auth: second factors [postgres]", () => {
 
   it("regression: parallel wrong recovery codes cannot exceed the per-challenge limit", async () => {
     const auth = makeAuth();
-    const { email } = await newUser(auth);
+    const { email, user } = await newUser(auth);
     const { backupCodes } = await enrolTotp(auth, email);
     const { browser } = await signIn(auth, email);
     const results = await Promise.all(Array.from({ length: 25 }, (_, i) => browser.call("POST", "/two-factor/verify-backup-code", { code: `wrong-${i}` })));
     const bodies = await Promise.all(results.map((r) => r.json().catch(() => ({}))));
-    expect(bodies.filter((b) => b.code === "INVALID_BACKUP_CODE").length).toBeLessThanOrEqual(5);
+    expect(bodies.filter((b) => b.code === "INVALID_BACKUP_CODE").length).toBe(5);
     expect(results.every((r) => r.status !== 200)).toBe(true);
     // That challenge is spent; the right code works only on a fresh one.
     expect((await browser.call("POST", "/two-factor/verify-backup-code", { code: backupCodes[1] })).status).not.toBe(200);
     const fresh = await signIn(auth, email);
     expect((await fresh.browser.call("POST", "/two-factor/verify-backup-code", { code: backupCodes[1] })).status).toBe(200);
+    // Every request gave its turn back.
+    const { rows: leases } = await owner.query(`select 1 from ${AUTH_SCHEMA}."rateLimit" where "key" = $1`, [`2fa-serial:${user.id}`]);
+    expect(leases).toHaveLength(0);
   });
 
   it("change-password knows the signed-in user: 8 characters with MFA, and never the account's own email", async () => {
