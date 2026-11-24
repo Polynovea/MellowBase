@@ -13,6 +13,11 @@
  * - Across processes, a lease row in `polynovea_auth."rateLimit"` (key `2fa-serial:<user id>`,
  *   `count` = a random owner token, `lastRequest` = lease expiry in ms). It needs no held database
  *   connection, so waiting can never starve the pool, and a crashed process's lease simply expires.
+ *   Expiry is written and compared with the DATABASE clock (clock_timestamp()), never a server's own
+ *   clock, so replicas whose clocks disagree still exclude each other.
+ * - One deadline (MAX_WAIT_MS) covers both the in-process queue and the lease; past it the request
+ *   answers 429 and leaves the queue. A holder renews its lease while its check runs (up to
+ *   MAX_HOLD_MS), and the lease outlives the longest wait.
  *
  * The before hook in server.ts takes the lease once Better Auth has verified the signed challenge
  * cookie; the handler wrapper releases it in a `finally`, whatever the endpoint did.
@@ -29,14 +34,18 @@ export const SERIAL_VERIFICATION_PATHS: ReadonlySet<string> = new Set([
   "/two-factor/verify-otp",
 ]);
 
-/** A check normally takes well under a second; a lease outlives a stuck one by this much. */
+/** How long a queued check waits for its turn (queue and lease together) before answering 429. */
+export const MAX_WAIT_MS = 20_000;
+/** Lease lifetime: longer than the longest wait, and renewed every third of it while the check runs. */
 export const LEASE_TTL_MS = 30_000;
-/** How long a queued check waits for its turn before answering 429. */
-export const MAX_WAIT_MS = 30_000;
+/** A holder stops renewing after this long, so a hung request cannot keep an account locked. */
+export const MAX_HOLD_MS = 120_000;
 
 export interface LeaseStore {
-  /** Take the lease for `key` if it is free or expired. True when this owner now holds it. */
+  /** Take the lease for `key` if it is free or expired (by the store's clock). True when this owner now holds it. */
   tryAcquire(key: string, token: number, ttlMs: number): Promise<boolean>;
+  /** Extend this owner's lease to `ttlMs` from now (store clock). False when it no longer holds it. */
+  renew(key: string, token: number, ttlMs: number): Promise<boolean>;
   /** Give the lease back, only if this owner still holds it. */
   release(key: string, token: number): Promise<void>;
 }
@@ -52,6 +61,7 @@ export interface SerialGateOptions {
   store: LeaseStore;
   ttlMs?: number;
   maxWaitMs?: number;
+  maxHoldMs?: number;
   /** Tests pass a fake clock and sleep. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -64,9 +74,12 @@ export interface SerialGate {
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+const TIMED_OUT = Symbol("timed out");
+
 export function createSerialGate(options: SerialGateOptions): SerialGate {
   const ttlMs = options.ttlMs ?? LEASE_TTL_MS;
   const maxWaitMs = options.maxWaitMs ?? MAX_WAIT_MS;
+  const maxHoldMs = options.maxHoldMs ?? MAX_HOLD_MS;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
   const tails = new Map<string, Promise<void>>();
@@ -75,7 +88,7 @@ export function createSerialGate(options: SerialGateOptions): SerialGate {
     async acquire(key) {
       const deadline = now() + maxWaitMs;
 
-      // In-process queue: wait for everyone ahead of us on this key.
+      // In-process queue: wait for everyone ahead of us on this key, but never past the deadline.
       const previous = tails.get(key) ?? Promise.resolve();
       let releaseLocal!: () => void;
       const mine = new Promise<void>((resolve) => { releaseLocal = resolve; });
@@ -85,9 +98,22 @@ export function createSerialGate(options: SerialGateOptions): SerialGate {
         releaseLocal();
         if (tails.get(key) === tail) tails.delete(key);
       };
-      await previous;
+      const remaining = Math.max(0, deadline - now());
+      const waited = options.sleep
+        ? await Promise.race([previous, options.sleep(remaining).then(() => TIMED_OUT)])
+        : await new Promise<unknown>((resolve) => {
+          // A real timer, cleared as soon as our turn comes, so no idle timers pile up.
+          const timer = setTimeout(() => resolve(TIMED_OUT), remaining);
+          timer.unref?.();
+          void previous.then(() => { clearTimeout(timer); resolve(undefined); });
+        });
+      if (waited === TIMED_OUT) {
+        // Leave the queue: our own link resolves at once, so we add no delay for anyone behind us.
+        finishLocal();
+        throw new SerialGateBusyError();
+      }
 
-      // Cross-process lease, polled with a short backoff.
+      // Cross-process lease, polled with a short backoff until the same deadline.
       const token = randomInt(1, 2 ** 31 - 1);
       let pause = 10;
       try {
@@ -102,10 +128,22 @@ export function createSerialGate(options: SerialGateOptions): SerialGate {
         throw error;
       }
 
+      // Keep the lease while the check runs, so a slow check never loses exclusivity; up to maxHoldMs.
+      const heldSince = now();
+      const renewal = setInterval(() => {
+        if (now() - heldSince >= maxHoldMs) {
+          clearInterval(renewal);
+          return;
+        }
+        options.store.renew(key, token, ttlMs).catch(() => undefined);
+      }, Math.max(1, Math.floor(ttlMs / 3)));
+      renewal.unref?.();
+
       let released = false;
       return async () => {
         if (released) return;
         released = true;
+        clearInterval(renewal);
         try {
           await options.store.release(key, token);
         } catch {
@@ -118,19 +156,31 @@ export function createSerialGate(options: SerialGateOptions): SerialGate {
   };
 }
 
-/** The lease store on the auth schema's rate-limit table (no migration needed: the keys never collide). */
+/** Now, in ms since the epoch, by the database's clock: the one clock every replica shares. */
+const dbNowMs = sql<number>`(extract(epoch from clock_timestamp()) * 1000)::bigint`;
+
+/**
+ * The lease store on the auth schema's rate-limit table (no migration needed: the keys never collide).
+ * Expiry is computed and compared in SQL only; no application clock reaches the query.
+ */
 export function createRateLimitLeaseStore(db: Kysely<DB>, table: string): LeaseStore {
   return {
     async tryAcquire(key, token, ttlMs) {
-      const current = Date.now();
       const { rows } = await sql<{ count: number }>`
         insert into ${sql.table(table)} as r ("key", "count", "lastRequest")
-        values (${key}, ${token}, ${current + ttlMs})
+        values (${key}, ${token}, ${dbNowMs} + ${Math.floor(ttlMs)})
         on conflict ("key") do update
           set "count" = excluded."count", "lastRequest" = excluded."lastRequest"
-          where r."lastRequest" < ${current}
+          where r."lastRequest" < ${dbNowMs}
         returning "count"`.execute(db);
       return Number(rows[0]?.count) === token;
+    },
+    async renew(key, token, ttlMs) {
+      const { rows } = await sql<{ count: number }>`
+        update ${sql.table(table)} set "lastRequest" = ${dbNowMs} + ${Math.floor(ttlMs)}
+         where "key" = ${key} and "count" = ${token}
+        returning "count"`.execute(db);
+      return rows.length > 0;
     },
     async release(key, token) {
       await sql`delete from ${sql.table(table)} where "key" = ${key} and "count" = ${token}`.execute(db);

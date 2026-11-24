@@ -4,14 +4,22 @@ import { createSerialGate, holdForRequest, runSerialScope, SerialGateBusyError, 
 /** An in-memory lease table with the same rules as the database one. */
 function memoryStore(clock: () => number = Date.now) {
   const leases = new Map<string, { token: number; expires: number }>();
-  const store: LeaseStore & { leases: typeof leases; acquires: number } = {
+  const store: LeaseStore & { leases: typeof leases; acquires: number; renewals: number } = {
     leases,
     acquires: 0,
+    renewals: 0,
     async tryAcquire(key, token, ttlMs) {
       store.acquires += 1;
       const current = leases.get(key);
       if (current && current.expires >= clock()) return false;
       leases.set(key, { token, expires: clock() + ttlMs });
+      return true;
+    },
+    async renew(key, token, ttlMs) {
+      const current = leases.get(key);
+      if (current?.token !== token) return false;
+      store.renewals += 1;
+      current.expires = clock() + ttlMs;
       return true;
     },
     async release(key, token) {
@@ -119,5 +127,85 @@ describe("serial second-factor checks", () => {
     const gate = createSerialGate({ store });
     expect(await holdForRequest(gate, "2fa-serial:a")).toBe(false);
     expect(store.acquires).toBe(0);
+  });
+});
+
+describe("security review: clocks, deadlines, renewal", () => {
+  it("(1) replicas with clocks 60 s apart still exclude each other: lease expiry uses only the store's clock", async () => {
+    const shared = memoryStore(); // the database: one clock for everyone
+    const ahead = createSerialGate({ store: shared, maxWaitMs: 60, now: () => Date.now() + 60_000 });
+    const behind = createSerialGate({ store: shared, maxWaitMs: 60, now: () => Date.now() - 60_000 });
+    const release = await ahead.acquire("2fa-serial:a");
+    await expect(behind.acquire("2fa-serial:a")).rejects.toBeInstanceOf(SerialGateBusyError);
+    await release();
+    const second = await behind.acquire("2fa-serial:a");
+    await expect(ahead.acquire("2fa-serial:a")).rejects.toBeInstanceOf(SerialGateBusyError);
+    await second();
+  });
+
+  it("(1) the database store sends the same SQL and parameters whatever the server clock says", async () => {
+    const { DummyDriver, Kysely, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler } = await import("kysely");
+    const { createRateLimitLeaseStore } = await import("@/lib/auth/betterAuth/serialVerification");
+    const captured: Array<{ sql: string; parameters: readonly unknown[] }> = [];
+    const db = new Kysely<never>({
+      dialect: { createAdapter: () => new PostgresAdapter(), createDriver: () => new DummyDriver(), createIntrospector: (k) => new PostgresIntrospector(k), createQueryCompiler: () => new PostgresQueryCompiler() },
+      log: (event) => { if (event.level === "query") captured.push({ sql: event.query.sql, parameters: event.query.parameters }); },
+    });
+    const store = createRateLimitLeaseStore(db as never, "polynovea_auth.rateLimit");
+    const realNow = Date.now;
+    for (const offset of [-3_600_000, 3_600_000]) {
+      Date.now = () => realNow() + offset;
+      try {
+        await store.tryAcquire("2fa-serial:a", 42, 30_000);
+        await store.renew("2fa-serial:a", 42, 30_000);
+      } finally {
+        Date.now = realNow;
+      }
+    }
+    expect(captured).toHaveLength(4);
+    expect(captured[0]).toEqual(captured[2]);
+    expect(captured[1]).toEqual(captured[3]);
+    for (const query of captured) {
+      expect(query.sql).toContain("clock_timestamp()");
+      expect(query.parameters.every((p) => typeof p !== "number" || p < 1e9)).toBe(true); // no epoch-ms from a server clock
+    }
+  });
+
+  it("(2) a hung request ahead in the queue makes later ones answer busy at the deadline, never wait forever", async () => {
+    const store = memoryStore();
+    const gate = createSerialGate({ store, maxWaitMs: 40 });
+    const hung = await gate.acquire("2fa-serial:a"); // never released during the wait
+    const started = Date.now();
+    await expect(gate.acquire("2fa-serial:a")).rejects.toBeInstanceOf(SerialGateBusyError);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    // The timed-out waiter left the queue: once the hung one finishes, the next caller goes straight through.
+    await hung();
+    const next = await gate.acquire("2fa-serial:a");
+    await next();
+  });
+
+  it("(3) the lease outlives the longest wait and is renewed while the check runs, up to the hold limit", async () => {
+    const { LEASE_TTL_MS, MAX_WAIT_MS, MAX_HOLD_MS } = await import("@/lib/auth/betterAuth/serialVerification");
+    expect(LEASE_TTL_MS).toBeGreaterThan(MAX_WAIT_MS);
+    expect(MAX_HOLD_MS).toBeGreaterThan(LEASE_TTL_MS);
+    const store = memoryStore();
+    const gate = createSerialGate({ store, ttlMs: 30, maxHoldMs: 10_000 });
+    const release = await gate.acquire("2fa-serial:a");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(store.renewals).toBeGreaterThanOrEqual(2);
+    expect(store.leases.get("2fa-serial:a")!.expires).toBeGreaterThan(Date.now());
+    await release();
+    const after = store.renewals;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(store.renewals).toBe(after);
+
+    const capped = memoryStore();
+    const short = createSerialGate({ store: capped, ttlMs: 15, maxHoldMs: 20 });
+    const held = await short.acquire("2fa-serial:b");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const renewalsAtCap = capped.renewals;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(capped.renewals).toBe(renewalsAtCap);
+    await held();
   });
 });
