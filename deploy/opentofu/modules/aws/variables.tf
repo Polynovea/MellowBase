@@ -124,8 +124,8 @@ variable "container_image" {
   default     = ""
 
   validation {
-    condition     = var.container_image == "" || can(regex("^[a-z0-9]([a-z0-9._/:-]*[a-z0-9])?@sha256:[a-f0-9]{64}$", var.container_image))
-    error_message = "container_image must be pinned by digest (name@sha256:...), or blank."
+    condition     = var.container_image == "" || can(regex("^ghcr\\.io/polynovea/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$", var.container_image))
+    error_message = "container_image must be the Polynovea image from ghcr.io/polynovea/, pinned by digest (name@sha256:...), or blank."
   }
 }
 
@@ -135,15 +135,20 @@ variable "caddy_image" {
   default     = ""
 
   validation {
-    condition     = var.caddy_image == "" || can(regex("^[a-z0-9]([a-z0-9._/:-]*[a-z0-9])?@sha256:[a-f0-9]{64}$", var.caddy_image))
-    error_message = "caddy_image must be pinned by digest (name@sha256:...), or blank."
+    condition     = var.caddy_image == "" || can(regex("^(docker\\.io/library/)?caddy@sha256:[a-f0-9]{64}$", var.caddy_image))
+    error_message = "caddy_image must be Caddy's official image pinned by digest (caddy@sha256:...), or blank."
   }
 }
 
 variable "custom_image_id" {
-  description = "Optional Polynovea server image (AMI). Blank = Ubuntu 24.04 LTS from Canonical's public SSM parameter."
+  description = "Optional: the release's published Polynovea AMI for this region (release notes). Blank = Ubuntu 24.04 LTS from Canonical's public SSM parameter."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.custom_image_id == "" || can(regex("^ami-[0-9a-f]{8,17}$", var.custom_image_id))
+    error_message = "custom_image_id must be an AMI ID (ami-...), or blank."
+  }
 }
 
 variable "tags" {

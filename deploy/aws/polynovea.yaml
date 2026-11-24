@@ -19,7 +19,7 @@ Metadata:
       - Label: { default: "Server" }
         Parameters: [InstanceType, Architecture, DataVolumeGb]
       - Label: { default: "Release package (filled in by the release's link; leave as they are)" }
-        Parameters: [ContainerImage, CaddyImage, UbuntuImage, CustomImageId]
+        Parameters: [ContainerImage, CaddyImage]
     ParameterLabels:
       DatabaseMode: { default: "Where the database runs" }
       DatabaseInstanceClass: { default: "Database size (managed only)" }
@@ -36,8 +36,6 @@ Metadata:
       KeyPairName: { default: "EC2 key pair for SSH (optional)" }
       ContainerImage: { default: "Polynovea CMS image, pinned by digest" }
       CaddyImage: { default: "HTTPS proxy (Caddy) image, pinned by digest" }
-      UbuntuImage: { default: "Ubuntu 24.04 image (SSM parameter)" }
-      CustomImageId: { default: "Polynovea server image (AMI) ID, if the release provides one in this region" }
 
 Parameters:
   DatabaseMode:
@@ -84,7 +82,7 @@ Parameters:
     Type: String
     Default: arm64
     AllowedValues: [arm64, amd64]
-    Description: arm64 for t4g sizes, amd64 for t3 sizes. Change UbuntuImage to match.
+    Description: arm64 for t4g sizes, amd64 for t3 sizes.
   DataVolumeGb:
     Type: Number
     Default: 20
@@ -117,27 +115,22 @@ Parameters:
     Type: String
     Default: ""
     Description: An existing EC2 key pair in this region, needed only for SSH. Leave blank for none.
+  # Images come only from the release (deploy/release.json, baked in by
+  # deploy/scripts/release-templates.mjs). The patterns stop a quick-create link from swapping in
+  # anyone else's image: the CMS only from ghcr.io/polynovea/, the proxy only Caddy's official image,
+  # both pinned by digest. The CMS image's signature is checked again on the server before every start.
   ContainerImage:
     Type: String
     Default: ""
-    AllowedPattern: "^$|^[a-z0-9]([a-z0-9._/:-]*[a-z0-9])?@sha256:[a-f0-9]{64}$"
-    ConstraintDescription: The image must be pinned by digest (name@sha256:...).
-    Description: Required on plain Ubuntu. On a Polynovea server image, blank uses the image the server image carries.
+    AllowedPattern: "^$|^ghcr\\.io/polynovea/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$"
+    ConstraintDescription: Only the Polynovea CMS image from ghcr.io/polynovea/, pinned by digest (name@sha256:...).
+    Description: Set by the release. Leave as it is.
   CaddyImage:
     Type: String
     Default: ""
-    AllowedPattern: "^$|^[a-z0-9]([a-z0-9._/:-]*[a-z0-9])?@sha256:[a-f0-9]{64}$"
-    ConstraintDescription: The image must be pinned by digest (name@sha256:...).
-    Description: Required on plain Ubuntu. On a Polynovea server image, blank uses the image the server image carries.
-  UbuntuImage:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
-    Description: Canonical's public parameter. For amd64 use /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
-  CustomImageId:
-    Type: String
-    Default: ""
-    AllowedPattern: "^$|^ami-[0-9a-f]{8,17}$"
-    Description: Optional. A public Polynovea AMI for this region (listed in the release notes), used instead of UbuntuImage. AMIs are per region.
+    AllowedPattern: "^$|^(docker\\.io/library/)?caddy@sha256:[a-f0-9]{64}$"
+    ConstraintDescription: Only Caddy's official image, pinned by digest (caddy@sha256:...).
+    Description: Set by the release. Leave as it is.
 
 Rules:
   SomeWayIn:
@@ -163,11 +156,52 @@ Rules:
                 - Fn::Contains: [[t3.small, t3.medium, t3.large], !Ref InstanceType]
         AssertDescription: Processor type must match the server size (arm64 for t4g, amd64 for t3).
 
+Mappings:
+  # The release's published Polynovea AMIs; "none" = not published in that region (Ubuntu is used).
+  # BEGIN GENERATED release-amis
+  ReleaseAmis:
+    af-south-1: { arm64: none, amd64: none }
+    ap-east-1: { arm64: none, amd64: none }
+    ap-east-2: { arm64: none, amd64: none }
+    ap-northeast-1: { arm64: none, amd64: none }
+    ap-northeast-2: { arm64: none, amd64: none }
+    ap-northeast-3: { arm64: none, amd64: none }
+    ap-south-1: { arm64: none, amd64: none }
+    ap-south-2: { arm64: none, amd64: none }
+    ap-southeast-1: { arm64: none, amd64: none }
+    ap-southeast-2: { arm64: none, amd64: none }
+    ap-southeast-3: { arm64: none, amd64: none }
+    ap-southeast-4: { arm64: none, amd64: none }
+    ap-southeast-5: { arm64: none, amd64: none }
+    ap-southeast-6: { arm64: none, amd64: none }
+    ap-southeast-7: { arm64: none, amd64: none }
+    ca-central-1: { arm64: none, amd64: none }
+    ca-west-1: { arm64: none, amd64: none }
+    eu-central-1: { arm64: none, amd64: none }
+    eu-central-2: { arm64: none, amd64: none }
+    eu-north-1: { arm64: none, amd64: none }
+    eu-south-1: { arm64: none, amd64: none }
+    eu-south-2: { arm64: none, amd64: none }
+    eu-west-1: { arm64: none, amd64: none }
+    eu-west-2: { arm64: none, amd64: none }
+    eu-west-3: { arm64: none, amd64: none }
+    il-central-1: { arm64: none, amd64: none }
+    me-central-1: { arm64: none, amd64: none }
+    me-south-1: { arm64: none, amd64: none }
+    mx-central-1: { arm64: none, amd64: none }
+    sa-east-1: { arm64: none, amd64: none }
+    us-east-1: { arm64: none, amd64: none }
+    us-east-2: { arm64: none, amd64: none }
+    us-west-1: { arm64: none, amd64: none }
+    us-west-2: { arm64: none, amd64: none }
+  # END GENERATED release-amis
+
 Conditions:
   ManagedDb: !Equals [!Ref DatabaseMode, managed]
   HasAdminCidr: !Not [!Equals [!Ref AdminCidr, ""]]
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
-  HasCustomImage: !Not [!Equals [!Ref CustomImageId, ""]]
+  # The release's Polynovea AMI for this region and processor, if it published one.
+  HasReleaseAmi: !Not [!Equals [!FindInMap [ReleaseAmis, !Ref AWS::Region, !Ref Architecture], none]]
   HasDomain: !Not [!Equals [!Ref Domain, ""]]
   HasAcmeEmail: !Not [!Equals [!Ref AcmeEmail, ""]]
   HasContainerImage: !Not [!Equals [!Ref ContainerImage, ""]]
@@ -493,7 +527,12 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref ServerLaunchTemplate
         Version: !GetAtt ServerLaunchTemplate.LatestVersionNumber
-      ImageId: !If [HasCustomImage, !Ref CustomImageId, !Ref UbuntuImage]
+      # The release's AMI for this region, or else Ubuntu 24.04 from Canonical's public parameter. No
+      # parameter can name another image.
+      ImageId: !If
+        - HasReleaseAmi
+        - !FindInMap [ReleaseAmis, !Ref AWS::Region, !Ref Architecture]
+        - !Sub "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/${Architecture}/hvm/ebs-gp3/ami-id}}"
       InstanceType: !Ref InstanceType
       IamInstanceProfile: !Ref ServerInstanceProfile
       KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref AWS::NoValue]

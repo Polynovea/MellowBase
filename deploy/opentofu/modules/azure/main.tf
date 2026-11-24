@@ -14,9 +14,9 @@ locals {
   container_name = "polynovea"
   secret_name    = "polynovea-database-admin"
 
-  # Trusted Launch on x64 with the Ubuntu image or a gallery image (Polynovea's gallery image
-  # definition declares SecurityType=TrustedLaunchSupported); a managed image can't use it.
-  trusted_launch = var.architecture == "x64" && !strcontains(lower(var.custom_image_id), "/providers/microsoft.compute/images/")
+  # Trusted Launch on x64, with the Ubuntu image or the release's gallery image (its definition
+  # declares SecurityType=TrustedLaunchSupported). Azure's Arm64 sizes don't offer it.
+  trusted_launch = var.architecture == "x64"
 
   # Non-secret values only, with the release package's keys. The release package sets HOSTNAME, PORT,
   # POLYNOVEA_TRUSTED_PROXIES and POLYNOVEA_CONFIG_DIR.

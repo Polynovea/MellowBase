@@ -1,0 +1,14 @@
+{
+  "release": false,
+  "cmsImage": "",
+  "caddyImage": "",
+  "aws": {
+    "amis": {}
+  },
+  "azure": {
+    "galleryImages": {
+      "x64": "",
+      "arm64": ""
+    }
+  }
+}

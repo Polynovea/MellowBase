@@ -101,15 +101,20 @@ variable "container_image" {
   default     = ""
 
   validation {
-    condition     = var.container_image == "" || can(regex("^[a-z0-9]([a-z0-9._/:-]*[a-z0-9])?@sha256:[a-f0-9]{64}$", var.container_image))
-    error_message = "container_image must be pinned by digest (name@sha256:...), or blank."
+    condition     = var.container_image == "" || can(regex("^ghcr\\.io/polynovea/[a-z0-9]+([._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$", var.container_image))
+    error_message = "container_image must be the Polynovea image from ghcr.io/polynovea/, pinned by digest (name@sha256:...), or blank."
   }
 }
 
 variable "custom_image_id" {
-  description = "Optional Polynovea server image: the community gallery image ID (/CommunityGalleries/<public name>/Images/<definition>/Versions/<version>) or a managed or gallery image resource ID. Blank = Ubuntu 24.04 LTS."
+  description = "Optional: the release's published Polynovea community gallery image (/CommunityGalleries/<public name>/Images/<definition>/Versions/<x.y.z>). Blank = Ubuntu 24.04 LTS."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.custom_image_id == "" || can(regex("^/CommunityGalleries/[A-Za-z0-9-]+/Images/[A-Za-z0-9._-]+/Versions/[0-9]+\\.[0-9]+\\.[0-9]+$", var.custom_image_id))
+    error_message = "custom_image_id must be a community gallery image (/CommunityGalleries/.../Versions/x.y.z), or blank."
+  }
 }
 
 variable "caddy_image" {
@@ -118,8 +123,8 @@ variable "caddy_image" {
   default     = ""
 
   validation {
-    condition     = var.caddy_image == "" || can(regex("^[a-z0-9]([a-z0-9._/:-]*[a-z0-9])?@sha256:[a-f0-9]{64}$", var.caddy_image))
-    error_message = "caddy_image must be pinned by digest (name@sha256:...), or blank."
+    condition     = var.caddy_image == "" || can(regex("^(docker\\.io/library/)?caddy@sha256:[a-f0-9]{64}$", var.caddy_image))
+    error_message = "caddy_image must be Caddy's official image pinned by digest (caddy@sha256:...), or blank."
   }
 }
 
