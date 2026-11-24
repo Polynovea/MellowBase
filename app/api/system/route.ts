@@ -43,7 +43,7 @@ export async function POST(req: Request) {
     return json("Request body must be JSON", 400);
   }
   if (body?.operation !== "upgrade") return json("Unsupported system operation", 400);
-  const auth = await requirePlatformAccess(req, { permission: "infrastructure.upgrade" });
+  const auth = await requirePlatformAccess(req, { permission: "infrastructure.upgrade", stepUp: true });
   if (auth.error) return auth.error;
   if (typeof body.releaseId !== "string") return json("releaseId is required", 400);
   try {
