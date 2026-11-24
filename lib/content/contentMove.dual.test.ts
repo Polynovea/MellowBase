@@ -289,8 +289,16 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     await requestSchemaChange(db, { contentModelId: modelId, targetVersionId: changed.data.version.id, requestedBy: adminUserId, limits: TEST_LIMITS });
     expect(await refusal()).toEqual({ code: "55000", message: "content_read_switch_schema_change_pending" });
 
-    // The change ran: the shape the latest run checked is no longer current.
+    // The change ran, and the worker re-synced and re-verified the model on its new shape by itself.
+    const [beforeChange] = await backend.query<{ id: string }>("select last_run_id as id from content_model_storage where content_model_id = $1", [modelId]);
     expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    const [afterChange] = await backend.query<{ id: string; matched: boolean }>(
+      "select r.id, r.matched from content_model_storage s join content_model_move_runs r on r.id = s.last_run_id where s.content_model_id = $1", [modelId]);
+    expect(afterChange.id).not.toBe(beforeChange.id);
+    expect(afterChange.matched).toBe(true);
+    // A run on a shape that is no longer current is refused (the run from before the change).
+    await backend.query("update content_model_storage set last_run_id = $1 where content_model_id = $2", [beforeChange.id, modelId]);
+    await backend.query("delete from content_model_move_runs where id = $1", [afterChange.id]);
     expect(await refusal()).toEqual({ code: "55000", message: "content_read_switch_stale_shape" });
     await backfillModel(db, { workspaceId, modelId });
 
@@ -461,6 +469,47 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(after).not.toContain(derivedName("tg", table, "title"));
     expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId, switchReads: true })).verify.matched).toBe(true);
     expect(await search()).toBe(1);
+  });
+
+  it("after a schema change (rename + add) the worker re-syncs the model by itself and its reads return to the table", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const apiKey = uniqueKey("auto");
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Auto", apiKey, fields: [field({ key: "title", type: "text" }), field({ key: "count", type: "integer" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    const ids = Array.from({ length: 1_200 }, () => randomUUID());
+    await insertEntries(backend, workspaceId, modelId, ids.map((id, n) => ({
+      id, status: n % 2 ? "published" : "draft",
+      ...(n % 2 ? { published: { data: { title: `T${n}`, count: n }, locale: "en" } } : { draft: { data: { title: `D${n}`, count: n }, locale: "en" } }),
+    })));
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId, switchReads: true })).verify.matched).toBe(true);
+    expect(await tableSource(workspaceId, modelId)).not.toBeNull();
+
+    const model = (await getModel(workspaceId, modelId))!;
+    const changed = await applyChange({ model, proposedSchema: { name: "Auto", apiKey, fields: [field({ key: "headline", type: "text" }), field({ key: "count", type: "integer" }), field({ key: "extra", type: "text" })] }, acknowledgeUnsafe: true, actorAdminUserId: adminUserId });
+    if (!changed.ok || !changed.data.version) throw new Error("version 2 not created");
+    await requestSchemaChange(getDb(), { contentModelId: modelId, targetVersionId: changed.data.version.id, renames: [{ from: "title", to: "headline" }], requestedBy: adminUserId, limits: TEST_LIMITS });
+    // While the change waits for the worker, reads are on the snapshots.
+    expect(await tableSource(workspaceId, modelId)).toBeNull();
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+
+    // No content:move: the worker's own run matched the new shape, and reads are on the table again.
+    expect(await readSourceOf(getDb(), modelId)).toBe("table");
+    const source = await tableSource(workspaceId, modelId);
+    expect(source).not.toBeNull();
+    const [state] = await backend.query<{ run_id: string; matched: boolean; requested_by: string | null; backfill: Record<string, number> }>(
+      `select r.id as run_id, r.matched, r.requested_by, r.backfill from content_model_storage s join content_model_move_runs r on r.id = s.last_run_id
+        join content_model_tables t on t.content_model_id = s.content_model_id and t.applied_shape_hash = r.shape_hash where s.content_model_id = $1`, [modelId]);
+    expect(state).toMatchObject({ matched: true, requested_by: null, backfill: { batches: 2, entries: 1_200, failed: 0 } });
+    const run = (await moveRun(getDb(), state.run_id))!;
+    expect(run.counts.snapshot).toMatchObject({ draft: 600, published: 600 });
+    expect(run.counts.table).toMatchObject({ draft: 600, published: 600 });
+    expect(Object.values(run.fields).map((f) => f.field).sort()).toEqual(["count", "extra", "headline"]);
+    // The renamed field reads its values from snapshots saved under the old key.
+    const rows = await readTableRows(workspaceId, source!, { entryIds: [ids[1]] });
+    expect(rows.map((row) => row.data)).toEqual([{ headline: "T1", count: 1 }]);
+    report("auto_resync", { entries: ids.length, counts: run.counts, fields: Object.keys(run.fields).length });
   });
 
   it("random sequences of model changes, each applied and reverted, keep the table matching the snapshots", async () => {

@@ -10,6 +10,8 @@
  *   npm run worker:schema -- --once  # run what is waiting, then exit
  *   npm run worker:schema -- --model <uuid>  # only that model's stages (also --model=<uuid>);
  *                                    # contracts then run only with --contracts
+ *                                    # after each pass it re-syncs and re-verifies moved models whose
+ *                                    # table changed shape (lib/content/contentMove.ts, resyncChangedModels)
  *   npm run worker:schema -- --rollback-task=<uuid>
  *                                    # undo a failed expand (trigger, guard index, new column), then exit
  *
@@ -53,6 +55,7 @@ const { rollbackExpandTask } = await import("../lib/schema/runner/expandContract
 const { tryLockModel, unlockModel } = await import("../lib/schema/runner/ledger.ts");
 const { trigramSchema } = await import("../lib/schema/engine/render.ts");
 const { kyselyOn } = await import("../lib/schema/runner/engine.ts");
+const { resyncChangedModels } = await import("../lib/content/contentMove.ts");
 
 const once = process.argv.includes("--once");
 // --model <id> or --model=<id>: only that model's stages; contracts then only with --contracts.
@@ -129,6 +132,9 @@ try {
       const outcome = await runNextStage(client, { engine, workerId, releaseId, log, observer: pool, modelId: modelArg });
       if (outcome) worked = true;
       else if (contracts) await runDueContracts(client, { releaseId, log });
+      // Content tables: models whose table changed shape (a stage or a contract) or missed a save are
+      // re-synced and re-verified, so their reads return to the table without a manual content:move.
+      if (await resyncChangedModels(kyselyOn(client), { modelId: modelArg, log })) worked = true;
       backoffMs = 0;
     } catch (error) {
       const code = typeof error?.code === "string" && /^[0-9A-Z_]{1,40}$/.test(error.code) ? error.code : errorCode(error);

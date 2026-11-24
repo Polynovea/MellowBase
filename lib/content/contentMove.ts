@@ -199,3 +199,60 @@ export async function moveModel(
   }
   return { modelId: input.modelId, table, backfill, verify, switched };
 }
+
+/**
+ * Models already moved (they have a run) whose table no longer matches their latest run: a schema stage
+ * or a contract changed the table's shape, or a save failed to reach the table since that run. Models
+ * with a schema stage queued or running are left until it finishes. Oldest first.
+ */
+export async function modelsNeedingResync(db: DbExecutor, options: { modelId?: string; limit?: number } = {}): Promise<Array<{ modelId: string; workspaceId: string; readSource: ReadSource }>> {
+  const { rows } = await sql<{ content_model_id: string; workspace_id: string; read_source: string }>`
+    select s.content_model_id, s.workspace_id, s.read_source
+      from public.content_model_storage s
+      join public.content_model_tables t on t.content_model_id = s.content_model_id and t.workspace_id = s.workspace_id
+      left join public.content_model_move_runs r on r.id = s.last_run_id
+     where s.last_run_id is not null
+       and (r.id is null or r.shape_hash <> t.applied_shape_hash or (s.out_of_sync_at is not null and s.out_of_sync_at >= r.started_at))
+       and not exists (select 1 from public.schema_migration_ledger l where l.content_model_id = s.content_model_id and l.status in ('pending', 'running'))
+       ${options.modelId ? sql`and s.content_model_id = ${options.modelId}::uuid` : sql``}
+     order by s.updated_at, s.content_model_id
+     limit ${Math.min(100, Math.max(1, options.limit ?? 20))}`.execute(db);
+  return rows.map((row) => ({ modelId: row.content_model_id, workspaceId: row.workspace_id, readSource: row.read_source === "table" ? "table" : "snapshot" }));
+}
+
+type ResyncLog = (event: string, fields: Record<string, unknown>) => void;
+
+/** A code for a log line: a SQLSTATE and/or the function's own code message, never text or values. */
+function resyncErrorCode(error: unknown): string {
+  const code = (error as { code?: unknown })?.code;
+  const message = (error as { message?: unknown })?.message;
+  const sqlstate = typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? code : "error";
+  return typeof message === "string" && /^[a-z0-9_]{1,64}$/.test(message) ? `${sqlstate}:${message}` : sqlstate;
+}
+
+/**
+ * Run by the migration worker (owner side) after each pass: re-syncs (1,000-entry batches) and
+ * re-verifies every model from modelsNeedingResync. A model whose intent is 'table' reads from its table
+ * again as soon as the new run matches the table's current shape (tableStore requires exactly that);
+ * a run that does not match keeps its reads on the snapshots and is recorded in content_model_move_runs
+ * with its mismatches. Logs ids, counts and codes only. Returns how many models it re-synced.
+ */
+export async function resyncChangedModels(db: Kysely<DB>, options: { modelId?: string; log?: ResyncLog } = {}): Promise<number> {
+  const log: ResyncLog = options.log ?? (() => undefined);
+  let done = 0;
+  for (const model of await modelsNeedingResync(db, { modelId: options.modelId })) {
+    try {
+      const backfill = await backfillModel(db, { workspaceId: model.workspaceId, modelId: model.modelId });
+      const verify = await verifyModel(db, { workspaceId: model.workspaceId, modelId: model.modelId, backfill });
+      done += 1;
+      log("content_resynced", {
+        modelId: model.modelId, runId: verify.runId, matched: verify.matched, batches: backfill.batches, entries: backfill.entries,
+        failedEntries: backfill.failed.length, mismatches: verify.mismatches.map((m) => m.kind),
+        reads: model.readSource === "table" && verify.matched ? "table" : "snapshot",
+      });
+    } catch (error) {
+      log("content_resync_failed", { modelId: model.modelId, code: resyncErrorCode(error) });
+    }
+  }
+  return done;
+}
