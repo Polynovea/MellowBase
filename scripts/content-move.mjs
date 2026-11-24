@@ -38,6 +38,10 @@ const args = process.argv.slice(2);
 const values = (flag) => args.flatMap((arg, i) => (arg === flag && UUID.test(args[i + 1] ?? "") ? [args[i + 1]] : []));
 const has = (flag) => args.includes(flag);
 const log = (event, fields = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), job: "content-move", event, ...fields }));
+// Kept deliberately in the JSON log lines: an operator command's output, read by whoever runs it (no
+// end user sees it), and the SQLSTATE plus the function's own code word is what lets support tell
+// one failure from another. It is never a message, a value or SQL text. Where the cause is known (a
+// table part-way through a change) the line also carries a plain-words `message`.
 const codeOf = (error) => (typeof error?.code === "string" && /^[0-9A-Z]{5}$/.test(error.code) ? error.code : "error") + (/^[a-z0-9_]{1,64}$/.test(String(error?.message)) ? `:${error.message}` : "");
 
 const db = getDb();

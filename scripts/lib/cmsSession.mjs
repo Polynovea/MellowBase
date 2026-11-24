@@ -53,7 +53,7 @@ function cookieJar() {
 }
 
 /**
- * @param {{ baseUrl: string, email: string, password: string, code?: string, fetchImpl?: typeof fetch }} options
+ * @param {{ baseUrl: string, email: string, password: string, code?: string | (() => Promise<string>), fetchImpl?: typeof fetch }} options
  * @returns {Promise<{ request: (path: string, init?: RequestInit) => Promise<any> }>}
  */
 export async function signInBuiltin({ baseUrl, email, password, code, fetchImpl = fetch }) {
@@ -77,9 +77,10 @@ export async function signInBuiltin({ baseUrl, email, password, code, fetchImpl 
 
   const signedIn = await auth("/sign-in/email", { email, password });
   if (signedIn?.twoFactorRedirect) {
-    const value = String(code ?? "").trim();
+    // Asked for only when the account needs it; a function lets the caller prompt with hidden input.
+    const value = String((typeof code === "function" ? await code() : code) ?? "").trim();
     if (!value) {
-      throw new Error("This account has a second factor. Pass --code=<6-digit code from your authenticator app> (or one recovery code).");
+      throw new Error("This account has a second factor. Set POLYNOVEA_OWNER_OTP to the 6-digit code from your authenticator app (or one recovery code), or run the command in a terminal to be asked for it.");
     }
     // Six digits is an authenticator-app code; anything else is treated as a recovery code.
     if (/^\d{6}$/.test(value)) await auth("/two-factor/verify-totp", { code: value });
@@ -130,10 +131,33 @@ export async function signInSupabase({ baseUrl, email, password, supabaseUrl, an
   };
 }
 
+const LOOPBACK_HOST = /^(localhost|.+\.localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/i;
+
 /**
- * Sign in with whichever auth the CMS runs.
- * @param {{ provider?: string, baseUrl: string, email: string, password: string, code?: string, supabaseUrl?: string, anonKey?: string, fetchImpl?: typeof fetch }} options
+ * The CMS address a script may send credentials to: https anywhere, plain http only to this machine
+ * (localhost, *.localhost, 127.0.0.0/8, ::1). Returns the normalised origin.
+ * @param {string} baseUrl
  */
-export async function signInToCms({ provider, ...options }) {
+export function checkCmsTarget(baseUrl) {
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new Error(`The CMS address is not a valid URL: ${String(baseUrl).slice(0, 200)}`);
+  }
+  if (url.protocol === "https:") return url.origin;
+  if (url.protocol === "http:" && LOOPBACK_HOST.test(url.hostname)) return url.origin;
+  if (url.protocol === "http:") throw new Error(`Refusing to send the password over plain http to ${url.host}. Use the https:// address of the CMS.`);
+  throw new Error(`The CMS address must start with https:// (got ${url.protocol}).`);
+}
+
+/**
+ * Sign in with whichever auth the CMS runs. The target is checked first and announced through `log`
+ * (stderr by default) before any credential is sent.
+ * @param {{ provider?: string, baseUrl: string, email: string, password: string, code?: string | (() => Promise<string>), supabaseUrl?: string, anonKey?: string, fetchImpl?: typeof fetch, log?: (line: string) => void }} options
+ */
+export async function signInToCms({ provider, log = (line) => console.error(line), ...options }) {
+  const origin = checkCmsTarget(options.baseUrl);
+  log(`Signing in to ${origin} as ${options.email}`);
   return scriptAuthProvider(provider) === "builtin" ? signInBuiltin(options) : signInSupabase(options);
 }

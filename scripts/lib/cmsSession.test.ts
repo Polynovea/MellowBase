@@ -52,7 +52,7 @@ describe("seed:starter sign-in", () => {
 
   it("asks for the one-time code when the account has a second factor", async () => {
     const cms = fakeCms({ mfa: true });
-    await expect(signInBuiltin({ ...base, fetchImpl: cms.fetchImpl })).rejects.toThrow(/--code=/);
+    await expect(signInBuiltin({ ...base, fetchImpl: cms.fetchImpl })).rejects.toThrow(/POLYNOVEA_OWNER_OTP/);
   });
 
   it("uses a 6-digit code as an authenticator code and anything else as a recovery code", async () => {
@@ -79,6 +79,39 @@ describe("seed:starter sign-in", () => {
   });
 
   it("on Supabase, refuses without the Supabase settings instead of half-working", async () => {
-    await expect(signInToCms({ provider: "supabase", ...base })).rejects.toThrow(/NEXT_PUBLIC_SUPABASE_URL/);
+    await expect(signInToCms({ provider: "supabase", ...base, log: () => undefined })).rejects.toThrow(/NEXT_PUBLIC_SUPABASE_URL/);
+  });
+});
+
+describe("security review: where credentials may go", async () => {
+  const { checkCmsTarget, signInToCms: signIn } = await import("./cmsSession.mjs");
+
+  it("refuses plain http to any host but this machine; https anywhere", () => {
+    expect(checkCmsTarget("https://cms.example.com/")).toBe("https://cms.example.com");
+    for (const local of ["http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000", "http://cms.localhost"]) expect(() => checkCmsTarget(local)).not.toThrow();
+    for (const remote of ["http://cms.example.com", "http://10.0.0.5:3000", "http://localhost.evil.com", "http://127.0.0.1.nip.io"]) {
+      expect(() => checkCmsTarget(remote)).toThrow(/plain http/);
+    }
+    expect(() => checkCmsTarget("ftp://cms.example.com")).toThrow(/https/);
+    expect(() => checkCmsTarget("not a url")).toThrow(/valid URL/);
+  });
+
+  it("announces the target before sending anything, and sends nothing to a refused target", async () => {
+    const lines: string[] = [];
+    const cms = fakeCms();
+    await signIn({ provider: "builtin", ...base, fetchImpl: cms.fetchImpl, log: (line: string) => lines.push(`${line}|calls=${cms.calls.length}`) });
+    expect(lines).toEqual(["Signing in to http://localhost:3000 as owner@example.test|calls=0"]);
+    const remote = fakeCms();
+    await expect(signIn({ provider: "builtin", ...base, baseUrl: "http://cms.example.com", fetchImpl: remote.fetchImpl, log: () => undefined })).rejects.toThrow(/plain http/);
+    expect(remote.calls).toHaveLength(0);
+  });
+
+  it("asks for the one-time code only when the account needs one", async () => {
+    let asked = 0;
+    const code = async () => { asked += 1; return "123456"; };
+    await signInBuiltin({ ...base, code, fetchImpl: fakeCms().fetchImpl });
+    expect(asked).toBe(0);
+    await signInBuiltin({ ...base, code, fetchImpl: fakeCms({ mfa: true }).fetchImpl });
+    expect(asked).toBe(1);
   });
 });
