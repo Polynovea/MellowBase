@@ -74,7 +74,7 @@ The stack's **Outputs** tab has `SetupAddress`, `SetupCode`, `PublicIp`, `SshTun
 ## Removing it
 
 1. **RDS → the database → Modify**, untick **Enable deletion protection**, **Apply immediately**.
-2. **CloudFormation → the stack → Delete**. The database and data disk leave final snapshots, and the bucket is kept. Delete those yourself when you're sure; snapshots and the bucket keep costing a little until you do.
+2. **CloudFormation → the stack → Delete**. The database and data disk leave final snapshots, and the bucket and the database's admin-login secret are kept (the snapshot is useless without the login). Delete those yourself when you're sure; snapshots and the bucket keep costing a little until you do.
 
 ## Things that can't be verified without an AWS account
 

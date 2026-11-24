@@ -646,3 +646,11 @@ describe("review item 6: Azure checks its inputs like CloudFormation does", () =
     for (const param of ["Domain", "AcmeEmail", "AdminCidr", "BudgetEmail"]) expect(cfnResource(param)).toMatch(/AllowedPattern: /);
   });
 });
+
+describe("review nit 7: the database secret outlives the stack", () => {
+  it("is retained on stack deletion and replacement", () => {
+    const secret = cfnResource("DatabaseSecret");
+    expect(secret).toContain("DeletionPolicy: Retain");
+    expect(secret).toContain("UpdateReplacePolicy: Retain");
+  });
+});
