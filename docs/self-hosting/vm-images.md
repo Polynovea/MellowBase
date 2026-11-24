@@ -129,6 +129,17 @@ The default build is for the building account only. To offer the images to other
 
 Making either public is a publishing decision for the project lead (Subrojit). Until then, builds stay private to the building account or subscription.
 
+## What is tested where
+
+These are **not run on a developer machine, by design**: they need real cloud accounts, a public domain or a real VM. Subrojit's first Azure deployment covers them:
+
+- building the AMI and the Azure image in the cloud, and publishing them (public AMI, community gallery);
+- pgBackRest backups to a real S3 bucket or Azure Blob container, using the instance role or managed identity;
+- Caddy getting a real Let's Encrypt certificate for a public domain;
+- the systemd units, the data-disk detection and the serial-console code under a real systemd on a real VM.
+
+Everything else is checked locally: the image end to end (`scripts/image/run-smoke.sh`), these VM files with stand-ins for systemd, Docker and cosign (`scripts/image/test-vm-files.sh`), release signing against a throwaway local registry (`scripts/release/test-release.sh`), and the Packer definitions (below).
+
 ## Checking the definitions without a cloud account
 
 ```
