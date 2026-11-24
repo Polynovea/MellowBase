@@ -1,10 +1,11 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { parseDatabaseSecret, parseSecretRef, SECRET_MALFORMED } from "@/lib/setup/database/createdForYou";
-import { AWS_REGIONS, loadRelease, renderCfn } from "./scripts/release-templates.mjs";
+import { AWS_REGIONS, loadRelease, releaseGaps, renderCfn } from "./scripts/release-templates.mjs";
 import { checkReleaseKey, COPIES, expectedOutputs, findSources, RELEASE_KEY, renderBootstrap, START_COMMAND, VM_FILES } from "./scripts/sync-vm-bootstrap.mjs";
 
 /**
@@ -562,5 +563,44 @@ describe("review item 2: the OpenTofu database password never reaches state or p
       expect(read(`opentofu/examples/${cloud}/main.tf`)).toMatch(/required_version = ">= 1\.11\.0"/);
     }
     expect(read("opentofu/modules/azure/versions.tf")).toMatch(/hashicorp\/azurerm"\n\s+version = ">= 4\.30, < 5\.0"/);
+  });
+});
+
+describe("review item 3: the release gate", () => {
+  const digest = "b".repeat(64);
+  const releaseFixture = {
+    release: true,
+    cmsImage: `ghcr.io/polynovea/cms@sha256:${digest}`,
+    caddyImage: `caddy@sha256:${digest}`,
+    aws: { amis: {} },
+    azure: { galleryImages: { x64: "", arm64: "" } },
+  };
+  const stand = Object.fromEntries(VM_FILES.map((name) => [name, `# ${name}\n`]));
+  const key = generateKeyPairSync("ec", { namedCurve: "P-256" }).publicKey.export({ type: "spki", format: "pem" }).toString();
+
+  it("passes a complete release", () => {
+    const cfnBaked = renderCfn(cfn, releaseFixture);
+    const arm = { parameters: { containerImage: { defaultValue: releaseFixture.cmsImage }, caddyImage: { defaultValue: releaseFixture.caddyImage } } };
+    expect(releaseGaps(releaseFixture, renderBootstrap({ ...stand, [RELEASE_KEY]: key }), cfnBaked, arm)).toEqual([]);
+  });
+
+  it("fails without the release key, an image digest, or with blank template defaults", () => {
+    const cfnBaked = renderCfn(cfn, releaseFixture);
+    expect(releaseGaps(releaseFixture, renderBootstrap(stand), cfnBaked, null).join("\n")).toMatch(/no polynovea-release\.pub/);
+    expect(releaseGaps({ ...releaseFixture, caddyImage: "" }, renderBootstrap({ ...stand, [RELEASE_KEY]: key }), renderCfn(cfn, { ...releaseFixture, caddyImage: "" }), null).join("\n"))
+      .toMatch(/no Caddy image digest[\s\S]+CaddyImage default is blank/);
+    expect(releaseGaps(releaseFixture, renderBootstrap({ ...stand, [RELEASE_KEY]: key }), cfn, null).join("\n")).toMatch(/ContainerImage default is blank/);
+    expect(releaseGaps({ ...releaseFixture, release: false }, renderBootstrap({ ...stand, [RELEASE_KEY]: key }), cfnBaked, null).join("\n")).toMatch(/"release": false/);
+  });
+
+  it("the committed tree is a development build: strict check fails, --not-a-release reports and passes", () => {
+    const gate = path.join(DEPLOY, "scripts", "release-templates.mjs");
+    const strict = spawnSync(process.execPath, [gate, "--release-check"], { encoding: "utf8" });
+    expect(strict.status).toBe(1);
+    expect(strict.stderr).toMatch(/NOT READY[\s\S]+no polynovea-release\.pub/);
+    const dev = spawnSync(process.execPath, [gate, "--release-check", "--not-a-release"], { encoding: "utf8" });
+    expect(dev.status).toBe(0);
+    expect(dev.stdout).toMatch(/not a release \(development build\)/);
+    expect(read("scripts/validate.sh")).toMatch(/POLYNOVEA_RELEASE:-0\}" = 1[\s\S]+--release-check\n[\s\S]+--release-check --not-a-release/);
   });
 });
