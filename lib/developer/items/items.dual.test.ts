@@ -377,6 +377,9 @@ describeWithDatabase("generated items API [postgres]", (backend) => {
 
     const patched = await updateItem(writer, fx.article.apiKey, fx.articles[2], { rating: 3 });
     expect(patched.item.data).not.toHaveProperty("secret");
+    // The new draft does not take the live version away: the published read still serves rating 2.
+    const live = await getItem(editor, fx.article.apiKey, fx.articles[2], P({}));
+    expect(live.item).toMatchObject({ variant: "published", data: { rating: 2 } });
     const [stored] = await backend.query<{ data: Record<string, unknown> }>(
       "select v.data_jsonb as data from content_entries e join content_entry_versions v on v.id = e.current_draft_version_id where e.id = $1", [fx.articles[2]]);
     expect(stored.data).toMatchObject({ secret: `${SECRET}-2`, rating: 3, title: "Alpha 2" });

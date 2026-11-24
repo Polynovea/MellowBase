@@ -159,10 +159,16 @@ function variantRow(table: RawBuilder<unknown>, alias: string, variant: Variant)
        and d.${sql.id(STORAGE_COLUMNS.locale)} = ${ref(alias, STORAGE_COLUMNS.locale)} and d.${sql.id(STORAGE_COLUMNS.variant)} = 'draft')))`;
 }
 
+/**
+ * Published: every entry with a published version that is not archived. Saving a new draft sets an
+ * entry's status to 'draft' but keeps its published version live, so status alone is not the test
+ * (the live site must not lose an entry the moment an editor starts changing it).
+ */
 function entryVisible(alias: string, variant: Variant): RawBuilder<unknown> {
+  const notArchived = sql`${ref(alias, "status")} <> 'archived' and ${ref(alias, "archived_at")} is null`;
   return variant === "published"
-    ? sql`${ref(alias, "status")} = 'published' and ${ref(alias, "published_version_id")} is not null`
-    : sql`${ref(alias, "status")} <> 'archived' and ${ref(alias, "archived_at")} is null`;
+    ? sql`${ref(alias, "published_version_id")} is not null and ${notArchived}`
+    : notArchived;
 }
 
 function compileFilter(node: ParsedFilter, q: ItemsQuery, path: "table" | "snapshot", hops: { n: number }): RawBuilder<unknown> {
