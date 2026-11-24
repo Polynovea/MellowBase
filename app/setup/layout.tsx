@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import AddressCheck from "@/components/setup/AddressCheck";
+import SetupStepList from "@/components/setup/SetupStepList";
 import { resolveMode } from "@/lib/setup/mode";
 import { configuredOrigin } from "@/lib/setup/publicAddress";
 
@@ -33,17 +34,7 @@ export default async function SetupLayout({ children }: { children: React.ReactN
         <aside className="md:w-60 md:shrink-0">
           <p className="ui-eyebrow">Polynovea CMS</p>
           <h1 className="ui-page-title">Set up</h1>
-          <ol className="mt-6 space-y-3" aria-label="Setup steps">
-            {SETUP_STEPS.map((step, index) => (
-              <li key={step.id} className="flex gap-3">
-                <span className="border-default flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs text-fg-secondary">{index + 1}</span>
-                <span>
-                  <span className="block text-sm font-medium">{step.label}</span>
-                  <span className="block text-xs text-fg-muted">{step.hint}</span>
-                </span>
-              </li>
-            ))}
-          </ol>
+          <SetupStepList steps={SETUP_STEPS} />
         </aside>
         <main className="ui-surface border-subtle min-w-0 flex-1 rounded-lg border p-6">
           <AddressCheck expected={expected} />

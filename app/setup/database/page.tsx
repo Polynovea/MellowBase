@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import DatabaseStep from "@/components/setup/database/DatabaseStep";
 import { createdForYouAvailable } from "@/lib/setup/database/createdForYou";
 import { BACKUP_OPTIONS, LOCAL_SERVER_UNAVAILABLE, localServerHostForThisImage } from "@/lib/setup/database/localServer";
+import { resolveMode } from "@/lib/setup/mode";
 import { requireSetupSession, SetupSessionError } from "@/lib/setup/setupSession";
 
 // Step 2 of the setup wizard: the database. The shared shell (step list, setup-mode check) is the
@@ -22,6 +23,19 @@ export default async function SetupDatabasePage() {
         <h2 className="ui-section-title">Enter the setup code first</h2>
         <p role="status" className="ui-alert ui-alert-warning">{error.message}</p>
         <a href="/setup" className="ui-btn ui-btn-primary self-start">Go to the setup code</a>
+      </section>
+    );
+  }
+
+  // Configured and migrated already (settings from the environment, or this step was done before):
+  // nothing to choose here, and offering the choices again would only confuse.
+  if ((await resolveMode()).databaseReady) {
+    return (
+      <section className="ui-section flex flex-col gap-4">
+        <p className="ui-eyebrow">Step 2</p>
+        <h2 className="ui-section-title">Your database is ready</h2>
+        <p role="status" className="ui-alert ui-alert-success">This server already has its database set up, so there is nothing to choose here.</p>
+        <a href={OWNER_STEP} className="ui-btn ui-btn-primary self-start">Continue to your owner account</a>
       </section>
     );
   }

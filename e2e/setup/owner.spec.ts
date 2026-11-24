@@ -77,7 +77,8 @@ async function completeOwnerSteps(page: Page): Promise<{ totpKey: string; recove
 
   await page.getByRole("button", { name: "Show the QR code" }).click();
   await expect(page.getByRole("img", { name: /QR code/ })).toBeVisible();
-  const totpKey = (await page.locator("code").first().textContent())!.trim();
+  // By its test id: the setup pages show other code boxes too (the CMS's address, the SSH command).
+  const totpKey = (await page.getByTestId("totp-manual-key").textContent())!.trim();
   await page.getByLabel("Code from the app").fill(await totpNow(totpKey));
   await page.getByRole("button", { name: "Check the code" }).click();
 
@@ -86,7 +87,9 @@ async function completeOwnerSteps(page: Page): Promise<{ totpKey: string; recove
   await page.getByRole("button", { name: "Add a passkey" }).click();
 
   await page.getByRole("button", { name: "Show my recovery codes" }).click();
-  const items = await page.locator("ol li").allTextContents();
+  // Waits for the list itself (reading at once raced the page drawing it), found by its test id.
+  await expect(page.getByTestId("recovery-codes").locator("li")).toHaveCount(10);
+  const items = await page.getByTestId("recovery-codes").locator("li").allTextContents();
   const recoveryCodes = items.map((text) => text.replace(/^\s*\d+\.\s*/, "").trim()).filter((text) => /^[A-Za-z0-9]{5}-[A-Za-z0-9]{7}$/.test(text));
   expect(recoveryCodes).toHaveLength(10);
   const label = await page.getByLabel(/Type code number \d+/).getAttribute("id");
@@ -99,9 +102,9 @@ async function completeOwnerSteps(page: Page): Promise<{ totpKey: string; recove
   await page.getByRole("button", { name: "Continue" }).click();
 
   await page.getByRole("button", { name: "Show my keys" }).click();
-  for (const [field, block] of [["Last 6 characters of the master key", "Master key"], ["Last 6 characters of the backup password", "Backup password"]] as const) {
+  for (const [field, testId] of [["Last 6 characters of the master key", "master-key"], ["Last 6 characters of the backup password", "backup-password"]] as const) {
     if (await page.getByLabel(field).count()) {
-      const value = (await page.locator("div", { hasText: block }).locator("code").first().textContent())!.trim();
+      const value = (await page.getByTestId(testId).textContent())!.trim();
       await page.getByLabel(field).fill(value.slice(-6));
     }
   }
