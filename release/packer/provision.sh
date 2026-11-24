@@ -34,7 +34,8 @@ cloud-init status --wait >/dev/null 2>&1 || true
 #    security updates.
 apt-get update
 apt-get -y -o Dpkg::Options::=--force-confold dist-upgrade
-apt-get install -y --no-install-recommends docker.io unattended-upgrades ca-certificates curl e2fsprogs util-linux
+# python3: the upgrade agent (upgrade-agent.py, standard library only).
+apt-get install -y --no-install-recommends docker.io unattended-upgrades ca-certificates curl e2fsprogs util-linux python3
 install -m 0644 "$FILES/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
 install -m 0644 "$FILES/52polynovea-unattended-upgrades" /etc/apt/apt.conf.d/52polynovea-unattended-upgrades
 
@@ -48,9 +49,10 @@ install -m 0644 "$FILES/journald-polynovea.conf" /etc/systemd/journald.conf.d/po
 # 3. Polynovea: scripts, units, the HTTPS proxy's config, and which image this VM image carries.
 install -d -m 0755 /opt/polynovea /etc/polynovea
 install -m 0755 "$FILES/run-cms.sh" "$FILES/run-caddy.sh" "$FILES/has-domain.sh" "$FILES/data-disk.sh" "$FILES/console-code.sh" "$FILES/verify-images.sh" /opt/polynovea/
+install -m 0755 "$FILES/upgrade-agent.py" /opt/polynovea/upgrade-agent.py
 install -m 0644 "$FILES/Caddyfile" /etc/polynovea/Caddyfile
 install -m 0644 "$FILES/polynovea-release.pub" /etc/polynovea/release.pub
-sed -i 's/\r$//' /opt/polynovea/*.sh /etc/polynovea/Caddyfile /etc/polynovea/release.pub /etc/apt/apt.conf.d/52polynovea-unattended-upgrades /etc/apt/apt.conf.d/20auto-upgrades
+sed -i 's/\r$//' /opt/polynovea/*.sh /opt/polynovea/upgrade-agent.py /etc/polynovea/Caddyfile /etc/polynovea/release.pub /etc/apt/apt.conf.d/52polynovea-unattended-upgrades /etc/apt/apt.conf.d/20auto-upgrades
 cat >/etc/polynovea/image.env <<EOF
 # Written by provision.sh. /etc/polynovea/polynovea.env may override POLYNOVEA_IMAGE_REF.
 POLYNOVEA_IMAGE_REF=$POLYNOVEA_IMAGE_REF
@@ -59,8 +61,9 @@ POLYNOVEA_RELEASE_ID=$POLYNOVEA_RELEASE_ID
 POLYNOVEA_CLOUD=$POLYNOVEA_CLOUD
 EOF
 chmod 0644 /etc/polynovea/image.env
-UNITS="polynovea-data-disk.service var-lib-polynovea.mount polynovea-console-code.service polynovea.service polynovea-caddy.service"
-for unit in $UNITS; do
+# polynovea-upgrade.service has no [Install]: polynovea-upgrade.path starts it when the CMS asks.
+UNITS="polynovea-data-disk.service var-lib-polynovea.mount polynovea-console-code.service polynovea.service polynovea-caddy.service polynovea-upgrade.path"
+for unit in $UNITS polynovea-upgrade.service; do
   install -m 0644 "$FILES/$unit" "/etc/systemd/system/$unit"
   sed -i 's/\r$//' "/etc/systemd/system/$unit"
 done
@@ -68,6 +71,9 @@ done
 [ -d /var/lib/polynovea ] || install -d -m 0755 /var/lib/polynovea
 [ -d /var/lib/polynovea-caddy ] || install -d -m 0700 /var/lib/polynovea-caddy
 [ -d /var/lib/polynovea-verified ] || install -d -m 0700 /var/lib/polynovea-verified
+# The upgrade agent's status folder (root-owned, mounted read-only into the CMS) and its "installed" marker.
+install -d -o root -g root -m 0755 /var/lib/polynovea-upgrade
+python3 -I -B /opt/polynovea/upgrade-agent.py --mark
 
 # 4. The images, pulled by digest (content-addressed), and the CMS image's release signature checked
 #    now, so a build or bootstrap with a bad image stops here. The units check again before every start.
