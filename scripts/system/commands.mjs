@@ -98,7 +98,8 @@ async function restoreBackup(database, args) {
   } catch {
     // stopped, as required
   }
-  const run = await pgbackrest([`--set=${label}`, "--delta", "--type=immediate", "--target-action=promote", "restore"]);
+  // The spool folder: /var/spool/pgbackrest belongs to root in the image; a restore only needs an empty one.
+  const run = await pgbackrest([`--set=${label}`, "--delta", "--type=immediate", "--target-action=promote", "--spool-path=/tmp/pgbackrest-spool", "restore"]);
   if (run.code !== 0) return fail(`pgbackrest restore exited ${run.code}: ${scrub(run.stderr || run.stdout)}`);
   console.log(JSON.stringify({ restored: label }));
   return 0;

@@ -49,6 +49,7 @@ describe("restore test", () => {
     const restore = calls.find((line) => line.includes(" restore"))!;
     expect(restore).toContain("--set=20261124-020000F");
     expect(restore).toContain("--archive-mode=off");
+    expect(restore).toContain(`--spool-path=/var/lib/polynovea/restore-test/${ID}/spool`);
     expect(restore).toContain(`--pg1-path=/var/lib/polynovea/restore-test/${ID}/pgdata`);
     expect(calls).toContain(`pg_ctl stop -D /var/lib/polynovea/restore-test/${ID}/pgdata`);
     expect(removed).toEqual([`/var/lib/polynovea/restore-test/${ID}`]);
