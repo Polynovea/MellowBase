@@ -149,6 +149,16 @@ const orderOf = (kind: PlanStep["kind"]) => {
   return index < 0 ? EXPAND_ORDER.length : index;
 };
 
+/**
+ * Fields whose column is waiting for its deletion to be confirmed: the column is still in the table,
+ * but its field is not in the schema the table was last planned to.
+ */
+function pendingDeletionFields(input: PlanInput): Set<string> {
+  if (!input.currentSchema || !input.currentShape) return new Set();
+  const inSchema = new Set(input.currentSchema.fields.map((f) => f.key));
+  return new Set(Object.values(input.currentShape.columns).map((c) => c.field).filter((key) => !inSchema.has(key)));
+}
+
 function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
   const problems: PlanProblem[] = [];
   const target = input.targetSchema;
@@ -186,15 +196,16 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
     problems.push({ code: "cap_exceeded", message: `A model can have at most ${limits.maxIndexesPerModel} indexes (unique, indexed, relation or search); this one has ${indexes}.` });
   }
 
-  // A column whose field is no longer in the schema the table was last planned to is waiting for its
-  // deletion to be confirmed. Re-adding the field now would bring back its old values: refuse.
-  if (input.currentSchema && input.currentShape) {
-    const inSchema = new Set(input.currentSchema.fields.map((f) => f.key));
-    const pending = new Set(Object.values(input.currentShape.columns).map((c) => c.field).filter((key) => !inSchema.has(key)));
-    for (const field of target.fields) {
-      if (pending.has(field.key)) {
-        problems.push({ code: "pending_deletion", message: `The field "${field.key}" is waiting to be deleted; confirm or cancel that first.` });
-      }
+  // Re-adding a field whose deletion is waiting for confirmation restores it with its values (the
+  // column is still there), as long as the column can hold the new field's values unchanged. A field
+  // that comes back as a different kind of value would replace them: refused until the deletion runs.
+  for (const key of pendingDeletionFields(input)) {
+    const field = target.fields.find((candidate) => candidate.key === key);
+    if (!field) continue;
+    const old = columnOfField(input.currentShape, key);
+    const next = columnOfField(targetShape, key);
+    if (!old || !next || !isLosslessTypeChange(old.pgType, next.pgType)) {
+      problems.push({ code: "pending_deletion", message: `The field "${key}" is waiting to be deleted, and its saved values can't be kept as the new kind of field. Add it back as the same kind of field to restore it with its values, or confirm the deletion on the model page first.` });
     }
   }
 
@@ -244,6 +255,8 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
   const targetShape = target ? normalizeShape(shapeForSchema(table, target, current, input.renames, limits.maxIndexesPerModel)) : null;
   const drafts: Draft[] = [];
   const notes: string[] = [];
+  const restoredFields = target ? [...pendingDeletionFields(input)].filter((key) => target.fields.some((field) => field.key === key)).sort() : [];
+  for (const key of restoredFields) notes.push(`"${key}" was waiting to be deleted; adding it back restores it with its saved values.`);
 
   if (!target) {
     if (current) drafts.push({ kind: "drop_table", stage: "destructive", table });
@@ -363,6 +376,7 @@ export function buildMigrationPlan(input: PlanInput): PlanResult {
     steps,
     requiresConfirmation: steps.some((step) => step.stage === "destructive"),
     notes,
+    ...(restoredFields.length ? { restoredFields } : {}),
   };
   return { ok: true, plan };
 }

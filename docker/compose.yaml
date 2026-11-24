@@ -1,8 +1,9 @@
 # Polynovea CMS with Docker Compose. Two ways to reach the setup wizard; pick one profile.
 #
 #   tunnel  The CMS uses the machine's own network (host networking) and listens on 127.0.0.1:3000
-#           only. Reach it with an SSH tunnel: ssh -L 3000:localhost:3000 you@server, then open
-#           http://localhost:3000/setup. Linux hosts only (Docker Desktop has no real host networking).
+#           only. Reach it with an SSH tunnel: ssh -L 3000:127.0.0.1:3000 you@server, then open
+#           http://localhost:3000/setup (exactly that address: tunnel.env sets it as POLYNOVEA_PUBLIC_URL;
+#           override it in polynovea.env). Linux hosts only (Docker Desktop has no real host networking).
 #
 #   proxy   Caddy serves HTTPS for POLYNOVEA_DOMAIN with a Let's Encrypt certificate and forwards to
 #           the CMS over 127.0.0.1: the CMS joins Caddy's network namespace, so the CMS trusts it as
@@ -43,6 +44,12 @@ services:
     <<: *cms
     profiles: ["tunnel"]
     network_mode: host
+    # tunnel.env sets POLYNOVEA_PUBLIC_URL=http://localhost:3000, the address the owner opens through
+    # the tunnel (passkeys and sign-in need it); polynovea.env is read after it, so a value there wins.
+    env_file:
+      - path: ./tunnel.env
+      - path: ./polynovea.env
+        required: false
 
   cms:
     <<: *cms

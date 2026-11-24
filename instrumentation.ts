@@ -13,5 +13,5 @@ export async function register() {
   // on (owner step, running) the auth settings must be valid.
   if (state.mode === "setup" && !state.databaseReady) return;
   const { assertAuthSettings } = await import("@/lib/auth/settings");
-  assertAuthSettings();
+  if (assertAuthSettings() === "tunnel") console.log("auth: SSH-tunnel mode (loopback only), shared sign-in rate limit");
 }

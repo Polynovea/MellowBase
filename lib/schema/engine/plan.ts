@@ -142,6 +142,11 @@ export interface MigrationPlan {
   requiresConfirmation: boolean;
   /** Notes for the UI that are not steps (e.g. "to-many relations are stored separately"). */
   notes: string[];
+  /**
+   * Field keys added back while their deletion was waiting for confirmation: their columns (and values)
+   * stay, and this plan supersedes the waiting deletion. Informational; not part of the plan hash.
+   */
+  restoredFields?: string[];
 }
 
 /** Why a plan could not be built: a name rule, a cap, or a reserved name. Plain words, safe to show. */

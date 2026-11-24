@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createOwnerPool, ownerPoolConfig } from "@/lib/schema/runner/ownerPool";
+import { assertOwnerSession, createOwnerPool, ownerPoolConfig } from "@/lib/schema/runner/ownerPool";
 
 // Guard: the request that asks for a schema change never holds owner rights. Only the runner itself
 // and the worker process may import the modules that open the owner pool or apply a stage; the CMS
@@ -47,6 +47,17 @@ describe("migration runner owner boundary", () => {
 
   it("refuses to open the owner pool inside the CMS server", () => {
     expect(() => createOwnerPool({ NEXT_RUNTIME: "nodejs", POLYNOVEA_MIGRATION_DATABASE_URL: "postgres://x@localhost/db" })).toThrow(/cannot be opened inside the CMS server/);
+  });
+
+  it("refuses a session that is not polynovea_owner (e.g. DATABASE_URL holding the app role, with no config.enc)", async () => {
+    const session = (role: string, ownsContent = true) => ({ query: async () => ({ rows: [{ role, owns_content: ownsContent }] }) }) as never;
+    await expect(assertOwnerSession(session("polynovea_app"), {})).rejects.toMatchObject({ code: "runner_wrong_role" });
+    await expect(assertOwnerSession(session("postgres"), {})).rejects.toMatchObject({ code: "runner_wrong_role" });
+    await expect(assertOwnerSession(session("polynovea_owner", false), {})).rejects.toMatchObject({ code: "runner_not_schema_owner" });
+    await expect(assertOwnerSession(session("polynovea_owner"), {})).resolves.toBe("polynovea_owner");
+    // The pool itself opens for any URL; the worker checks every session it opens (openSession) and
+    // stops with startup_failed before running anything.
+    expect(() => createOwnerPool({ POLYNOVEA_MIGRATION_DATABASE_URL: "postgres://polynovea_app@localhost/db" })).not.toThrow();
   });
 
   it("waits at most 3 seconds for a lock, with a long statement timeout for scans and index builds", () => {

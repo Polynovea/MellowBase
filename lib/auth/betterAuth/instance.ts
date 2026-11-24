@@ -6,7 +6,7 @@
  */
 import { getDb } from "@/lib/db/index";
 import { provisionManagedIdentity } from "@/lib/admin/managedProvisioning";
-import { parseTrustedProxies } from "@/lib/auth/settings";
+import { clientAddressMode, parseTrustedProxies } from "@/lib/auth/settings";
 import { createPolynoveaAuth, type PolynoveaAuth } from "@/lib/auth/betterAuth/server";
 import { getBetterAuthServerIdentityProvider } from "@/lib/auth/betterAuth/provider";
 import type { ServerIdentityProvider } from "@/lib/auth/provider";
@@ -25,6 +25,8 @@ export function getBuiltinAuth(): PolynoveaAuth {
       secret,
       baseURL,
       trustedProxies: parseTrustedProxies(process.env.POLYNOVEA_TRUSTED_PROXIES),
+      // SSH-tunnel install (loopback bind, loopback http address, no proxy): no client address header.
+      clientAddressMode: clientAddressMode(process.env),
       onUserCreated: async (user) => {
         await provisionManagedIdentity(user);
       },

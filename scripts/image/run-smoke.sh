@@ -86,11 +86,24 @@ docker run --rm --entrypoint node -w /app "$IMAGE" scripts/polynovea-cms.mjs --h
 
 step "Tunnel route: setup over loopback, On this server, owner step"
 docker volume create "$PREFIX-data" >/dev/null
-docker run -d --name "$PREFIX-tunnel" -v "$PREFIX-data:/var/lib/polynovea" "$IMAGE" >/dev/null
+# The address the owner opens through the tunnel: the wizard's passkey and sign-in belong to it. This
+# plain docker run passes it as docs/self-hosting/container.md says; the compose tunnel profile sets the
+# same default in docker/tunnel.env and the VM's run-cms.sh when there is no domain
+# (scripts/release/compose-tunnel.test.ts checks both).
+docker run -d --name "$PREFIX-tunnel" -e POLYNOVEA_PUBLIC_URL=http://localhost:3000 -v "$PREFIX-data:/var/lib/polynovea" "$IMAGE" >/dev/null
 wait_healthy "$PREFIX-tunnel"
 docker logs "$PREFIX-tunnel" 2>&1 | grep -q "peer\|Setup code" || true
 CODE="$(setup_code "$PREFIX-tunnel")"
-smoke "$PREFIX-tunnel" -e SETUP_CODE="$CODE" -e EXPECT_RELEASE="$RELEASE_ID" -e STEPS=health,forged,code,local,owner-step
+smoke "$PREFIX-tunnel" -e SETUP_CODE="$CODE" -e EXPECT_RELEASE="$RELEASE_ID" -e STEPS=health,forged,code,local,owner-step,schema-roundtrip | tee "/tmp/$PREFIX-roundtrip.log"
+SMOKE_MODEL="$(grep -o "SCHEMA_ROUNDTRIP_MODEL=[a-z0-9_]*" "/tmp/$PREFIX-roundtrip.log" | cut -d= -f2)"
+rm -f "/tmp/$PREFIX-roundtrip.log"
+[ -n "$SMOKE_MODEL" ] || { echo "FAIL  schema round trip did not finish"; exit 1; }
+docker exec -e SMOKE_MODEL="$SMOKE_MODEL" "$PREFIX-tunnel" sh -ec '
+  states="$(psql -h /var/run/postgresql -U postgres -d polynovea -Atc "select string_agg(l.status, \$\$,\$\$ order by l.created_at) from schema_migration_ledger l join content_models m on m.id = l.content_model_id where m.api_key = \$\$$SMOKE_MODEL\$\$ and l.status <> \$\$superseded\$\$")"
+  case "$states" in *pending*|*running*|*failed*|"") echo "FAIL  ledger for the smoke model: [$states]"; exit 1;; *) echo "ok    every schema change of the smoke model succeeded ($states)";; esac
+  reads="$(psql -h /var/run/postgresql -U postgres -d polynovea -Atc "select s.read_source from content_model_storage s join content_models m on m.id = s.content_model_id where m.api_key = \$\$$SMOKE_MODEL\$\$")"
+  [ "$reads" = "table" ] && echo "ok    the smoke model reads from its table" || { echo "FAIL  smoke model read source [$reads]"; exit 1; }
+'
 
 step "Bundled database: 127.0.0.1 and socket only, no password sign-in, no remote roles"
 docker exec "$PREFIX-tunnel" sh -ec '
@@ -115,8 +128,53 @@ step "Restart: PostgreSQL comes back with the container"
 docker restart -t 90 "$PREFIX-tunnel" >/dev/null
 wait_healthy "$PREFIX-tunnel"
 docker exec "$PREFIX-tunnel" sh -ec '/opt/polynovea/bin/local-db.sh status && echo "bundled PostgreSQL running after restart"'
-docker exec "$PREFIX-tunnel" node -e "fetch('http://127.0.0.1:3000/api/setup/status').then(r=>r.json()).then(s=>{console.log('after restart:',JSON.stringify(s));process.exit(s.databaseReady?0:1)})"
+# The round trip finished setup (owner, organisation, keys), so after a restart the CMS runs, /setup is gone
+# for good, and the built-in auth starts in SSH-tunnel mode (no proxy list needed on loopback).
+docker exec "$PREFIX-tunnel" node -e "Promise.all([fetch('http://127.0.0.1:3000/api/health').then(r=>r.json()),fetch('http://127.0.0.1:3000/api/setup/status').then(r=>r.status)]).then(([h,s])=>{console.log('after restart: health',JSON.stringify(h),'setup status',s);process.exit(h.state==='running'&&s===404?0:1)})" \
+  && echo "ok    after restart: the CMS is running and setup is gone (404)" \
+  || { echo "FAIL  after restart: the CMS is not running, or setup still answers"; exit 1; }
+if docker logs "$PREFIX-tunnel" 2>&1 | grep -q "auth: SSH-tunnel mode (loopback only), shared sign-in rate limit"; then
+  echo "ok    after restart: the built-in auth started in SSH-tunnel mode (no proxy list, shared sign-in limit)"
+else
+  echo "FAIL  the built-in auth did not log SSH-tunnel mode after the restart"; exit 1
+fi
 docker logs "$PREFIX-tunnel" 2>&1 | grep -E "^\[entrypoint\]|\[local-db\]|delivery-worker" | tail -8 || true
+
+step "Delivery worker: the bundle (no TypeScript loader) is running and has recorded a heartbeat"
+# Only node processes count: this sh -ec script is itself a process whose command line contains every
+# word it searches for, so matching all processes would find itself.
+docker exec "$PREFIX-tunnel" sh -ec '
+  procs="$(for p in /proc/[0-9]*; do c="$(tr "\0" " " < "$p/cmdline" 2>/dev/null)"; case "$c" in node\ *|*/node\ *) echo "$c";; esac; done)"
+  if echo "$procs" | grep -q "dist/delivery-worker.mjs"; then echo "ok    worker process runs dist/delivery-worker.mjs"; else echo "FAIL  no worker process running the bundle"; echo "$procs" | grep -i worker; exit 1; fi
+  if echo "$procs" | grep -q -- "--loader"; then echo "FAIL  a process runs with a TypeScript loader"; exit 1; else echo "ok    no process uses --loader"; fi
+  if [ -e /app/scripts/phase12_75-node-loader.mjs ] || [ -e /app/lib/developer/items/schedule.ts ]; then echo "FAIL  the loader or the worker TypeScript ships in the image"; exit 1; else echo "ok    no loader and no worker TypeScript in the image"; fi
+  for i in $(seq 1 30); do
+    beat="$(psql -h /var/run/postgresql -U postgres -d polynovea -Atc "select coalesce(extract(epoch from now() - worker_heartbeat_at)::int, -1) from cms_runtime_state where singleton")"
+    if [ -n "$beat" ] && [ "$beat" -ge 0 ] && [ "$beat" -lt 120 ]; then echo "ok    worker heartbeat ${beat}s ago"; exit 0; fi
+    sleep 2
+  done
+  echo "FAIL  no recent worker heartbeat (got [$beat])"; exit 1
+'
+
+step "Schema worker: the bundle runs, as polynovea_owner from config.enc, with no credential in its environment"
+docker exec "$PREFIX-tunnel" sh -ec '
+  found=""
+  for p in /proc/[0-9]*; do
+    c="$(tr "\0" " " < "$p/cmdline" 2>/dev/null)"
+    case "$c" in node\ *|*/node\ *) ;; *) continue ;; esac
+    if echo "$c" | grep -q "dist/schema-migration-worker.mjs"; then found="$p"; fi
+  done
+  if [ -n "$found" ]; then echo "ok    schema worker process runs dist/schema-migration-worker.mjs (pid ${found#/proc/})"; else echo "FAIL  no schema worker process"; exit 1; fi
+  # The worker process'"'"'s own environment (its pid above), never this shell'"'"'s; unreadable is a failure, not a pass.
+  if [ ! -r "$found/environ" ] || ! tr "\0" "\n" < "$found/environ" | grep -q "^PATH="; then echo "FAIL  cannot read the schema worker environment (${found}/environ)"; exit 1; fi
+  if tr "\0" "\n" < "$found/environ" | grep -qiE "^(POLYNOVEA_MIGRATION_DATABASE_URL|DATABASE_URL)=.*polynovea_owner|postgres(ql)?://polynovea_owner"; then echo "FAIL  the owner credential is in the schema worker environment"; exit 1; else echo "ok    no owner credential in the schema worker environment"; fi
+'
+for i in $(seq 1 30); do
+  if docker logs "$PREFIX-tunnel" 2>&1 | grep -q "\"worker\":\"schema\",\"event\":\"started\".*\"connection\":\"config.enc\""; then echo "ok    schema worker started as polynovea_owner from config.enc"; break; fi
+  if [ "$i" = 30 ]; then echo "FAIL  schema worker did not start"; docker logs "$PREFIX-tunnel" 2>&1 | grep "\"worker\":\"schema\"" | tail -5; exit 1; fi
+  sleep 2
+done
+if docker logs "$PREFIX-tunnel" 2>&1 | grep -q "\"worker\":\"schema\",\"event\":\"loop_error\""; then echo "FAIL  schema worker loop errors"; docker logs "$PREFIX-tunnel" 2>&1 | grep "\"worker\":\"schema\"" | tail -5; exit 1; else echo "ok    schema worker loop without errors"; fi
 
 step "Published port + 0.0.0.0: plain-HTTP setup refused"
 docker volume create "$PREFIX-data2" >/dev/null

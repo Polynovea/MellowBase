@@ -28,7 +28,8 @@
     "test:e2e": "playwright test",
     "db:dev": "node scripts/dev-db/setup.mjs",
     "db:types": "node scripts/db/generate-types.mjs",
-    "worker:delivery": "node scripts/delivery-worker.mjs",
+    "worker:delivery": "node --loader ./scripts/phase12_75-node-loader.mjs scripts/delivery-worker.mjs",
+    "build:worker": "node scripts/build-delivery-worker.mjs",
     "worker:schema": "node --loader ./scripts/phase12_75-node-loader.mjs scripts/schema-migration-worker.mjs",
     "content:move": "node --loader ./scripts/phase12_75-node-loader.mjs scripts/content-move.mjs",
     "certify:phase8": "node scripts/certify-phase8.mjs && node scripts/certify-phase8-authenticated-api.mjs",
@@ -88,6 +89,7 @@
     "eslint": "^9.39.5",
     "eslint-config-next": "^15.5.29",
     "kysely-codegen": "0.20.0",
+    "rolldown": "1.2.19",
     "typescript": "^5.0.0",
     "vitest": "^4.1.12"
   },

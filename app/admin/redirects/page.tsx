@@ -250,7 +250,7 @@ export default function RedirectsPage() {
 
         {/* Table */}
         <div className="mt-5 overflow-hidden border-y border-subtle">
-          <div className="overflow-x-auto">
+          <div tabIndex={0} role="region" aria-label="Redirects" className="overflow-x-auto">
             <table className="ui-table w-full text-left">
               <thead className="border-b border-subtle text-[10px] text-fg-muted uppercase tracking-wider">
                 <tr>

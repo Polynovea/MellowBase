@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Check, Loader2, MessageSquare, Send, Undo2 } from "lucide-react";
 
 type Stage = { key: string; label: string; required_approvals: number; required_role_keys: string[] };
@@ -51,10 +52,10 @@ export default function WorkflowPanel({ entryId, onChanged }: { entryId: string;
     <div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-action">Editorial gate</p><h2 className="mt-1 text-base font-bold text-fg-primary">{title}</h2>{definition?.name&&<p className="mt-1 text-[10px] text-fg-muted">{definition.name}</p>}</div>{busy&&<Loader2 size={16} className="animate-spin text-action"/>}</div>
     {reviewing ? <div className="mt-3 rounded-lg border border-subtle bg-field p-3"><div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-fg-muted"><span>Stage {stageIndex+1} of {stages.length}</span><span>{stageApprovals}/{currentStage.required_approvals} approvals</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-2"><div className="h-full bg-action" style={{width:`${Math.min(100,Math.round((stageApprovals/currentStage.required_approvals)*100))}%`}}/></div>{currentStage.required_role_keys?.length?<p className="mt-2 text-[10px] text-fg-muted">Role gate: {currentStage.required_role_keys.join(", ")}</p>:null}</div> : null}
     <p className="mt-3 text-xs leading-5 text-fg-muted">{reviewing?"A publishing-capable reviewer who satisfies this stage's role gate must make the decision.":status==="approved"?"The approved draft can now be added to a controlled release or published.":"Submit this draft when it is ready for independent review."}</p>
-    <textarea value={comment} onChange={(event)=>setComment(event.target.value)} rows={2} placeholder="Optional note to the reviewer" className="mt-4 w-full resize-none rounded-lg border border-subtle bg-field px-3 py-2 text-xs text-fg-primary outline-none focus:border-action/45"/>
+    <textarea aria-label="Note to the reviewer" value={comment} onChange={(event)=>setComment(event.target.value)} rows={2} placeholder="Optional note to the reviewer" className="mt-4 w-full resize-none rounded-lg border border-subtle bg-field px-3 py-2 text-xs text-fg-primary outline-none focus:border-action/45"/>
     {status==="draft"&&!reviewing&&<button type="button" disabled={busy} onClick={()=>void action("submit")} className="mt-3 inline-flex items-center gap-2 rounded-lg ui-btn ui-btn-primary disabled:opacity-50"><Send size={13}/> Submit for review</button>}
     {reviewing&&<div className="mt-3 flex gap-2"><button type="button" disabled={busy} onClick={()=>void action("approve")} className="inline-flex items-center gap-1.5 rounded-lg bg-success-muted text-success disabled:opacity-50"><Check size={13}/> Approve stage</button><button type="button" disabled={busy} onClick={()=>void action("request_changes")} className="inline-flex items-center gap-1.5 rounded-lg border border-warning px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-warning disabled:opacity-50"><Undo2 size={13}/> Changes</button></div>}
-    {error&&<p className="mt-3 text-xs text-danger">{error}</p>}
+    {error&&<p role="alert" className="mt-3 text-xs text-danger">{error}{/approve their own/i.test(error)&&<> If you are the only reviewer, turn on &quot;Allow requester self-approval&quot; in <Link href="/admin/workflows" className="underline">Workflows</Link>.</>}</p>}
     {workflow?.workflow_actions?.length?<div className="mt-5 border-t border-subtle pt-4">{[...workflow.workflow_actions].sort((a,b)=>String(b.created_at||"").localeCompare(String(a.created_at||""))).slice(0,6).map((item)=><div key={item.id} className="mb-2 flex gap-2 text-[10px]"><MessageSquare size={11} className="mt-0.5 shrink-0 text-fg-muted"/><span className="text-fg-muted"><strong className="font-semibold text-fg-secondary">{item.action.replaceAll("_"," ")}</strong>{item.comment?` — ${item.comment}`:""}</span></div>)}</div>:null}
   </section>;
 }

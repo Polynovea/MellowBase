@@ -70,6 +70,8 @@ The `master` role is a normal auditable profile role. It is **not** granted by a
 
 RLS is defence in depth; backend actions additionally enforce actor/workspace scope. The service-role credential is server-only.
 
+**In the server image, the CMS process can reach the owner login.** The CMS answers every request as `polynovea_app`. But the image keeps the `polynovea_owner` login (used by upgrades and the schema worker) in `config.enc`, which the CMS process can decrypt. In **On this server** mode, the CMS process can also sign in as the database administrator `postgres` over the local socket. Code running inside the CMS process, for example through a security flaw, could therefore bypass RLS. Giving each process its own user is the next hardening change. See [container.md](container.md#security-what-the-cms-process-can-reach-today) for what this means and what to do until then.
+
 ## Backup and restore
 
 Use provider-native PostgreSQL backups and/or `pg_dump`, retain backups outside the application host, encrypt them at rest, and rehearse restore into an isolated database.

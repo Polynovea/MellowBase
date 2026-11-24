@@ -2,6 +2,7 @@
 // intent" made concrete. One field becomes at most one column; to-many relations have none. Column
 // names are derived from field keys once (columnNameFor) and then kept in the table's shape.
 import { FIELD_TYPE_REGISTRY } from "@/lib/schema/fields/registry";
+import { SchemaEngineError } from "@/lib/schema/engine/errors";
 import type { CanonicalSchema, FieldDefinition, RelationConfig } from "@/lib/schema/fields/types";
 import { columnNameFor } from "@/lib/schema/engine/names";
 import { DEFAULT_SCHEMA_LIMITS } from "@/lib/schema/engine/limits";
@@ -49,7 +50,9 @@ export function hasNoColumn(field: FieldDefinition): boolean {
 export function columnForField(field: FieldDefinition, columnName: string): ColumnShape | null {
   if (hasNoColumn(field)) return null;
   const pgType = FIELD_TYPE_REGISTRY[field.type]?.postgresType;
-  if (!isPgColumnType(pgType)) throw new Error(`Field type "${field.type}" has no column type.`);
+  if (!isPgColumnType(pgType)) {
+    throw new SchemaEngineError("invalid_plan", `Field "${field.key}" has type "${field.type}", which is not a field type the CMS can store. Fix the model's fields in the CMS.`);
+  }
 
   const toOne = isToOneRelation(field);
   const unique = Boolean(field.unique) || field.relation?.cardinality === "one_to_one";

@@ -4,6 +4,21 @@
  */
 
 /**
+ * Why the CMS must not start with this sign-in setting, or null when it may. The image's setup wizard
+ * creates the owner in the built-in auth's tables and the browser bundle is built with
+ * NEXT_PUBLIC_AUTH_PROVIDER=builtin, so AUTH_PROVIDER must be builtin (the image sets it; an override
+ * would half-work: pages expecting one sign-in, the server answering with another).
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {string | null}
+ */
+export function authProviderProblem(env) {
+  const value = (env.AUTH_PROVIDER ?? "").trim().toLowerCase();
+  if (value === "builtin") return null;
+  return `AUTH_PROVIDER is set to "${String(env.AUTH_PROVIDER ?? "").slice(0, 40)}", but this image only runs the built-in sign-in (its setup wizard creates the owner there). Remove AUTH_PROVIDER from your settings (the image sets it to builtin), then start again. Supabase can still be the database; it cannot be the sign-in.`;
+}
+
+/**
  * Whether to start the bundled PostgreSQL at container start.
  *
  * Only when the install's saved settings (config.enc) say it uses "On this server". The wizard writes

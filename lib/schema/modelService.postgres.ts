@@ -10,7 +10,7 @@
 // - Malformed IDs in reads are "not found"; list queries have explicit limits. listVersions and
 // getVersion take no workspace, as before: callers pass a model already read with getModel, which
 // is workspace-scoped.
-import { callFunction, DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne, SqlFunctionError, withTransaction } from "@/lib/db/index";
+import { callFunction, DEFAULT_LIST_LIMIT, expectOne, getDb, maybeOne, SqlFunctionError, withTransaction, type DbExecutor } from "@/lib/db/index";
 import { clientErrorMessage } from "@/lib/http/clientError";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
 import { contentFieldRows, type ContentModelRow, type ContentModelVersionRow, type ServiceResult } from "@/lib/schema/modelService";
@@ -42,6 +42,8 @@ export async function createModelRecord(args: {
   icon: string | null;
   hash: string;
   capability: string;
+  /** A transaction to run in (modelService queues the schema change in the same one). */
+  db?: DbExecutor;
 }): Promise<ServiceResult<{ model: ContentModelRow; version: ContentModelVersionRow }>> {
   try {
     const result = await callFunction("cms_create_content_model", {
@@ -54,7 +56,7 @@ export async function createModelRecord(args: {
       p_schema_json: JSON.stringify(args.schema),
       p_schema_hash: args.hash,
       p_capability: args.capability,
-    });
+    }, args.db);
     if (!result) return { ok: false, error: "Failed to create content model", status: 500 };
     return { ok: true, data: result as unknown as { model: ContentModelRow; version: ContentModelVersionRow } };
   } catch (error) {
@@ -70,6 +72,7 @@ export async function applySchemaVersion(args: {
   hash: string;
   changeSummary: string | null;
   capability: string;
+  db?: DbExecutor;
 }): Promise<{ ok: true; version: ContentModelVersionRow } | { ok: false; error: string }> {
   try {
     const result = await callFunction("cms_apply_model_schema_version", {
@@ -80,7 +83,7 @@ export async function applySchemaVersion(args: {
       p_schema_hash: args.hash,
       p_change_summary: args.changeSummary,
       p_capability: args.capability,
-    });
+    }, args.db);
     if (!result) return { ok: false, error: "Failed to apply schema version" };
     return { ok: true, version: (result as unknown as { version: ContentModelVersionRow }).version };
   } catch (error) {

@@ -18,6 +18,9 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@polynovea/cms-sdk": [
+        "./packages/cms-sdk/src/index.ts"
       ]
     },
     "allowJs": true,

@@ -4,11 +4,34 @@ The Polynovea server image holds everything the CMS needs on one server:
 
 - the CMS itself (the Next.js server);
 - the delivery worker (publishing, webhooks, search, scheduled releases);
+- the schema worker, which applies the model changes saved in the CMS to the database;
 - PostgreSQL 16 and pgBackRest, used only if you choose **On this server** in the setup wizard.
+
+It always uses the built-in sign-in (`AUTH_PROVIDER=builtin`, set by the image; it refuses to start with any other value): Supabase is supported as a database, not as the sign-in provider.
 
 It runs as an unprivileged user (uid/gid 10001), never as root, on Node.js 24 (24.7 or later, needed for the password hashing). Every base image is pinned by digest, and every release is signed (see [release-signing.md](release-signing.md)). Always run the image by digest (`…@sha256:…`), never by a tag.
 
 On AWS or Azure, use our VM images or cloud templates instead: they do all of this for you. See [vm-images.md](vm-images.md).
+
+## Security: what the CMS process can reach today
+
+Read this before you run the image. Inside the container, the CMS, both workers and (in **On this server** mode) PostgreSQL all run as the same user, 10001. That has two consequences:
+
+- **The database owner login can be reached from the CMS process.** `config.enc` holds two database logins: `polynovea_app`, which the CMS uses for every request, and `polynovea_owner`, which owns every CMS table. Upgrades use the owner login to run migrations, and the schema worker uses it to apply model changes. The CMS process holds the master key, so it can decrypt `config.enc` and read the owner login too. With that login, anyone can read and change all content in every workspace and change the database structure, without the CMS's permission checks or row-level security.
+- **On this server mode: the database administrator can be reached too.** PostgreSQL runs as the same user, and the administrator `postgres` signs in through the local socket by matching that user, with no password. So the CMS process can connect as the database administrator and read the database's files directly.
+
+What this means in practice: nothing changes for normal use. Every request still goes through the `polynovea_app` login, the CMS's permission checks and row-level security. The risk is a flaw that lets an attacker run their own code inside the CMS process. Today, such an attacker would get the owner login and, in On this server mode, full administrator access to the database. Until that changes:
+
+- run images by digest and upgrade as soon as a release is out;
+- run only the CMS (and Caddy) on this server, and keep the setup routes as described below;
+- prefer a managed database if you need the database administrator kept away from the CMS server.
+
+**What comes next.** The next hardening change gives each process its own user:
+- the CMS on 10001;
+- the schema worker on 10002, with the owner login in a separate file only it can read;
+- the bundled PostgreSQL on 10003, where the CMS user can no longer sign in as administrator.
+
+This page will say when that change ships.
 
 ## What you need
 
@@ -49,6 +72,7 @@ or, without Compose:
 ```
 docker run -d --name polynovea --restart unless-stopped --network host \
   --security-opt no-new-privileges:true --cap-drop ALL \
+  -e POLYNOVEA_PUBLIC_URL=http://localhost:3000 \
   -v polynovea-data:/var/lib/polynovea \
   registry.example/polynovea-cms@sha256:<digest>
 ```
@@ -56,10 +80,12 @@ docker run -d --name polynovea --restart unless-stopped --network host \
 `--network host` puts the CMS on the server's own loopback, so an SSH tunnel reaches it from `127.0.0.1`. Then, on your own computer:
 
 ```
-ssh -L 3000:localhost:3000 you@your-server
+ssh -L 3000:127.0.0.1:3000 you@your-server
 ```
 
 Open `http://localhost:3000/setup`, and enter the setup code from `docker logs polynovea`. Host networking needs a Linux server; Docker Desktop on Windows or macOS does not give containers the computer's own loopback.
+
+**Open exactly the address in `POLYNOVEA_PUBLIC_URL`.** The setup wizard's passkey and every sign-in belong to that address, and the CMS cannot work without it. The `tunnel` profile sets it to `http://localhost:3000` (in `docker/tunnel.env`); with plain `docker run`, pass it as above. To your browser, `http://127.0.0.1:3000` is a different address from `http://localhost:3000`: opening it gives a passkey and sign-ins that fail. An SSH-tunnel install needs no `POLYNOVEA_TRUSTED_PROXIES`: with the CMS on loopback and a `http://localhost` address, sign-ins share one rate limit and no visitor address is taken from request headers (the log says `auth: SSH-tunnel mode`). If you tunnel to another local port or name, set `POLYNOVEA_PUBLIC_URL` to the address you open, in `polynovea.env` (it wins over `tunnel.env`): for example `ssh -L 8080:127.0.0.1:3000 you@your-server` with `POLYNOVEA_PUBLIC_URL=http://localhost:8080`. Every setup page shows the configured address and warns when your browser is on a different one.
 
 ### Route 2: HTTPS through Caddy (`proxy` profile)
 
@@ -99,8 +125,8 @@ Optional settings you may pass (`-e` or an env file): `POLYNOVEA_PUBLIC_URL`, `P
 1. checks `/var/lib/polynovea` is writable;
 2. starts the bundled PostgreSQL **only if** this install chose **On this server** (installs on a managed database never run it);
 3. starts the CMS. If the CMS stops, the container stops, and Docker or systemd restarts it;
-4. starts the worker once the install has a database (before that, it checks every 15 seconds), and restarts it with a back-off if it stops;
-5. on `docker stop`: stops the worker, then the CMS, then PostgreSQL (a clean, fast shutdown). Allow it 90 seconds (`--stop-timeout 90` or Compose's `stop_grace_period`).
+4. starts the two workers once the install has a database (before that, it checks every 15 seconds), and restarts each with a back-off if it stops. The delivery worker signs in as `polynovea_app`. The schema worker signs in as `polynovea_owner` (see [Security: what the CMS process can reach today](#security-what-the-cms-process-can-reach-today));
+5. on `docker stop`: stops the workers, then the CMS, then PostgreSQL (a clean, fast shutdown). Allow it 90 seconds (`--stop-timeout 90` or Compose's `stop_grace_period`).
 
 `/api/health` answers `{"state": "setup" | "running" | "unavailable", "release": "<release ID>"}`. The image's health check calls it.
 
@@ -111,7 +137,7 @@ When you choose **On this server** in the wizard:
 - The database lives in `/var/lib/polynovea/postgresql`. The wizard refuses if that folder is on the container's own filesystem rather than a volume.
 - PostgreSQL listens on `127.0.0.1:5432` and a unix socket in `/var/run/postgresql` (private to the CMS's user) only. With host networking, that is the server's own loopback, so nothing outside the server can reach it.
 - Who may sign in:
-  - the administrator `postgres`: through the unix socket only, and only as the image's own user (peer authentication). It has no password at all.
+  - the administrator `postgres`: through the unix socket only, and only as the image's own user (peer authentication). It has no password at all. The CMS also runs as that user, so it can sign in as the administrator too (see [Security: what the CMS process can reach today](#security-what-the-cms-process-can-reach-today)).
   - `polynovea_owner` and `polynovea_app`: the `polynovea` database only, from `127.0.0.1` only, with SCRAM passwords that the wizard generates and keeps in `config.enc`.
   - everything else is rejected.
 - Backups: pgBackRest, encrypted, to your S3 bucket, Azure container or the data disk (see [setup/database.md](setup/database.md)). Its settings are in `/var/lib/polynovea/etc/pgbackrest.conf`, and its logs and the database's logs are in `/var/lib/polynovea/log` (database logs are kept for a week).

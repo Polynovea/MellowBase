@@ -204,13 +204,10 @@ async function deleteFieldPermissions(trx: Transaction<DB>, plan: MigrationPlan,
  */
 export async function applyStageBookkeeping(trx: Transaction<DB>, plan: MigrationPlan, stage: PlanStage): Promise<void> {
   const steps = stageSteps(plan, stage);
-  if (stage === "expand") {
-    // A field whose column waits for the destructive stage has already left the schema: its permission
-    // rows go now, so nothing can grant access to it while it waits (the name is reserved on deletion).
-    for (const step of stageSteps(plan, "destructive")) {
-      if (step.kind === "drop_column") await deleteFieldPermissions(trx, plan, step.field);
-    }
-  }
+  // A field whose column waits for the destructive stage keeps its permission rows until that stage
+  // runs. While it waits it is not in the schema, so nothing reads it (the permission function only
+  // knows the schema's fields). If it is added back (a restore), it comes back with the same rules:
+  // deleting them earlier would have reopened a restricted field to everyone with model access.
   for (const step of steps) {
     switch (step.kind) {
       case "rename_column":

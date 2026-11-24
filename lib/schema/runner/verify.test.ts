@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hashShape } from "@/lib/schema/engine/hash";
+import { computePlanHash } from "@/lib/schema/engine/planner";
 import type { MigrationPlan } from "@/lib/schema/engine/plan";
 import { RefusedError } from "@/lib/schema/runner/errors";
 import { buildPlan, column, shape, testEngine } from "@/lib/schema/runner/testing/plans";
@@ -92,6 +93,25 @@ describe("verifyRowAgainstPlan", () => {
     expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: { ...p, steps: [step] } }), engine))).toBe("plan_malformed");
     expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: "not json" }), engine))).toBe("plan_malformed");
     expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: { ...p, formatVersion: 2 } }), engine))).toBe("plan_malformed");
+  });
+
+  it("accepts the restored-fields list of a save that added a waiting field back, with keys checked", () => {
+    const p = plan();
+    expect(verifyRowAgainstPlan(row(p, { plan_json: { ...p, restoredFields: ["views"] } }), engine).plan.restoredFields).toEqual(["views"]);
+    expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: { ...p, restoredFields: ["Views Count"] } }), engine))).toBe("plan_malformed");
+    expect(refusal(() => verifyRowAgainstPlan(row(p, { plan_json: { ...p, restoredFields: "views" } }), engine))).toBe("plan_malformed");
+  });
+
+  it("runs a step-less expand stage only for a saved version of a model whose table exists", () => {
+    const versionOnly = (targetVersionId: string | null, from: typeof base | null = base) => {
+      const p = plan({ base: from, expanded: from, steps: [] });
+      const withVersion = { ...p, targetVersionId };
+      return { ...withVersion, planHash: computePlanHash(withVersion) };
+    };
+    const VERSION = "44444444-4444-4444-8444-444444444444";
+    expect(verifyRowAgainstPlan(row(versionOnly(VERSION), { target_version_id: VERSION }), engine).steps).toEqual([]);
+    expect(refusal(() => verifyRowAgainstPlan(row(versionOnly(null)), engine))).toBe("stage_has_no_steps");
+    expect(refusal(() => verifyRowAgainstPlan(row(versionOnly(VERSION, null), { target_version_id: VERSION }), engine))).toBe("stage_has_no_steps");
   });
 
   it("refuses steps that do not replay to the shapes the plan claims (the engine's validatePlan)", () => {

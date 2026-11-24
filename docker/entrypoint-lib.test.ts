@@ -30,3 +30,32 @@ describe("starting the bundled database at container start", () => {
     expect(read).toBe(false);
   });
 });
+
+describe("the image runs the built-in sign-in only", () => {
+  const problem = (lib as unknown as { authProviderProblem: (env: Record<string, string | undefined>) => string | null }).authProviderProblem;
+
+  it("starts with AUTH_PROVIDER=builtin (what the image sets)", () => {
+    expect(problem({ AUTH_PROVIDER: "builtin" })).toBeNull();
+    expect(problem({ AUTH_PROVIDER: " Builtin " })).toBeNull();
+  });
+
+  it("refuses any override, in plain words: the wizard's owner lives in the built-in auth", () => {
+    for (const value of ["supabase", "", undefined, "gotrue"]) {
+      const message = problem({ AUTH_PROVIDER: value });
+      expect(message).toMatch(/only runs the built-in sign-in/);
+      expect(message).toMatch(/Remove AUTH_PROVIDER/);
+    }
+  });
+
+  it("the Dockerfile builds the browser bundle and runs the server with builtin", async () => {
+    const { readFileSync } = await import("node:fs");
+    const dockerfile = readFileSync("Dockerfile", "utf8").replace(/\r\n/g, "\n");
+    const build = dockerfile.slice(dockerfile.indexOf(" AS build"), dockerfile.indexOf("FROM", dockerfile.indexOf(" AS build") + 1));
+    // Build stage: set before `npm run build`, which inlines it into the browser bundle.
+    expect(build).toMatch(/\nENV NEXT_PUBLIC_AUTH_PROVIDER=builtin\n/);
+    expect(build.indexOf("NEXT_PUBLIC_AUTH_PROVIDER=builtin")).toBeLessThan(build.indexOf("npm run build"));
+    // Runtime stage: the server side, in the image's ENV block.
+    const runtime = dockerfile.slice(dockerfile.indexOf(" AS runtime"));
+    expect(runtime.split("\n").map((line) => line.trim())).toContain("AUTH_PROVIDER=builtin \\");
+  });
+});

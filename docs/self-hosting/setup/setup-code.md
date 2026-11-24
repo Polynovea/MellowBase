@@ -47,10 +47,10 @@ First make sure the CMS listens only on the server itself: start it with `HOSTNA
 Then, on your own computer:
 
 ```
-ssh -L 3000:localhost:3000 you@your-server
+ssh -L 3000:127.0.0.1:3000 you@your-server
 ```
 
-Leave it open and browse to `http://localhost:3000/setup`. Your browser treats `localhost` as a secure address, so the setup cookie works there (checked in Chrome on a production build).
+Leave it open and browse to `http://localhost:3000/setup`: exactly that address. It must match the CMS's `POLYNOVEA_PUBLIC_URL` (the server image's tunnel route sets `http://localhost:3000`), including the port: the first number in `ssh -L` is the port you open on your computer. `http://127.0.0.1:3000` is a different address to your browser, and a passkey or sign-in there fails. Every setup page shows the configured address and warns when your browser is somewhere else. Your browser treats `localhost` as a secure address, so the setup cookie works there (checked in Chrome on a production build).
 
 Plain HTTP is accepted only when all of these are true: the CMS listens on `127.0.0.1` or `::1` only, the connection comes from that same machine, the request carries no forwarding headers, and the browser asked for `localhost`.
 

@@ -42,6 +42,17 @@ interface StudioShellProps {
   onClearConflict?: () => void;
 }
 
+export function useStudioTitle() {
+  useEffect(() => {
+    const wanted = "Visual Studio · Polynovea CMS";
+    const apply = () => { if (document.title !== wanted) document.title = wanted; };
+    apply();
+    const observer = new MutationObserver(apply);
+    observer.observe(document.head, { subtree: true, childList: true, characterData: true });
+    return () => observer.disconnect();
+  }, []);
+}
+
 export default function StudioShell({
   entryId,
   modelName,
@@ -55,6 +66,7 @@ export default function StudioShell({
   conflictState,
   onClearConflict,
 }: StudioShellProps) {
+  useStudioTitle();
   const [doc, setDoc] = useState<ExperienceDocument>(initialDocument);
   const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);

@@ -1,4 +1,5 @@
 import { apiError, apiSuccess } from "@/lib/developer/apiContract";
+import { sanitiseLegacyPayload, tokenAccesses } from "@/lib/developer/items/legacy";
 import { requireDeveloperApi } from "@/lib/developer/apiAuth";
 import { getPublishedContent } from "@/lib/developer/publishedContentService";
 
@@ -12,7 +13,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ model: s
     const result = await getPublishedContent({ workspaceId: ctx.workspaceId, modelApiKey: model, entryId: id, locale });
     if (!result.model) return apiError("MODEL_NOT_FOUND", "Content model not found", 404, { requestId: ctx.requestId, rateLimit: ctx.rateLimit });
     if (!result.record) return apiError("CONTENT_NOT_FOUND", "Published content entry not found", 404, { requestId: ctx.requestId, rateLimit: ctx.rateLimit });
-    return apiSuccess(result.record, { requestId: ctx.requestId, rateLimit: ctx.rateLimit });
+    return apiSuccess(sanitiseLegacyPayload(result.record, await tokenAccesses(ctx, [model])), { requestId: ctx.requestId, rateLimit: ctx.rateLimit });
   } catch {
     return apiError("CONTENT_READ_FAILED", "Published content could not be read", 500, { requestId: ctx.requestId, rateLimit: ctx.rateLimit });
   }

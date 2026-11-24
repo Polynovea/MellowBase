@@ -1,16 +1,9 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
 import process from "node:process";
-import { createClient } from "@supabase/supabase-js";
 import { seedStarterContent } from "../lib/setup/owner/starterContent.mjs";
-
-function loadLocalEnv() {
-  if (!existsSync(".env.local")) return;
-  for (const raw of readFileSync(".env.local", "utf8").split(/\r?\n/)) {
-    const match = raw.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, "");
-  }
-}
+import { loadLocalEnv } from "./lib/loadLocalEnv.mjs";
+import { scriptAuthProvider, signInToCms } from "./lib/cmsSession.mjs";
+import { promptHidden } from "./lib/hiddenPrompt.mjs";
 
 function parseArgs(argv) {
   return Object.fromEntries(argv.filter((value) => value.startsWith("--")).map((value) => {
@@ -19,48 +12,50 @@ function parseArgs(argv) {
   }));
 }
 
-async function apiRequest(baseUrl, path, token, init = {}) {
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...init.headers },
-  });
-  const body = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(body?.error || body?.message || `${response.status} ${response.statusText}`);
-  return body?.data;
-}
-
 loadLocalEnv();
 const args = parseArgs(process.argv.slice(2));
 if (Object.prototype.hasOwnProperty.call(args, "help")) {
-  console.log("Usage: npm run seed:starter -- [--url=http://localhost:3000] [--email=owner@example.com] [--password=owner-password]");
+  console.log("Usage: npm run seed:starter -- [--url=https://cms.example.com] [--email=owner@example.com]");
   console.log("The command is idempotent and creates a starter Article model and draft welcome entry through the authenticated CMS API.");
+  console.log("The password comes from POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD, or you are asked for it (nothing is shown as you type).");
+  console.log("With the built-in auth, the one-time code comes from POLYNOVEA_OWNER_OTP, or you are asked for it.");
+  console.log("Secrets are never accepted as command-line arguments: those end up in shell history and the process list.");
   process.exit(0);
 }
+for (const secret of ["password", "code", "otp"]) {
+  if (Object.prototype.hasOwnProperty.call(args, secret)) {
+    console.error(`--${secret} is not accepted: command-line arguments end up in your shell history and the process list. Set ${secret === "password" ? "POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD" : "POLYNOVEA_OWNER_OTP"}, or leave it out to be asked for it.`);
+    process.exit(2);
+  }
+}
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
-const appUrl = String(args.url || process.env.POLYNOVEA_CMS_URL || "http://localhost:3000").replace(/\/$/, "");
+const provider = scriptAuthProvider(process.env.AUTH_PROVIDER);
+const appUrl = String(args.url || process.env.POLYNOVEA_CMS_URL || process.env.POLYNOVEA_PUBLIC_URL || "http://localhost:3000").replace(/\/$/, "");
 const email = String(args.email || process.env.POLYNOVEA_BOOTSTRAP_ADMIN_EMAIL || "").trim().toLowerCase();
-const password = String(args.password || process.env.POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD || "");
-if (!supabaseUrl || !anonKey) throw new Error("NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY are required.");
-if (!email || password.length < 8) throw new Error("Supply the bootstrap owner email and password through arguments or POLYNOVEA_BOOTSTRAP_ADMIN_* variables.");
+const password = process.env.POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD || await promptHidden(`Password for ${email || "the owner"}: `);
+if (!email || password.length < 8) throw new Error("Supply the owner email (--email or POLYNOVEA_BOOTSTRAP_ADMIN_EMAIL) and password (POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD, or type it when asked).");
 
-const auth = createClient(supabaseUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
-const { data: login, error: loginError } = await auth.auth.signInWithPassword({ email, password });
-if (loginError || !login.session) throw loginError || new Error("Owner sign-in did not return a session.");
-const token = login.session.access_token;
+const cms = await signInToCms({
+  provider,
+  baseUrl: appUrl,
+  email,
+  password,
+  code: async () => process.env.POLYNOVEA_OWNER_OTP || promptHidden("One-time code from your authenticator app (or a recovery code): "),
+  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL?.trim(),
+  anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim(),
+});
 
 // The same idempotent starter content the setup wizard creates (lib/setup/owner/starterContent.mjs),
 // here through the authenticated CMS API.
 const result = await seedStarterContent({
-  listModels: () => apiRequest(appUrl, "/api/models", token),
+  listModels: () => cms.request("/api/models"),
   createModel: async (input) => {
-    const created = await apiRequest(appUrl, "/api/models", token, { method: "POST", body: JSON.stringify(input) });
+    const created = await cms.request("/api/models", { method: "POST", body: JSON.stringify(input) });
     return created?.model || created;
   },
-  listEntries: (modelId) => apiRequest(appUrl, `/api/entries?modelId=${encodeURIComponent(modelId)}`, token),
+  listEntries: (modelId) => cms.request(`/api/entries?modelId=${encodeURIComponent(modelId)}`),
   createEntry: async (input) => {
-    const created = await apiRequest(appUrl, "/api/entries", token, { method: "POST", body: JSON.stringify(input) });
+    const created = await cms.request("/api/entries", { method: "POST", body: JSON.stringify(input) });
     return created?.entry || created;
   },
 });

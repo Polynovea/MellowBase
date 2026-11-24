@@ -150,7 +150,7 @@ export function AuthenticatorStep({ onDone, onSessionLost }: StepProps) {
         <form onSubmit={confirm} aria-busy={busy} className="flex flex-col gap-4">
           <QrCode value={uri} />
           <p className="text-xs text-fg-muted">
-            Can&apos;t scan it? Add an account by hand with this key: <code className="break-all font-mono text-fg-primary">{manualKey}</code>
+            Can&apos;t scan it? Add an account by hand with this key: <code data-testid="totp-manual-key" className="break-all font-mono text-fg-primary">{manualKey}</code>
           </p>
           <Field id="owner-totp" label="Code from the app">
             <input id="owner-totp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]{6,7}" required value={code} onChange={(e) => setCode(e.target.value)} className={monoInput} />
@@ -243,7 +243,7 @@ export function RecoveryStep({ onDone, onSessionLost }: StepProps) {
         <button type="button" onClick={() => void issue()} disabled={busy} className="ui-btn ui-btn-primary self-start">{busy ? "Working…" : "Show my recovery codes"}</button>
       ) : (
         <>
-          <ol className="grid grid-cols-2 gap-2 font-mono text-[13px] text-fg-primary">
+          <ol data-testid="recovery-codes" className="grid grid-cols-2 gap-2 font-mono text-[13px] text-fg-primary">
             {codes.map((code, index) => <li key={code}><span className="text-fg-muted">{index + 1}.</span> {code}</li>)}
           </ol>
           <div className="flex flex-wrap gap-2">
@@ -305,11 +305,11 @@ interface Keys {
   backupRepoPassword: string | null;
 }
 
-function SecretBlock({ label, value }: { label: string; value: string }) {
+function SecretBlock({ label, value, testId }: { label: string; value: string; testId: string }) {
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-subtle bg-surface-1 p-3">
       <p className={labelClass}>{label}</p>
-      <code className="break-all font-mono text-[13px] text-fg-primary">{value}</code>
+      <code data-testid={testId} className="break-all font-mono text-[13px] text-fg-primary">{value}</code>
       <button type="button" className="ui-btn ui-btn-secondary self-start" onClick={() => void navigator.clipboard?.writeText(value)}>Copy</button>
     </div>
   );
@@ -343,8 +343,8 @@ export function KeysStep({ onDone, onSessionLost }: StepProps) {
         <button type="button" onClick={() => void reveal()} disabled={busy} className="ui-btn ui-btn-primary self-start">{busy ? "Working…" : "Show my keys"}</button>
       ) : (
         <form onSubmit={confirm} aria-busy={busy} className="flex flex-col gap-4">
-          {keys.masterKey && <SecretBlock label="Master key" value={keys.masterKey} />}
-          {keys.backupRepoPassword && <SecretBlock label="Backup password (database on this server)" value={keys.backupRepoPassword} />}
+          {keys.masterKey && <SecretBlock label="Master key" value={keys.masterKey} testId="master-key" />}
+          {keys.backupRepoPassword && <SecretBlock label="Backup password (database on this server)" value={keys.backupRepoPassword} testId="backup-password" />}
           {nothingToShow && <p className="ui-alert ui-alert-success">Your server&apos;s administrator supplied the master key, so there&apos;s nothing new to save here.</p>}
           {keys.masterKey && (
             <Field id="owner-master-tail" label="Last 6 characters of the master key">

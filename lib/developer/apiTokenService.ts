@@ -8,6 +8,8 @@ export const DEVELOPER_API_SCOPES = [
   "content.write",
   "content.publish",
   "content.delete",
+  /** Read drafts through the items API (a site's preview mode). */
+  "content.preview",
   "media.read",
   "media.write",
   "schema.read",
@@ -49,6 +51,8 @@ export interface PreparedDeveloperApiToken {
   allowedModels: string[];
   rateLimit: number;
   expiresAt: string | null;
+  /** Workspace role whose field permissions apply (items API); null = the creator's roles. */
+  roleId: string | null;
   /** Never the raw token: persistence sees only its prefix and SHA-256 hash. */
   tokenPrefix: string;
   tokenHash: string;
@@ -70,6 +74,7 @@ export async function createDeveloperApiToken(params: {
   allowedModels?: string[];
   expiresAt?: string | null;
   rateLimitPerMinute?: number;
+  roleId?: string | null;
 }) {
   const name = params.name.trim();
   if (!name) throw new Error("Token name is required");
@@ -82,7 +87,9 @@ export async function createDeveloperApiToken(params: {
 
   const rawToken = `pnv_${randomBytes(32).toString("base64url")}`;
   const tokenPrefix = rawToken.slice(0, 12);
-  const prepared: PreparedDeveloperApiToken = { name, scopes, allowedModels, rateLimit, expiresAt: params.expiresAt ?? null, tokenPrefix, tokenHash: digest(rawToken) };
+  const roleId = params.roleId ? params.roleId.trim() : null;
+  if (roleId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roleId)) throw new Error("Token role is invalid");
+  const prepared: PreparedDeveloperApiToken = { name, scopes, allowedModels, rateLimit, expiresAt: params.expiresAt ?? null, roleId, tokenPrefix, tokenHash: digest(rawToken) };
   const data = await postgres.insertDeveloperApiToken({ workspaceId: params.workspaceId, actorId: params.actorId, token: prepared });
   return { token: data, secret: rawToken };
 }

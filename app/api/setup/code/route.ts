@@ -23,8 +23,13 @@ import { setupSessionCookie, startSetupSession } from "@/lib/setup/setupSession"
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Where the wizard goes once the code is accepted: the db-step lane's page. (Route files may only export handlers and route config.) */
-const SETUP_NEXT_STEP = "/setup/database";
+/**
+ * Where the wizard goes once the code is accepted: the database step, or straight to the owner step
+ * when the database is already configured and migrated (settings from the environment, or a wizard
+ * resumed after its database step). (Route files may only export handlers and route config.)
+ */
+const DATABASE_STEP = "/setup/database";
+const OWNER_STEP = "/setup/owner";
 const MAX_BODY_BYTES = 2048;
 
 const WRONG_CODE =
@@ -76,8 +81,9 @@ function waitResponse(decision: Extract<AttemptDecision, { allowed: false }>): R
 }
 
 export async function POST(request: Request): Promise<Response> {
+  let databaseReady = false;
   try {
-    await assertMode("setup");
+    databaseReady = (await assertMode("setup")).databaseReady;
   } catch (error) {
     if (error instanceof ModeError) return withSetupHeaders(error.toResponse());
     throw error;
@@ -106,5 +112,5 @@ export async function POST(request: Request): Promise<Response> {
   const started = startSetupSession(transport);
   console.info(`[setup] Setup code accepted${started.tookOver ? "; the setup session in the other browser was ended" : ""}.`);
   issueReplacementSetupCode();
-  return setupJson(200, { data: { next: SETUP_NEXT_STEP, tookOver: started.tookOver } }, { "Set-Cookie": setupSessionCookie(started.token) });
+  return setupJson(200, { data: { next: databaseReady ? OWNER_STEP : DATABASE_STEP, tookOver: started.tookOver } }, { "Set-Cookie": setupSessionCookie(started.token) });
 }

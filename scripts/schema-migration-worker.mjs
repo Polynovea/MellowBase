@@ -39,6 +39,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { configPath, databaseUrlFromConfig, readInstallConfigSync } from "../lib/setup/configStore.mjs";
+import { tlsConnectionFor } from "../lib/setup/installConnection.mjs";
 
 if (existsSync(".env.local")) {
   for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
@@ -55,7 +57,7 @@ const { rollbackExpandTask } = await import("../lib/schema/runner/expandContract
 const { tryLockModel, unlockModel } = await import("../lib/schema/runner/ledger.ts");
 const { trigramSchema } = await import("../lib/schema/engine/render.ts");
 const { kyselyOn } = await import("../lib/schema/runner/engine.ts");
-const { resyncChangedModels } = await import("../lib/content/contentMove.ts");
+const { adoptEmptyModels, resyncChangedModels } = await import("../lib/content/contentMove.ts");
 
 const once = process.argv.includes("--once");
 // --model <id> or --model=<id>: only that model's stages; contracts then only with --contracts.
@@ -66,15 +68,48 @@ const contracts = !modelArg || process.argv.includes("--contracts");
 const rollbackArg = process.argv.find((arg) => arg.startsWith("--rollback-task="))?.slice("--rollback-task=".length);
 const pollMs = Math.max(250, Number(process.env.SCHEMA_WORKER_POLL_MS || 1500));
 const workerId = process.env.SCHEMA_WORKER_ID || `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
-const releaseId = process.env.POLYNOVEA_RELEASE_ID?.trim() || JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+// package.json sits one level above both scripts/ (development) and dist/ (the image's bundle).
+function packageVersion() {
+  try {
+    return JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+  } catch {
+    return "unknown";
+  }
+}
+const releaseId = process.env.POLYNOVEA_RELEASE_ID?.trim() || packageVersion();
 const log = (event, fields = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), worker: "schema", event, ...fields }));
 
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });
 
+// Where the worker connects, as polynovea_owner, in the same order as run-migrations: the setup
+// wizard's config.enc (its owner login, with exactly the wizard's TLS roots), read here in this
+// process (the owner credential never passes through the server's environment or command line);
+// then POLYNOVEA_MIGRATION_DATABASE_URL / DATABASE_URL (development, installs from before the
+// wizard). Exit code 3 means "not set up yet": the server image's entrypoint waits and retries
+// instead of crash-looping. A config.enc that exists but cannot be read is an error (exit 1): falling
+// back to an environment URL could change a different database than the one the CMS runs on.
+const NOT_CONFIGURED_EXIT = 3;
+function ownerConnection() {
+  let config;
+  try {
+    config = readInstallConfigSync();
+  } catch (error) {
+    log("startup_failed", { code: "config_unreadable" });
+    console.error(`[schema-worker] ${configPath()} exists but cannot be used (${error instanceof Error ? error.message : String(error)}).`);
+    process.exit(1);
+  }
+  if (config) return { source: "config.enc", connection: tlsConnectionFor(databaseUrlFromConfig(config, "owner"), config.database) };
+  if (process.env.POLYNOVEA_MIGRATION_DATABASE_URL || process.env.Database_URL || process.env.DATABASE_URL || process.env.database_url) return { source: "env", connection: undefined };
+  log("not_configured", {});
+  console.error("[schema-worker] No database yet: finish the setup wizard, or set POLYNOVEA_MIGRATION_DATABASE_URL.");
+  process.exit(NOT_CONFIGURED_EXIT);
+}
+const { source: connectionSource, connection: ownerConnectionSettings } = ownerConnection();
+
 // Built on the first session: search indexes name pg_trgm's operator class in the schema it is installed in.
 let engine;
-const pool = createOwnerPool();
+const pool = createOwnerPool(process.env, undefined, ownerConnectionSettings);
 // The run's session: kept across polls (it holds the model's advisory lock while a stage runs), and
 // replaced when its connection dies (a failover, a restart, pg_terminate_backend). A stage that was
 // running is reclaimed and resumed from its run row once the lock went with the old session.
@@ -119,7 +154,7 @@ try {
     }
     stopping = true;
   }
-  log("started", { workerId, releaseId, once, model: modelArg ?? null });
+  log("started", { workerId, releaseId, once, model: modelArg ?? null, connection: connectionSource });
   let backoffMs = 0;
   while (!stopping) {
     let worked = false;
@@ -135,6 +170,8 @@ try {
       // Content tables: models whose table changed shape (a stage or a contract) or missed a save are
       // re-synced and re-verified, so their reads return to the table without a manual content:move.
       if (await resyncChangedModels(kyselyOn(client), { modelId: modelArg, log })) worked = true;
+      // New models (a table, no entries, never moved): verified and switched to their table (Phase 4).
+      if (await adoptEmptyModels(kyselyOn(client), { modelId: modelArg, log })) worked = true;
       backoffMs = 0;
     } catch (error) {
       const code = typeof error?.code === "string" && /^[0-9A-Z_]{1,40}$/.test(error.code) ? error.code : errorCode(error);

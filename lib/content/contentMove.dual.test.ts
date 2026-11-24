@@ -19,7 +19,7 @@ import { uniqueKey } from "@/lib/schema/engine/testing";
 import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
 import { requestSchemaChange } from "@/lib/schema/runner/request";
 import { TEST_LIMITS } from "@/lib/schema/engine/testing";
-import { backfillModel, modelsNeedingResync, moveRun, readSourceOf, resyncChangedModels, setReadSource, syncEntries, verifyModel } from "@/lib/content/contentMove";
+import { adoptEmptyModels, backfillModel, describeTableStatus, modelsNeedingResync, moveModel, moveRun, readSourceOf, resyncChangedModels, setReadSource, syncEntries, verifyModel } from "@/lib/content/contentMove";
 import { bringModelTableUp, closeTableMoveSession, runWorker } from "@/lib/content/testing/tableMove";
 import { createEntry } from "@/lib/content/entryService";
 import { searchContent } from "@/lib/content/searchService";
@@ -275,8 +275,9 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     const refusal = (source: "table" | "snapshot" = "table") => errorOf(setReadSource(db, { workspaceId, modelId, source }));
     expect(await refusal()).toEqual({ code: "P0002", message: "content_model_has_no_table" });
 
-    // Table, but no run yet.
+    // Table, but no run yet. (The worker adopts an empty new model; this test starts from snapshots.)
     const up = await bringModelTableUp({ workspaceId, modelId, actor: adminUserId });
+    await setReadSource(db, { workspaceId, modelId, source: "snapshot" });
     await backend.query("delete from content_model_move_runs where content_model_id = $1", [modelId]);
     expect(await refusal()).toEqual({ code: "55000", message: "content_read_switch_no_matching_run" });
     expect(up.verify.matched).toBe(true);
@@ -390,6 +391,8 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     if (!created.ok) throw new Error(created.error);
     const modelId = created.data.model.id;
     expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId })).verify.matched).toBe(true);
+    // The worker adopted the empty new model; this test is about a model still reading snapshots.
+    await setReadSource(getDb(), { workspaceId, modelId, source: "snapshot" });
     const ids = Array.from({ length: 1_000 }, () => randomUUID()).sort();
     const badIndex = 613;
     await insertEntries(backend, workspaceId, modelId, ids.map((id, n) => ({
@@ -600,6 +603,38 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(await search()).toBe(1);
   });
 
+  it("content:move reports a table part-way through a change as such, instead of failing with 42703", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const apiKey = uniqueKey("midway");
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Midway", apiKey, fields: [field({ key: "title", type: "text" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    await insertEntries(backend, workspaceId, modelId, Array.from({ length: 3 }, (_, n) => ({ id: randomUUID(), status: "draft", draft: { data: { title: `T${n}` }, locale: "en" } })));
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId })).verify.matched).toBe(true);
+
+    // A new field is saved and its change queued, but the worker has not added the column yet.
+    const model = (await getModel(workspaceId, modelId))!;
+    const changed = await applyChange({ model, proposedSchema: { name: "Midway", apiKey, fields: [field({ key: "title", type: "text" }), field({ key: "extra", type: "text" })] }, acknowledgeUnsafe: true, actorAdminUserId: adminUserId });
+    if (!changed.ok || !changed.data.version) throw new Error("version 2 not created");
+    const { expandLedgerId } = await requestSchemaChange(getDb(), { contentModelId: modelId, targetVersionId: changed.data.version.id, requestedBy: adminUserId, limits: TEST_LIMITS });
+    const [runsBefore] = await backend.query<{ n: number }>("select count(*)::int as n from content_model_move_runs where content_model_id = $1", [modelId]);
+
+    const midway = await moveModel(getDb(), { workspaceId, modelId, requestedBy: adminUserId, switchReads: true });
+    expect(midway.table).toMatchObject({ status: "change_in_progress", ledgerId: expandLedgerId, stage: "expand", stageStatus: "pending" });
+    expect(midway.switched).toBe(false);
+    expect(describeTableStatus(midway.table)).toMatch(/waiting for the schema worker/);
+    // Nothing was copied or recorded while the table was mid-change.
+    const [runsAfter] = await backend.query<{ n: number }>("select count(*)::int as n from content_model_move_runs where content_model_id = $1", [modelId]);
+    expect(runsAfter.n).toBe(runsBefore.n);
+
+    // Once the worker has finished, the same command moves the model.
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    const done = await moveModel(getDb(), { workspaceId, modelId, requestedBy: adminUserId });
+    expect(done.table.status).toBe("exists");
+    expect(done.verify?.matched).toBe(true);
+  });
+
   it("after a schema change (rename + add) the worker re-syncs the model by itself and its reads return to the table", async () => {
     const { workspaceId, adminUserId } = await backend.createWorkspace();
     await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
@@ -718,6 +753,44 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(await tableSource(workspaceId, modelId)).not.toBeNull();
     expect(await due()).toEqual([]);
     await owner.query("update content_model_storage set read_source = 'snapshot' where content_model_id = $1", [modelId]);
+  });
+
+  it("adopting an empty new model that keeps failing waits before each try, doubling, and logs once per try", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Adopt", apiKey: uniqueKey("adopt"), fields: [field({ key: "title", type: "text" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    // The worker builds the table and adopts the model; undo the adoption so it is a candidate again.
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    await owner.query("update content_model_storage set last_run_id = null, read_source = 'snapshot' where content_model_id = $1", [modelId]);
+    await owner.query("delete from content_model_move_runs where content_model_id = $1", [modelId]);
+    // Sabotage: the table is not where its record says, so every adoption throws before recording a run.
+    const [{ table_name: table }] = (await owner.query<{ table_name: string }>("select table_name from content_model_tables where content_model_id = $1", [modelId])).rows;
+    await owner.query(`alter table content.${table} rename to ${table}_away`);
+    try {
+      const events: Array<{ event: string; fields: Record<string, unknown> }> = [];
+      let clock = 1_000_000;
+      const adopt = () => adoptEmptyModels(getDb(), { modelId, now: () => clock, log: (event, fields) => events.push({ event, fields }) });
+      expect(await adopt()).toBe(0);
+      expect(events).toEqual([{ event: "content_adopt_failed", fields: expect.objectContaining({ modelId, code: "42P01", pauseMs: 60_000 }) }]);
+      // Within the pause: not tried, nothing logged.
+      clock += 30_000;
+      expect(await adopt()).toBe(0);
+      expect(events).toHaveLength(1);
+      // After it: tried again, and the pause doubles.
+      clock += 31_000;
+      expect(await adopt()).toBe(0);
+      expect(events.at(-1)).toMatchObject({ event: "content_adopt_failed", fields: { pauseMs: 120_000 } });
+      // Fixed: the next try after the pause adopts it, and the pause is forgotten.
+      await owner.query(`alter table content.${table}_away rename to ${table}`);
+      clock += 121_000;
+      expect(await adopt()).toBe(1);
+      expect(events.at(-1)).toEqual({ event: "content_adopted", fields: { modelId } });
+      expect(await tableSource(workspaceId, modelId)).not.toBeNull();
+    } finally {
+      await owner.query(`alter table if exists content.${table}_away rename to ${table}`);
+    }
   });
 
   it("random sequences of model changes, each applied and reverted, keep the table matching the snapshots", async () => {

@@ -20,7 +20,15 @@ async function published(backend: BackendFixtures, workspaceId: string, modelId:
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
+  // As in a real install: the admin who creates API tokens is an active member, and every active model
+  // has its current schema version (the v1 routes filter fields through it since phase 4).
+  await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
   const [model] = await backend.query<{ id: string }>("insert into content_models (workspace_id, name, api_key, status) values ($1, 'Article', 'article', 'active') returning id", [workspaceId]);
+  await backend.query(
+    "insert into content_model_versions (content_model_id, version_number, schema_json, schema_hash) values ($1, 1, $2::jsonb, $3)",
+    [model.id, JSON.stringify({ name: "Article", apiKey: "article", fields: [{ key: "title", label: "Title", type: "text", required: false, localized: false, unique: false }] }), "c".repeat(64)],
+  );
+  await backend.query("update content_models set current_schema_version = 1 where id = $1", [model.id]);
   const first = await published(backend, workspaceId, model.id, { title: "First" }, "en", "2026-01-01T00:00:00Z");
   const second = await published(backend, workspaceId, model.id, { title: "Second" }, "en", "2026-02-01T00:00:00Z");
   const french = await published(backend, workspaceId, model.id, { title: "Premier" }, "fr", "2026-03-01T00:00:00Z");
@@ -44,6 +52,24 @@ describeWithDatabase("developer content delivery (published content, entry list)
     expect(one.record).toEqual(all.records[2]);
     expect((await getPublishedContent({ workspaceId, modelApiKey: "article", entryId: first.entryId, locale: "fr" })).record).toBeNull();
     expect((await getPublishedContent({ workspaceId, modelApiKey: "article", entryId: "not-a-uuid" })).record).toBeNull();
+  });
+
+  it("phase 4: a published entry with a pending draft keeps serving its published data; archiving takes it off", async () => {
+    const { workspaceId, first } = await setup(backend);
+    const [draft] = await backend.query<{ id: string }>(
+      "insert into content_entry_versions (entry_id, model_schema_version, version_number, data_jsonb, locale, state) values ($1, 1, 2, $2, 'en', 'draft') returning id",
+      [first.entryId, JSON.stringify({ title: "First, edited" })],
+    );
+    // What saving a draft does (cms_save_entry_draft): status 'draft', the published version stays.
+    await backend.query("update content_entries set status = 'draft', current_draft_version_id = $2 where id = $1", [first.entryId, draft.id]);
+    const listed = await listPublishedContent({ workspaceId, modelApiKey: "article" });
+    expect(listed.records.find((record) => record.id === first.entryId)?.data).toEqual({ title: "First" });
+    expect((await getPublishedContent({ workspaceId, modelApiKey: "article", entryId: first.entryId })).record?.data).toEqual({ title: "First" });
+
+    // Archive (the CMS's only way to take an entry off the live site): gone from both reads.
+    await backend.query("update content_entries set status = 'archived', status_before_archive = 'draft', archived_at = now() where id = $1", [first.entryId]);
+    expect((await listPublishedContent({ workspaceId, modelApiKey: "article" })).records.map((record) => record.id)).not.toContain(first.entryId);
+    expect((await getPublishedContent({ workspaceId, modelApiKey: "article", entryId: first.entryId })).record).toBeNull();
   });
 
   it("lists developer entries with their current version", async () => {

@@ -33,8 +33,18 @@ const SESSION_EVENT = "polynovea:session-changed";
  */
 export const BUILTIN_SESSION_MARKER = "builtin-session";
 
+/**
+ * A recent answer to "who is signed in?", reused for a few seconds. Pages ask before nearly every API
+ * call (getAuthHeaders), and the server allows 100 session checks a minute per address: a busy page,
+ * or a team behind one office connection, ran into that limit. Only successful answers are kept, and
+ * any sign-in, sign-out or step-up clears it (announceSessionChange).
+ */
+const SESSION_REUSE_MS = 10_000;
+let recent: { at: number; result: Promise<{ session: Session | null; error: Error | null }> } | null = null;
+
 /** Tell every listener in this tab (and useAdminAccess) that the session changed. */
 export function announceSessionChange(): void {
+  recent = null;
   window.dispatchEvent(new Event(SESSION_EVENT));
 }
 
@@ -71,14 +81,26 @@ export function getBuiltinBrowserIdentityProvider(): BrowserIdentityProvider {
       return this.getSession();
     },
     async getSession() {
-      const { data, error } = await auth.getSession({ query: { disableCookieCache: true } });
-      if (error) return { session: null, error: new Error(error.message || "Could not read the session") };
-      return { session: toSession(data as RawSession | null), error: null };
+      // One request at a time, and a successful answer is reused for SESSION_REUSE_MS (see above).
+      if (recent && Date.now() - recent.at < SESSION_REUSE_MS) return recent.result;
+      const entry = {
+        at: Date.now(),
+        result: (async () => {
+          const { data, error } = await auth.getSession({ query: { disableCookieCache: true } });
+          if (error) return { session: null, error: new Error(error.message || "Could not read the session") };
+          return { session: toSession(data as RawSession | null), error: null };
+        })(),
+      };
+      recent = entry;
+      const result = await entry.result;
+      if (result.error && recent === entry) recent = null;
+      return result;
     },
     async refreshSession() {
       return this.getSession();
     },
     async signOut() {
+      recent = null;
       const { error } = await auth.signOut();
       announceSessionChange();
       return { error: error ? new Error(error.message || "Sign-out failed") : null };

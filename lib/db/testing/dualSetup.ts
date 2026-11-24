@@ -17,6 +17,10 @@ for (const rawLine of readFileSync(file, "utf8").split(/\r?\n/)) {
   if (eq > 0) process.env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
 }
 
+// Saving a model now also plans its table (Phase 4), and the shared test database holds thousands of
+// models from earlier tests: lift the per-install model cap for tests (an operator setting).
+process.env.POLYNOVEA_SCHEMA_MAX_MODELS ??= "100000";
+
 const required = ["POLYNOVEA_TEST_POSTGRES_URL", "POLYNOVEA_TEST_POSTGRES_OWNER_URL"];
 const missing = required.filter((name) => !process.env[name]);
 if (missing.length) throw new Error(`.env.test.local is missing ${missing.join(", ")}. Re-run node scripts/dev-db/setup.mjs`);

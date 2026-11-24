@@ -62,6 +62,7 @@ The templates' user data writes this file. **Non-secret values only**: the CMS k
 | `POLYNOVEA_DB_SECRET_REF` | The "Created for you" database's secret (ARN or Key Vault URI) |
 | `AWS_REGION` | AWS region (for the AWS SDK and pgBackRest's S3 backups) |
 | `POLYNOVEA_DOMAIN` | Optional. Turns on HTTPS with Caddy and sets `POLYNOVEA_PUBLIC_URL=https://<domain>` |
+| `POLYNOVEA_PUBLIC_URL` | Optional, without a domain only. The address you open through the SSH tunnel (default `http://localhost:3000`); passkeys and sign-in belong to it |
 | `POLYNOVEA_ACME_EMAIL` | Optional. Where Let's Encrypt sends certificate-expiry warnings. Without it, certificates are still issued |
 | `POLYNOVEA_BACKUP_BUCKET`, `POLYNOVEA_BACKUP_ACCOUNT`, `POLYNOVEA_BACKUP_CONTAINER` | The backup location the template created (for **On this server**) |
 | `POLYNOVEA_IMAGE_REF` | Optional. A different CMS release, pinned by digest (the upgrade flow sets this) |
@@ -75,7 +76,7 @@ The templates can also start from Canonical's plain Ubuntu 24.04 image (AMIs are
 
 ## Reaching the setup wizard
 
-- **Without a domain:** ports 80 and 443 answer nothing. Set up through an SSH tunnel: `ssh -L 3000:localhost:3000 ubuntu@<server>` (AWS) or `azureuser@<server>` (Azure), then open `http://localhost:3000/setup`. The setup code is in `journalctl -t polynovea` (or `sudo docker logs polynovea`), and on the serial console.
+- **Without a domain:** ports 80 and 443 answer nothing. Set up through an SSH tunnel: `ssh -L 3000:127.0.0.1:3000 ubuntu@<server>` (AWS) or `ssh -L 3000:127.0.0.1:3000 azureuser@<server>` (Azure), then open `http://localhost:3000/setup`: exactly that address, which the server sets as `POLYNOVEA_PUBLIC_URL` when there is no domain. The setup wizard's passkey and every sign-in belong to it, and `http://127.0.0.1:3000` is a different address to your browser. To use another address, set `POLYNOVEA_PUBLIC_URL` in `/etc/polynovea/polynovea.env`. The setup code is in `journalctl -t polynovea` (or `sudo docker logs polynovea`), and on the serial console.
 - **With `POLYNOVEA_DOMAIN`:** point the domain at the server, open 80 and 443, and use `https://<domain>/setup`. Caddy gets a Let's Encrypt certificate (it answers the HTTP-01 challenge on port 80). Setup through the tunnel is then refused, because the wizard only accepts its public address.
 
 Why the CMS is never published straight on a port: see [container.md](container.md#why-not-just-publish-port-3000).

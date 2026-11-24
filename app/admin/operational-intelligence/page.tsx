@@ -169,8 +169,8 @@ export default function OperationalIntelligencePage() {
 
     <div className="mt-6 grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
       <aside className="lg:sticky lg:top-20 lg:self-start">
-        <label className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-fg-muted">Environment</label>
-        <select value={environmentId} onChange={(event) => { setEnvironmentId(event.target.value); void load(event.target.value); }} className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm">
+        <label htmlFor="oi-environment" className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-fg-muted">Environment</label>
+        <select id="oi-environment" value={environmentId} onChange={(event) => { setEnvironmentId(event.target.value); void load(event.target.value); }} className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm">
           {environments.map((environment) => <option key={environment.id} value={environment.id}>{environment.name} · {environment.kind}</option>)}
         </select>
 

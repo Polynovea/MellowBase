@@ -136,6 +136,8 @@ const planSchema = z.strictObject({
   steps: z.array(planStep).max(5_000),
   requiresConfirmation: z.boolean(),
   notes: z.array(z.string().max(1_000)).max(100),
+  // Fields a save added back while their deletion waited (informational; not in the plan hash).
+  restoredFields: z.array(key).max(1_000).optional(),
 });
 
 /** Steps that delete data: only ever in the destructive stage. */
@@ -256,6 +258,7 @@ export function verifyRowAgainstPlan(
   assertShape(plan.expandedShape, plan.expandedShapeHash, plan.table);
   assertShape(plan.targetShape, plan.targetShapeHash, plan.table);
 
+  for (const field of plan.restoredFields ?? []) assertFieldKey(field);
   for (const step of plan.steps) {
     if (step.table !== plan.table) throw new RefusedError("plan_target_mismatch");
     for (const column of stepColumnNames(step)) assertColumnName(column);
@@ -279,7 +282,12 @@ export function verifyRowAgainstPlan(
   if (stage === "destructive" && !plan.requiresConfirmation) throw new RefusedError("destructive_not_confirmed");
 
   const steps = plan.steps.map((step, planIndex) => ({ planIndex, step })).filter(({ step }) => step.stage === stage);
-  if (steps.length === 0) throw new RefusedError("stage_has_no_steps");
+  // A stage with no steps is refused, except one kind: an expand stage for a saved version of a model
+  // whose table exists (the version changes no column, or only deletes). Its only effect is the
+  // bookkeeping: the table records the new version (so reads stay on it), and the request supersedes
+  // older waiting stages (e.g. a deletion the new version undoes by adding the field back).
+  const recordsVersion = stage === "expand" && plan.targetVersionId !== null && plan.baseShape !== null;
+  if (steps.length === 0 && !recordsVersion) throw new RefusedError("stage_has_no_steps");
   return { ledgerId: row.id, plan, stage, steps };
 }
 

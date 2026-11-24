@@ -73,6 +73,13 @@ describe("POST /api/setup/code", () => {
     expect(response.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
   });
 
+  it("skips the database step when the database is already configured and migrated", async () => {
+    vi.mocked(assertMode).mockResolvedValue({ mode: "setup", databaseSource: "env", databaseReady: true, reason: "", checkedAt: T0 });
+    const response = await POST(post({ code }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, data: { next: "/setup/owner" } });
+  });
+
   it("a wrong code is a plain 401 and sets no cookie", async () => {
     const response = await POST(post({ code: "0000-0000" }));
     expect(response.status).toBe(401);

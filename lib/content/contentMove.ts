@@ -19,6 +19,7 @@ import type { DB } from "@/lib/db/generated/database";
 import type { DbExecutor } from "@/lib/db/index";
 import { planStageStatus, requestSchemaChange } from "@/lib/schema/runner/request";
 import type { SchemaLimits } from "@/lib/schema/engine/limits";
+import { validateCanonicalSchema } from "@/lib/schema/canonicalSchema";
 
 export const MOVE_BATCH_SIZE = 1000;
 
@@ -97,11 +98,81 @@ export async function syncEntries(db: DbExecutor, entryIds: string[]): Promise<S
 export type EnsureTableResult =
   | { status: "exists"; table: string }
   | { status: "requested"; expandLedgerId: string | null }
+  /** A schema change to the model is queued or running: its table is part-way through the change. */
+  | { status: "change_in_progress"; table: string; ledgerId: string; stage: string; stageStatus: string }
+  /** The model's latest table change (expand) failed: the table is not at the model's fields. */
+  | { status: "change_failed"; table: string; ledgerId: string; errorRef: string | null }
   | { status: "no_schema_version" };
+
+export type TableChangeState =
+  | { state: "none" }
+  | { state: "in_progress"; ledgerId: string; stage: string; status: string }
+  | { state: "failed"; ledgerId: string; errorRef: string | null };
+
+export interface LedgerRowForState {
+  id: string;
+  stage: string;
+  status: string;
+  error_ref: string | null;
+}
+
+/**
+ * Whether a model's table is part-way through a schema change, from its ledger rows, newest first.
+ * Queued or running stages (the same rule as the read switch, 0076) mean the worker has not finished
+ * reshaping the table. Otherwise, a latest expand stage that failed means the table never got the
+ * model's new columns. A destructive stage waiting for confirmation is not "part-way": its expand
+ * already ran, and the extra columns it would drop are never written by the sync.
+ */
+export function tableChangeState(rowsNewestFirst: readonly LedgerRowForState[]): TableChangeState {
+  const open = rowsNewestFirst.find((row) => row.status === "pending" || row.status === "running");
+  if (open) return { state: "in_progress", ledgerId: open.id, stage: open.stage, status: open.status };
+  const lastExpand = rowsNewestFirst.find((row) => row.stage === "expand" && row.status !== "superseded");
+  if (lastExpand?.status === "failed") return { state: "failed", ledgerId: lastExpand.id, errorRef: lastExpand.error_ref };
+  return { state: "none" };
+}
+
+/** The model's ledger state (read-only for the app role). */
+export async function modelTableChange(db: DbExecutor, modelId: string): Promise<TableChangeState> {
+  const rows = await db.selectFrom("schema_migration_ledger").select(["id", "stage", "status", "error_ref"])
+    .where("content_model_id", "=", modelId).orderBy("created_at", "desc").orderBy("id", "desc").limit(20).execute();
+  return tableChangeState(rows);
+}
+
+/** The ensureModelTable status for a table that is part-way through a change, or null when it is not. */
+export function tableStatusFromChange(change: TableChangeState, table: string): EnsureTableResult | null {
+  if (change.state === "in_progress") return { status: "change_in_progress", table, ledgerId: change.ledgerId, stage: change.stage, stageStatus: change.status };
+  if (change.state === "failed") return { status: "change_failed", table, ledgerId: change.ledgerId, errorRef: change.errorRef };
+  return null;
+}
+
+/** PostgreSQL errors a sync or verify meets when the table changed shape under it (undefined column or table). */
+export function isTableShapeError(error: unknown): boolean {
+  const code = (error as { code?: unknown })?.code;
+  return code === "42703" || code === "42P01";
+}
+
+/** One plain sentence per status for content:move's output. Never values or SQL. */
+export function describeTableStatus(table: EnsureTableResult): string {
+  switch (table.status) {
+    case "exists":
+      return "The model's table is ready.";
+    case "requested":
+      return "The model's table was requested from the schema worker. Run npm run worker:schema, then content:move again (or add --wait).";
+    case "change_in_progress":
+      return table.stageStatus === "running"
+        ? "A schema change to this model is being applied right now. Run content:move again when it finishes (or add --wait)."
+        : "A schema change to this model is waiting for the schema worker. Run npm run worker:schema, then content:move again (or add --wait).";
+    case "change_failed":
+      return "The last schema change to this model failed, so its table does not have the model's fields yet. Retry the change from the model's page, then run content:move again.";
+    case "no_schema_version":
+      return "The model has no saved schema version yet, so there is nothing to build a table from.";
+  }
+}
 
 /**
  * The model's table, or a queued request for the migration worker to create it from the model's
- * current schema version.
+ * current schema version. A table that exists but is part-way through a change is reported as such
+ * (never backfilled: the sync would meet columns that are not there yet).
  */
 export async function ensureModelTable(
   db: DbExecutor,
@@ -109,7 +180,7 @@ export async function ensureModelTable(
 ): Promise<EnsureTableResult> {
   const existing = await db.selectFrom("content_model_tables").select("table_name")
     .where("content_model_id", "=", input.modelId).where("workspace_id", "=", input.workspaceId).executeTakeFirst();
-  if (existing) return { status: "exists", table: existing.table_name };
+  if (existing) return tableStatusFromChange(await modelTableChange(db, input.modelId), existing.table_name) ?? { status: "exists", table: existing.table_name };
   const version = await db.selectFrom("content_model_versions as v")
     .innerJoin("content_models as m", (join) => join.onRef("m.id", "=", "v.content_model_id").onRef("m.current_schema_version", "=", "v.version_number"))
     .select("v.id").where("m.id", "=", input.modelId).where("m.workspace_id", "=", input.workspaceId)
@@ -319,4 +390,97 @@ export async function resyncChangedModels(db: Kysely<DB>, options: { modelId?: s
     }
   }
   return done;
+}
+
+/**
+ * Problems with the model's saved current schema (empty when it is valid). A model saved around the
+ * CMS (raw SQL, an old certification script) can hold a schema the engine cannot build a table for;
+ * content:move reports that in plain words instead of failing inside the engine. Field keys and types
+ * only: never values.
+ */
+export async function modelSchemaProblems(db: DbExecutor, input: { workspaceId: string; modelId: string }): Promise<string[]> {
+  const row = await db.selectFrom("content_models as m")
+    .leftJoin("content_model_versions as v", (join) => join.onRef("v.content_model_id", "=", "m.id").onRef("v.version_number", "=", "m.current_schema_version"))
+    .select(["v.schema_json"]).where("m.id", "=", input.modelId).where("m.workspace_id", "=", input.workspaceId)
+    .executeTakeFirst();
+  if (!row?.schema_json) return ["The model has no saved schema version."];
+  return schemaProblems(row.schema_json);
+}
+
+/** Pure: validateCanonicalSchema's problems, at most 10. */
+export function schemaProblems(schema: unknown): string[] {
+  const result = validateCanonicalSchema(schema);
+  return result.valid ? [] : result.errors.slice(0, 10);
+}
+
+export function describeSchemaProblems(problems: readonly string[]): string {
+  return `This model's saved schema is not valid (${problems.slice(0, 3).join("; ")}). Fix the model in the CMS, then run content:move again.`;
+}
+
+/**
+ * The log fields for a failure, so a line never says just "error". A SQLSTATE (with the SQL
+ * function's own code word) as before; a schema engine refusal as `schema:<code>` with its message
+ * (engine messages are plain words, safe to show); anything else as "error" with its type and a hint.
+ */
+export function moveErrorFields(error: unknown): { code: string; message?: string; errorType?: string; hint?: string } {
+  const e = error as { code?: unknown; message?: unknown; name?: unknown; constructor?: { name?: string } } | null;
+  const message = typeof e?.message === "string" ? e.message : "";
+  if (typeof e?.code === "string" && /^[0-9A-Z]{5}$/.test(e.code)) {
+    return { code: e.code + (/^[a-z0-9_]{1,64}$/.test(message) ? `:${message}` : "") };
+  }
+  if (e?.name === "SchemaEngineError" && typeof e.code === "string") return { code: `schema:${e.code}`, message: message.slice(0, 300) };
+  return { code: "error", errorType: e?.constructor?.name ?? typeof error, hint: "Run again with POLYNOVEA_DEBUG=1 to print the error message." };
+}
+
+/**
+ * Models with a table that are not reading from it yet, have never been moved (no run), have no
+ * entries at all, and have no schema stage queued or running: typically a model just created in the
+ * CMS. With nothing to copy, the worker verifies the empty table and switches reads to it, so a new
+ * model is served from its table without anyone running content:move. Only models with no entries are
+ * picked: moving existing content stays an operator decision (content:move). An entry created between
+ * the pick and the switch is not a risk: moveModel copies whatever is there and switches only when the
+ * check matches, exactly as content:move would.
+ *
+ * A model whose adoption throws (nothing recorded) waits before the next try, with the same doubling
+ * pause as a failed verification (verifyBackoff: 1 minute, 2, 4 ... at most 1 hour), and the failure is
+ * logged once per try, not on every poll.
+ */
+export async function adoptEmptyModels(db: Kysely<DB>, options: { modelId?: string; log?: ResyncLog; limit?: number; now?: () => number } = {}): Promise<number> {
+  const log: ResyncLog = options.log ?? (() => undefined);
+  const now = options.now ?? Date.now;
+  const { rows } = await sql<{ content_model_id: string; workspace_id: string }>`
+    select t.content_model_id, t.workspace_id
+      from public.content_model_tables t
+      join public.content_models m on m.id = t.content_model_id and m.workspace_id = t.workspace_id and m.status <> 'archived'
+      join public.content_model_versions v on v.content_model_id = m.id and v.version_number = m.current_schema_version and v.id = t.applied_version_id
+      left join public.content_model_storage s on s.content_model_id = t.content_model_id
+     where (s.content_model_id is null or (s.read_source = 'snapshot' and s.last_run_id is null))
+       and not exists (select 1 from public.content_entries e where e.content_model_id = t.content_model_id)
+       and not exists (select 1 from public.schema_migration_ledger l where l.content_model_id = t.content_model_id and l.status in ('pending', 'running'))
+       -- A model whose latest change failed is left alone (content:move reports it); no retry every poll.
+       and not exists (
+         select 1 from public.schema_migration_ledger f
+          where f.content_model_id = t.content_model_id and f.status = 'failed'
+            and not exists (select 1 from public.schema_migration_ledger ok where ok.content_model_id = f.content_model_id
+                              and ok.stage = 'expand' and ok.status = 'succeeded' and ok.created_at > f.created_at))
+       ${options.modelId ? sql`and t.content_model_id = ${options.modelId}::uuid` : sql``}
+     order by t.content_model_id
+     limit ${Math.min(50, Math.max(1, options.limit ?? 20))}`.execute(db);
+  let adopted = 0;
+  for (const row of rows) {
+    const paused = verifyBackoff.get(row.content_model_id);
+    if (paused && paused.until > now()) continue;
+    try {
+      const moved = await moveModel(db, { workspaceId: row.workspace_id, modelId: row.content_model_id, switchReads: true });
+      verifyBackoff.delete(row.content_model_id);
+      if (moved.switched) adopted += 1;
+      // Logged only when something happened: a skipped model is not news on every poll.
+      if (moved.switched) log("content_adopted", { modelId: row.content_model_id });
+    } catch (error) {
+      const failures = (paused?.failures ?? 0) + 1;
+      verifyBackoff.set(row.content_model_id, { failures, until: now() + pauseMs(failures) });
+      log("content_adopt_failed", { modelId: row.content_model_id, ...moveErrorFields(error), pauseMs: pauseMs(failures) });
+    }
+  }
+  return adopted;
 }

@@ -62,19 +62,19 @@ export default function CreateEntryPage() {
       const linkBody = await linkRes.json();
       if (!linkRes.ok) {
         setError(`Translation draft was created, but linking it failed: ${linkBody.error || "Unknown error"}`);
-        router.push(`/admin/entries/${newEntryId}`);
+        router.push(`/admin/entries/${newEntryId}?created=1`);
         return;
       }
     }
-    router.push(`/admin/entries/${newEntryId}`);
+    router.push(`/admin/entries/${newEntryId}?created=1`);
   };
 
   return (
     <AdminLayout>
       <div className="mx-auto max-w-7xl">
         <header className="mb-7 flex items-center gap-4 border-b border-subtle pb-5">
-          <Link href="/admin/entries/new" className="rounded-lg border border-subtle p-2 text-fg-muted hover:text-fg-primary transition-colors">
-            <ArrowLeft size={17} />
+          <Link href="/admin/entries/new" aria-label="Back to choosing a model" className="rounded-lg border border-subtle p-2 text-fg-muted hover:text-fg-primary transition-colors">
+            <ArrowLeft size={17} aria-hidden />
           </Link>
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-action">
@@ -84,7 +84,7 @@ export default function CreateEntryPage() {
           </div>
         </header>
 
-        {error && <div className="mb-5 rounded-xl border border-danger bg-danger-muted p-4 text-sm text-danger">{error}</div>}
+        {error && <div role="alert" className="mb-5 rounded-xl border border-danger bg-danger-muted p-4 text-sm text-danger">{error}</div>}
 
         {schema ? (
           <EntryForm

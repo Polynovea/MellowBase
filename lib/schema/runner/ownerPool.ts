@@ -34,10 +34,19 @@ export function migrationDatabaseUrl(env: Record<string, string | undefined> = p
   return url;
 }
 
-export function ownerPoolConfig(env: Record<string, string | undefined> = process.env, url = migrationDatabaseUrl(env)): pg.PoolConfig {
+/**
+ * `connection`: a ready connection (string plus TLS) from the install's config.enc, as the setup wizard
+ * verified it (lib/setup/installConnection.mjs tlsConnectionFor). Without it, the URL from the
+ * environment with the shared TLS policy.
+ */
+export function ownerPoolConfig(
+  env: Record<string, string | undefined> = process.env,
+  url?: string,
+  connection?: { connectionString: string; ssl: pg.PoolConfig["ssl"] },
+): pg.PoolConfig {
   const statementTimeout = positiveInt(env.POLYNOVEA_MIGRATION_STATEMENT_TIMEOUT_MS, DEFAULT_STATEMENT_TIMEOUT_MS, "POLYNOVEA_MIGRATION_STATEMENT_TIMEOUT_MS");
   return {
-    ...postgresConnectionConfig(url, env),
+    ...(connection ?? postgresConnectionConfig(url ?? migrationDatabaseUrl(env), env)),
     // One session holds the run (its advisory lock and statements); one spare for the claim loop.
     max: 2,
     connectionTimeoutMillis: 10_000,
@@ -51,11 +60,15 @@ export function ownerPoolConfig(env: Record<string, string | undefined> = proces
   };
 }
 
-export function createOwnerPool(env: Record<string, string | undefined> = process.env, url?: string): pg.Pool {
+export function createOwnerPool(
+  env: Record<string, string | undefined> = process.env,
+  url?: string,
+  connection?: { connectionString: string; ssl: pg.PoolConfig["ssl"] },
+): pg.Pool {
   if (env.NEXT_RUNTIME) {
     throw new RunnerError("owner_pool_in_app", "The migration runner's owner pool cannot be opened inside the CMS server");
   }
-  const pool = new pg.Pool(ownerPoolConfig(env, url));
+  const pool = new pg.Pool(ownerPoolConfig(env, url, connection));
   pool.on("error", (error) => {
     console.error("[schema-runner] idle connection error", (error as { code?: string }).code ?? error.name);
   });

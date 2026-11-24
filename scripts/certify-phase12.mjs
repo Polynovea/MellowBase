@@ -15,6 +15,12 @@ try{
   const scopes=['content.read','content.write','content.publish','media.read','media.write','schema.read','schema.write','releases.read','releases.write','analytics.read'];
   await client.query(`insert into developer_api_tokens(workspace_id,name,token_prefix,token_hash,scopes,allowed_models,rate_limit_per_minute,expires_at,created_by) values($1,$2,$3,$4,$5::text[],'{}',10000,now()+interval '2 hours',$6)`,[workspaceId,`full-cert-${randomUUID().slice(0,8)}`,rawToken.slice(0,12),hash,scopes,actor.adminUserId]);
   const sdk=new PolynoveaCMS({baseUrl:BASE,token:rawToken});
+  // Full export carries every field of every entry, so since Phase 4 it needs a token acting as the
+  // workspace owner (migration 0078 role_id). A second token, bound to this workspace's owner role:
+  const {rows:[ownerRole]}=await client.query(`insert into roles(workspace_id,key,name,is_system) values($1,'owner','Owner',true) on conflict (workspace_id,key) do update set name=excluded.name returning id`,[workspaceId]);
+  const ownerToken=`pnv_${randomUUID()}_${randomUUID()}`;
+  await client.query(`insert into developer_api_tokens(workspace_id,name,token_prefix,token_hash,scopes,allowed_models,rate_limit_per_minute,expires_at,created_by,role_id) values($1,$2,$3,$4,$5::text[],'{}',10000,now()+interval '2 hours',$6,$7)`,[workspaceId,`full-cert-owner-${randomUUID().slice(0,8)}`,ownerToken.slice(0,12),createHash('sha256').update(ownerToken).digest('hex'),scopes,actor.adminUserId,ownerRole.id]);
+  const ownerSdk=new PolynoveaCMS({baseUrl:BASE,token:ownerToken});
 
   console.log('\n--- 1. Stable API + SDK model/record lifecycle ---');
   const apiKey=`cert_article_${randomUUID().replaceAll('-','').slice(0,8)}`;
@@ -40,8 +46,9 @@ try{
   console.log('\n--- 3. Governed import + full export ---');
   const dry=await sdk.imports.dryRun({model:apiKey,format:'csv',content:'title,body\nImported certification row,Imported through Phase 12'}); assert(dry.total===1&&dry.valid===1&&dry.invalid===0,'Import dry-run failed');
   const committed=await sdk.imports.commit({model:apiKey,format:'csv',content:'title,body\nImported certification row,Imported through Phase 12'}); assert(committed.succeeded===1&&committed.failed===0,'Import commit did not create record');
-  const exported=await sdk.exportWorkspace(); assert(exported.format==='polynovea-cms-export'&&exported.schema?.models?.length>=1&&exported.content?.entries?.length>=2,'Full workspace export incomplete');
-  console.log('[PASS] Governed CSV import and portable full export certified.');
+  let refused=null; try{await sdk.exportWorkspace();}catch(e){refused=e;} assert(refused?.status===403&&refused?.code==='EXPORT_REQUIRES_OWNER','A non-owner token must not get the full export');
+  const exported=await ownerSdk.exportWorkspace(); assert(exported.format==='polynovea-cms-export'&&exported.schema?.models?.length>=1&&exported.content?.entries?.length>=2,'Full workspace export incomplete');
+  console.log('[PASS] Governed CSV import and portable full export certified (owner token; a non-owner token gets 403).');
 
   console.log('\n--- 4. CLI against real service-token API ---');
   const env={...process.env,POLYNOVEA_CMS_URL:BASE,POLYNOVEA_CMS_TOKEN:rawToken};

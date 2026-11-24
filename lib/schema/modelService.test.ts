@@ -17,10 +17,18 @@ vi.mock("@/lib/schema/modelService.postgres", () => ({
 vi.mock("@/lib/platform/audit", () => ({
   logPlatformEvent: vi.fn(),
 }));
+// Phase 4: the write and its schema change run in one transaction (faked: the callback gets a marker).
+const TRX = { trx: true };
+vi.mock("@/lib/db/index", () => ({ withTransaction: vi.fn(async (fn: (trx: unknown) => unknown) => fn(TRX)) }));
+vi.mock("@/lib/schema/runner/request", () => ({ requestSchemaChange: vi.fn(async () => ({ plan: { steps: [] }, expandLedgerId: "ledger-expand", destructiveLedgerId: null })) }));
+// Audit events of a model write are recorded in its transaction.
+vi.mock("@/lib/platform/audit.postgres", () => ({ recordPlatformEvent: vi.fn() }));
 
 import { logPlatformEvent } from "@/lib/platform/audit";
 import * as records from "@/lib/schema/modelService.postgres";
 import { applyChange, createModel, type ContentModelRow, type ContentModelVersionRow } from "@/lib/schema/modelService";
+import { requestSchemaChange } from "@/lib/schema/runner/request";
+import { SchemaEngineError } from "@/lib/schema/engine/errors";
 
 const mockLogPlatformEvent = vi.mocked(logPlatformEvent);
 const createModelRecord = vi.mocked(records.createModelRecord);
@@ -170,6 +178,26 @@ describe("applyChange", () => {
     expect(applySchemaVersion).toHaveBeenCalledWith(expect.objectContaining({ model: expect.objectContaining({ id: "model-1" }) }));
   });
 
+  it("saves a label-only change as a new version (it is not a data change, but it is a change)", async () => {
+    getVersion.mockResolvedValue(versionRow);
+    applySchemaVersion.mockResolvedValue({ ok: true, version: { ...versionRow, version_number: 2 } } as never);
+
+    const result = await applyChange({
+      model: modelRow,
+      proposedSchema: { ...validSchema, fields: [{ key: "title", label: "Headline", type: "text", required: true }] },
+      acknowledgeUnsafe: false,
+      actorAdminUserId: "admin-1",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.diff.entries).toEqual([]);
+      expect(result.data.applied).toBe(true);
+      expect(result.data.version?.version_number).toBe(2);
+    }
+    expect(applySchemaVersion).toHaveBeenCalled();
+  });
+
   it("rejects a change that alters apiKey", async () => {
     getVersion.mockResolvedValue({ ...versionRow });
 
@@ -183,5 +211,34 @@ describe("applyChange", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/apiKey/i);
     expect(applySchemaVersion).not.toHaveBeenCalled();
+  });
+});
+
+describe("Phase 4: every model write queues its schema change in the same transaction", () => {
+  const request = vi.mocked(requestSchemaChange);
+  beforeEach(() => {
+    request.mockClear();
+    createModelRecord.mockReset();
+    createModelRecord.mockResolvedValue({ ok: true, data: { model: { id: "model-1" } as ContentModelRow, version: { id: "version-1" } as ContentModelVersionRow } });
+  });
+
+  it("createModel writes through the transaction and queues the table for that version", async () => {
+    const result = await createModel({ workspaceId: "ws", createdBy: "admin", proposedSchema: validSchema });
+    expect(result).toMatchObject({ ok: true, data: { schemaChange: { expandLedgerId: "ledger-expand", destructiveLedgerId: null } } });
+    expect(createModelRecord.mock.calls[0][0]).toMatchObject({ db: TRX });
+    expect(request).toHaveBeenCalledWith(TRX, expect.objectContaining({ contentModelId: "model-1", targetVersionId: "version-1", requestedBy: "admin" }));
+  });
+
+  it("a refusal from the schema engine is the write's error (the transaction rolls the version back)", async () => {
+    request.mockRejectedValueOnce(new SchemaEngineError("cap_exceeded", "This install already has the most models it allows."));
+    const result = await createModel({ workspaceId: "ws", createdBy: "admin", proposedSchema: validSchema });
+    expect(result).toEqual({ ok: false, error: "This install already has the most models it allows.", status: 409 });
+  });
+
+  it("a failed model write queues nothing", async () => {
+    createModelRecord.mockResolvedValueOnce({ ok: false, error: "An active model already uses this apiKey", status: 409 });
+    const result = await createModel({ workspaceId: "ws", createdBy: "admin", proposedSchema: validSchema });
+    expect(result).toEqual({ ok: false, error: "An active model already uses this apiKey", status: 409 });
+    expect(request).not.toHaveBeenCalled();
   });
 });

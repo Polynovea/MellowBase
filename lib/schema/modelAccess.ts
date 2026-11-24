@@ -1,5 +1,8 @@
 import { getModel, getVersion, type ContentModelRow } from "@/lib/schema/modelService";
 import type { ModelOperation } from "@/lib/schema/fields/types";
+import { modelPolicyAllows } from "@/lib/schema/modelPolicy";
+
+export { modelPolicyAllows };
 import type { CmsActor } from "@/lib/platform/types";
 import { getEntry } from "@/lib/content/entryService";
 
@@ -23,13 +26,7 @@ export async function canActorOperateModel(
   const version = await getVersion(model.id, model.current_schema_version);
   if (!version) return { allowed: false, error: "Current model schema is unavailable", status: 500 };
 
-  const policies = version.schema_json.permissions ?? [];
-  if (policies.length === 0) return { allowed: true };
-
-  const allowed = policies.some(
-    (policy) => actor.roleKeys.includes(policy.role) && policy.operations.includes(operation),
-  );
-  return allowed
+  return modelPolicyAllows(version.schema_json, actor.roleKeys, operation)
     ? { allowed: true }
     : { allowed: false, error: `This model does not grant your role the ${operation} operation`, status: 403 };
 }

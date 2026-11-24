@@ -12,6 +12,7 @@ import ExperienceRenderer from "@/components/experience/ExperienceRenderer";
 import type { ExperienceDocument } from "@/lib/experience/types";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Preview · Polynovea CMS", robots: { index: false, follow: false } };
 
 type Params = {
   params: Promise<{ token: string }>;
@@ -67,7 +68,7 @@ function EntryPreview({
         <div className="space-y-6 pt-4">
           {regularEntries.map(([key, value]) => (
             <section key={key} className="mb-6">
-              <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
                 {key}
               </p>
               {isRichTextDocument(value) ? (
@@ -101,6 +102,18 @@ export default async function PreviewPage({ params, searchParams }: Params) {
   const preview = await resolvePreviewToken(token);
 
   if (!preview) notFound();
+  // Fail closed (phase 4): a preview shows what its issuer may read; once the issuer has left the
+  // workspace the link shows nothing, and says so.
+  if (preview.issuer_active === false) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#0a0a0a] px-6 text-zinc-100">
+        <div className="max-w-md text-center">
+          <h1 className="text-lg font-semibold">This preview link is no longer valid</h1>
+          <p className="mt-3 text-sm text-zinc-400">Ask someone on the team for a new preview link.</p>
+        </div>
+      </main>
+    );
+  }
 
   const width = widths[viewport] ?? widths.desktop;
 
@@ -115,8 +128,8 @@ export default async function PreviewPage({ params, searchParams }: Params) {
           href={`/preview/${token}?viewport=${mode}`}
           className={`rounded px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
             mode === viewport
-              ? "bg-[#e6d3a3] text-black"
-              : "text-zinc-500 hover:text-zinc-200"
+              ? "bg-[#e6d3a3] text-[#0a0a0a]"
+              : "text-zinc-400 hover:text-zinc-200"
           }`}
         >
           {mode}
@@ -128,7 +141,8 @@ export default async function PreviewPage({ params, searchParams }: Params) {
   if (preview.release_id) {
     const release = await getReleasePreview(
       preview.workspace_id,
-      preview.release_id
+      preview.release_id,
+      { adminUserId: preview.created_by ?? null }
     );
     if (!release) notFound();
     const items = (release.release_items || []) as unknown as Array<{
@@ -149,7 +163,7 @@ export default async function PreviewPage({ params, searchParams }: Params) {
               <h1 className="mt-2 font-headline text-3xl font-bold">
                 {release.name}
               </h1>
-              <p className="mt-2 text-xs text-zinc-600">
+              <p className="mt-2 text-xs text-zinc-400">
                 Expires {new Date(preview.expires_at).toLocaleString()}
               </p>
             </div>
@@ -189,7 +203,7 @@ export default async function PreviewPage({ params, searchParams }: Params) {
             <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-[#e6d3a3]">
               Secure draft preview · {model?.name || "Content"}
             </p>
-            <p className="mt-2 text-xs text-zinc-600">
+            <p className="mt-2 text-xs text-zinc-400">
               Expires {new Date(preview.expires_at).toLocaleString()}
             </p>
           </div>

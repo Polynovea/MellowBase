@@ -1,0 +1,2315 @@
+{
+  "paths": {
+    "/api/v1/models/article/items": {
+      "get": {
+        "x-polynovea-model": "article",
+        "tags": [
+          "Article"
+        ],
+        "summary": "List Article",
+        "operationId": "items_list_Article",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-polynovea-scopes": [
+          "content.read"
+        ],
+        "parameters": [
+          {
+            "name": "filter",
+            "in": "query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArticleFilter"
+                }
+              }
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated ArticleSortKey values, up to 3",
+            "x-polynovea-sort-key": {
+              "$ref": "#/components/schemas/ArticleSortKey"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          },
+          {
+            "$ref": "#/components/parameters/Expand"
+          },
+          {
+            "$ref": "#/components/parameters/Fields"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Locale"
+          },
+          {
+            "$ref": "#/components/parameters/Variant"
+          },
+          {
+            "$ref": "#/components/parameters/PreviewToken"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Article items",
+            "headers": {
+              "x-polynovea-schema-hash": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The model's current schema hash"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ArticleItem"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/ItemListMeta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "post": {
+        "x-polynovea-model": "article",
+        "tags": [
+          "Article"
+        ],
+        "summary": "Create a draft Article",
+        "operationId": "items_create_Article",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-polynovea-scopes": [
+          "content.write"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArticleCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new draft Article",
+            "headers": {
+              "x-polynovea-schema-hash": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The model's current schema hash"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ArticleItem"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/ItemMeta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/api/v1/models/article/items/{id}": {
+      "get": {
+        "x-polynovea-model": "article",
+        "tags": [
+          "Article"
+        ],
+        "summary": "Get one Article",
+        "operationId": "items_get_Article",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-polynovea-scopes": [
+          "content.read"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ItemId"
+          },
+          {
+            "$ref": "#/components/parameters/Expand"
+          },
+          {
+            "$ref": "#/components/parameters/Fields"
+          },
+          {
+            "$ref": "#/components/parameters/Locale"
+          },
+          {
+            "$ref": "#/components/parameters/Variant"
+          },
+          {
+            "$ref": "#/components/parameters/PreviewToken"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Article",
+            "headers": {
+              "x-polynovea-schema-hash": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The model's current schema hash"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ArticleItem"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/ItemMeta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "patch": {
+        "x-polynovea-model": "article",
+        "tags": [
+          "Article"
+        ],
+        "summary": "Update a Article (new draft version)",
+        "operationId": "items_update_Article",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-polynovea-scopes": [
+          "content.write"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ItemId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArticlePatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated draft Article",
+            "headers": {
+              "x-polynovea-schema-hash": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The model's current schema hash"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ArticleItem"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/ItemMeta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      },
+      "delete": {
+        "x-polynovea-model": "article",
+        "tags": [
+          "Article"
+        ],
+        "summary": "Delete a Article",
+        "operationId": "items_delete_Article",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-polynovea-scopes": [
+          "content.delete"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ItemId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
+      }
+    },
+    "/api/v1/models/person/items": {
+      "get": {
+        "x-polynovea-model": "person",
+        "tags": [
+          "Person"
+        ],
+        "summary": "List Person",
+        "operationId": "items_list_Person",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-polynovea-scopes": [
+          "content.read"
+        ],
+        "parameters": [
+          {
+            "name": "filter",
+            "in": "query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonFilter"
+                }
+              }
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated PersonSortKey values, up to 3",
+            "x-polynovea-sort-key": {
+              "$ref": "#/components/schemas/PersonSortKey"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          },
+          {
+            "$ref": "#/components/parameters/Expand"
+          },
+          {
+            "$ref": "#/components/parameters/Fields"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Locale"
+          },
+          {
+            "$ref": "#/components/parameters/Variant"
+          },
+          {
+            "$ref": "#/components/parameters/PreviewToken"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Person items",
+            "headers": {
+              "x-polynovea-schema-hash": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The model's current schema hash"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PersonItem"
+                      }
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/ItemListMeta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/models/person/items/{id}": {
+      "get": {
+        "x-polynovea-model": "person",
+        "tags": [
+          "Person"
+        ],
+        "summary": "Get one Person",
+        "operationId": "items_get_Person",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-polynovea-scopes": [
+          "content.read"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ItemId"
+          },
+          {
+            "$ref": "#/components/parameters/Expand"
+          },
+          {
+            "$ref": "#/components/parameters/Fields"
+          },
+          {
+            "$ref": "#/components/parameters/Locale"
+          },
+          {
+            "$ref": "#/components/parameters/Variant"
+          },
+          {
+            "$ref": "#/components/parameters/PreviewToken"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Person",
+            "headers": {
+              "x-polynovea-schema-hash": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The model's current schema hash"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PersonItem"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/ItemMeta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "ItemListMeta": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schemaHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "page": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "integer"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "limit",
+            "nextCursor"
+          ]
+        },
+        "rateLimit": {
+          "$ref": "#/components/schemas/RateLimitMeta"
+        }
+      },
+      "required": [
+        "requestId",
+        "timestamp",
+        "schemaHash",
+        "page"
+      ]
+    },
+    "ItemMeta": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schemaHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "rateLimit": {
+          "$ref": "#/components/schemas/RateLimitMeta"
+        }
+      },
+      "required": [
+        "requestId",
+        "timestamp",
+        "schemaHash"
+      ]
+    },
+    "RateLimitMeta": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer"
+        },
+        "remaining": {
+          "type": "integer"
+        },
+        "resetAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "limit",
+        "remaining",
+        "resetAt"
+      ]
+    },
+    "ItemErrorCode": {
+      "type": "string",
+      "enum": [
+        "AUTH_REQUIRED",
+        "INVALID_TOKEN",
+        "INSUFFICIENT_SCOPE",
+        "MODEL_RESTRICTED",
+        "MODEL_NOT_FOUND",
+        "ITEM_NOT_FOUND",
+        "UNKNOWN_FIELD",
+        "INVALID_FILTER",
+        "INVALID_SORT",
+        "INVALID_EXPAND",
+        "INVALID_PARAMETER",
+        "INVALID_CURSOR",
+        "FILTER_TOO_DEEP",
+        "FILTER_TOO_COMPLEX",
+        "EXPAND_TOO_DEEP",
+        "TOO_MANY_JOINS",
+        "PAGE_TOO_LARGE",
+        "FIELD_NOT_FILTERABLE",
+        "FIELD_READ_ONLY",
+        "REQUIRED_FIELD_NOT_WRITABLE",
+        "VALIDATION_FAILED",
+        "PREVIEW_TOKEN_REQUIRED",
+        "MODEL_TABLE_NOT_READY",
+        "QUERY_TIMEOUT",
+        "RATE_LIMITED",
+        "ITEMS_UNAVAILABLE"
+      ]
+    },
+    "ItemError": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "$ref": "#/components/schemas/ItemErrorCode"
+            },
+            "message": {
+              "type": "string"
+            },
+            "details": {}
+          },
+          "required": [
+            "code",
+            "message"
+          ]
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "timestamp": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "requestId",
+            "timestamp"
+          ]
+        }
+      },
+      "required": [
+        "error",
+        "meta"
+      ]
+    },
+    "ArticleData": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "title": "title",
+          "type": "string",
+          "maxLength": 200,
+          "x-polynovea-field-type": "text",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "slug": {
+          "title": "slug",
+          "type": "string",
+          "x-polynovea-field-type": "slug",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "body": {
+          "title": "body",
+          "type": "object",
+          "additionalProperties": true,
+          "x-polynovea-field-type": "rich_text",
+          "x-polynovea-filter-ops": [
+            "null"
+          ]
+        },
+        "rating": {
+          "title": "rating",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "x-polynovea-field-type": "integer",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "lt",
+            "gt",
+            "null"
+          ]
+        },
+        "published_on": {
+          "title": "published on",
+          "type": "string",
+          "format": "date",
+          "x-polynovea-field-type": "date",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "lt",
+            "gt",
+            "null"
+          ]
+        },
+        "featured": {
+          "title": "featured",
+          "type": "boolean",
+          "x-polynovea-field-type": "boolean",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "null"
+          ]
+        },
+        "tags": {
+          "title": "tags",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "news",
+              "guide",
+              "release"
+            ]
+          },
+          "x-polynovea-field-type": "multi_select",
+          "x-polynovea-filter-ops": [
+            "contains",
+            "null"
+          ]
+        },
+        "status_note": {
+          "title": "status note",
+          "type": "string",
+          "enum": [
+            "ok",
+            "hold"
+          ],
+          "x-polynovea-field-type": "select",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "author": {
+          "title": "author",
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "$ref": "#/components/schemas/PersonItem"
+            }
+          ],
+          "x-polynovea-relation": {
+            "target": "person",
+            "cardinality": "many_to_one"
+          },
+          "x-polynovea-field-type": "relation",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "null"
+          ]
+        },
+        "related": {
+          "title": "related",
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "$ref": "#/components/schemas/ArticleItem"
+              }
+            ]
+          },
+          "x-polynovea-relation": {
+            "target": "article",
+            "cardinality": "many_to_many"
+          },
+          "x-polynovea-field-type": "relation",
+          "x-polynovea-filter-ops": []
+        },
+        "meta": {
+          "title": "meta",
+          "x-polynovea-field-type": "json",
+          "x-polynovea-filter-ops": [
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "x-polynovea-model": "article"
+    },
+    "ArticleItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "variant": {
+          "type": "string",
+          "enum": [
+            "published",
+            "draft"
+          ]
+        },
+        "version": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "publishedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "data": {
+          "$ref": "#/components/schemas/ArticleData"
+        }
+      },
+      "required": [
+        "id",
+        "locale",
+        "variant",
+        "version",
+        "createdAt",
+        "updatedAt",
+        "publishedAt",
+        "data"
+      ],
+      "x-polynovea-model": "article",
+      "x-polynovea-schema-hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "ArticleCreate": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "title": "title",
+          "type": "string",
+          "maxLength": 200,
+          "x-polynovea-field-type": "text",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "slug": {
+          "title": "slug",
+          "type": "string",
+          "x-polynovea-field-type": "slug",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "body": {
+          "title": "body",
+          "type": "object",
+          "additionalProperties": true,
+          "x-polynovea-field-type": "rich_text",
+          "x-polynovea-filter-ops": [
+            "null"
+          ]
+        },
+        "published_on": {
+          "title": "published on",
+          "type": "string",
+          "format": "date",
+          "x-polynovea-field-type": "date",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "lt",
+            "gt",
+            "null"
+          ]
+        },
+        "featured": {
+          "title": "featured",
+          "type": "boolean",
+          "x-polynovea-field-type": "boolean",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "null"
+          ]
+        },
+        "tags": {
+          "title": "tags",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "news",
+              "guide",
+              "release"
+            ]
+          },
+          "x-polynovea-field-type": "multi_select",
+          "x-polynovea-filter-ops": [
+            "contains",
+            "null"
+          ]
+        },
+        "status_note": {
+          "title": "status note",
+          "type": "string",
+          "enum": [
+            "ok",
+            "hold"
+          ],
+          "x-polynovea-field-type": "select",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "author": {
+          "title": "author",
+          "type": "string",
+          "format": "uuid",
+          "x-polynovea-relation": {
+            "target": "person",
+            "cardinality": "many_to_one"
+          },
+          "x-polynovea-field-type": "relation",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "null"
+          ]
+        },
+        "related": {
+          "title": "related",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "x-polynovea-relation": {
+            "target": "article",
+            "cardinality": "many_to_many"
+          },
+          "x-polynovea-field-type": "relation",
+          "x-polynovea-filter-ops": []
+        },
+        "meta": {
+          "title": "meta",
+          "x-polynovea-field-type": "json",
+          "x-polynovea-filter-ops": [
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "ArticlePatch": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "title": "title",
+          "type": "string",
+          "maxLength": 200,
+          "x-polynovea-field-type": "text",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "slug": {
+          "title": "slug",
+          "type": "string",
+          "x-polynovea-field-type": "slug",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "body": {
+          "title": "body",
+          "type": "object",
+          "additionalProperties": true,
+          "x-polynovea-field-type": "rich_text",
+          "x-polynovea-filter-ops": [
+            "null"
+          ]
+        },
+        "published_on": {
+          "title": "published on",
+          "type": "string",
+          "format": "date",
+          "x-polynovea-field-type": "date",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "lt",
+            "gt",
+            "null"
+          ]
+        },
+        "featured": {
+          "title": "featured",
+          "type": "boolean",
+          "x-polynovea-field-type": "boolean",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "null"
+          ]
+        },
+        "tags": {
+          "title": "tags",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "news",
+              "guide",
+              "release"
+            ]
+          },
+          "x-polynovea-field-type": "multi_select",
+          "x-polynovea-filter-ops": [
+            "contains",
+            "null"
+          ]
+        },
+        "status_note": {
+          "title": "status note",
+          "type": "string",
+          "enum": [
+            "ok",
+            "hold"
+          ],
+          "x-polynovea-field-type": "select",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "author": {
+          "title": "author",
+          "type": "string",
+          "format": "uuid",
+          "x-polynovea-relation": {
+            "target": "person",
+            "cardinality": "many_to_one"
+          },
+          "x-polynovea-field-type": "relation",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "null"
+          ]
+        },
+        "related": {
+          "title": "related",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "x-polynovea-relation": {
+            "target": "article",
+            "cardinality": "many_to_many"
+          },
+          "x-polynovea-field-type": "relation",
+          "x-polynovea-filter-ops": []
+        },
+        "meta": {
+          "title": "meta",
+          "x-polynovea-field-type": "json",
+          "x-polynovea-filter-ops": [
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "ArticleFieldCondition": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "neq": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            }
+          }
+        },
+        "createdAt": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "neq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "lt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "gt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "updatedAt": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "neq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "lt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "gt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "publishedAt": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "neq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "lt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "gt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "locale": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string"
+            },
+            "neq": {
+              "type": "string"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "contains": {
+              "type": "string",
+              "minLength": 1
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "title": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "neq": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "contains": {
+              "type": "string",
+              "minLength": 1
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "slug": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string"
+            },
+            "neq": {
+              "type": "string"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "contains": {
+              "type": "string",
+              "minLength": 1
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "body": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "rating": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
+            "neq": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 5
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "lt": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
+            "gt": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "published_on": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "date"
+            },
+            "neq": {
+              "type": "string",
+              "format": "date"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "date"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "lt": {
+              "type": "string",
+              "format": "date"
+            },
+            "gt": {
+              "type": "string",
+              "format": "date"
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "featured": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "boolean"
+            },
+            "neq": {
+              "type": "boolean"
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "tags": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "contains": {
+              "type": "string",
+              "minLength": 1
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "status_note": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "hold"
+              ]
+            },
+            "neq": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "hold"
+              ]
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "hold"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "contains": {
+              "type": "string",
+              "minLength": 1
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "author": {
+          "oneOf": [
+            {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 1,
+              "additionalProperties": false,
+              "properties": {
+                "eq": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "neq": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "in": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "minItems": 1,
+                  "maxItems": 100
+                },
+                "null": {
+                  "type": "boolean"
+                }
+              }
+            },
+            {
+              "$ref": "#/components/schemas/PersonFieldCondition"
+            }
+          ]
+        },
+        "meta": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "null": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "ArticleFilter": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "and": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ArticleFilter"
+              },
+              "minItems": 1,
+              "maxItems": 20
+            }
+          },
+          "required": [
+            "and"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "or": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ArticleFilter"
+              },
+              "minItems": 1,
+              "maxItems": 20
+            }
+          },
+          "required": [
+            "or"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "not": {
+              "$ref": "#/components/schemas/ArticleFilter"
+            }
+          },
+          "required": [
+            "not"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/components/schemas/ArticleFieldCondition"
+        }
+      ],
+      "description": "JSON, URL-encoded in the filter parameter. Operators: eq, neq, in, lt, gt, contains, null. Depth up to 3, 20 conditions."
+    },
+    "ArticleSortKey": {
+      "type": "string",
+      "enum": [
+        "id",
+        "-id",
+        "createdAt",
+        "-createdAt",
+        "updatedAt",
+        "-updatedAt",
+        "publishedAt",
+        "-publishedAt",
+        "locale",
+        "-locale",
+        "title",
+        "-title",
+        "slug",
+        "-slug",
+        "rating",
+        "-rating",
+        "published_on",
+        "-published_on",
+        "featured",
+        "-featured",
+        "status_note",
+        "-status_note"
+      ]
+    },
+    "PersonData": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "title": "name",
+          "type": "string",
+          "x-polynovea-field-type": "text",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        },
+        "email": {
+          "title": "email",
+          "type": "string",
+          "format": "email",
+          "x-polynovea-field-type": "email",
+          "x-polynovea-filter-ops": [
+            "eq",
+            "neq",
+            "in",
+            "contains",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "x-polynovea-model": "person"
+    },
+    "PersonItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "variant": {
+          "type": "string",
+          "enum": [
+            "published",
+            "draft"
+          ]
+        },
+        "version": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "publishedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "data": {
+          "$ref": "#/components/schemas/PersonData"
+        }
+      },
+      "required": [
+        "id",
+        "locale",
+        "variant",
+        "version",
+        "createdAt",
+        "updatedAt",
+        "publishedAt",
+        "data"
+      ],
+      "x-polynovea-model": "person",
+      "x-polynovea-schema-hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "PersonCreate": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "PersonPatch": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "PersonFieldCondition": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "neq": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            }
+          }
+        },
+        "createdAt": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "neq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "lt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "gt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "updatedAt": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "neq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "lt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "gt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "publishedAt": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "neq": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "lt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "gt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "locale": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string"
+            },
+            "neq": {
+              "type": "string"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "contains": {
+              "type": "string",
+              "minLength": 1
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "name": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string"
+            },
+            "neq": {
+              "type": "string"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "contains": {
+              "type": "string",
+              "minLength": 1
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        },
+        "email": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "eq": {
+              "type": "string",
+              "format": "email"
+            },
+            "neq": {
+              "type": "string",
+              "format": "email"
+            },
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "email"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "contains": {
+              "type": "string",
+              "minLength": 1
+            },
+            "null": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "PersonFilter": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "and": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PersonFilter"
+              },
+              "minItems": 1,
+              "maxItems": 20
+            }
+          },
+          "required": [
+            "and"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "or": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PersonFilter"
+              },
+              "minItems": 1,
+              "maxItems": 20
+            }
+          },
+          "required": [
+            "or"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "not": {
+              "$ref": "#/components/schemas/PersonFilter"
+            }
+          },
+          "required": [
+            "not"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/components/schemas/PersonFieldCondition"
+        }
+      ],
+      "description": "JSON, URL-encoded in the filter parameter. Operators: eq, neq, in, lt, gt, contains, null. Depth up to 3, 20 conditions."
+    },
+    "PersonSortKey": {
+      "type": "string",
+      "enum": [
+        "id",
+        "-id",
+        "createdAt",
+        "-createdAt",
+        "updatedAt",
+        "-updatedAt",
+        "publishedAt",
+        "-publishedAt",
+        "locale",
+        "-locale",
+        "name",
+        "-name",
+        "email",
+        "-email"
+      ]
+    }
+  },
+  "parameters": {
+    "ItemId": {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "Search": {
+      "name": "search",
+      "in": "query",
+      "schema": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 200
+      }
+    },
+    "Limit": {
+      "name": "limit",
+      "in": "query",
+      "schema": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 25
+      }
+    },
+    "Cursor": {
+      "name": "cursor",
+      "in": "query",
+      "schema": {
+        "type": "string"
+      }
+    },
+    "Locale": {
+      "name": "locale",
+      "in": "query",
+      "schema": {
+        "type": "string"
+      }
+    },
+    "Variant": {
+      "name": "variant",
+      "in": "query",
+      "schema": {
+        "type": "string",
+        "enum": [
+          "published",
+          "draft"
+        ],
+        "default": "published"
+      },
+      "description": "draft needs a preview token (x-polynovea-preview header) or the content.preview scope"
+    },
+    "PreviewToken": {
+      "name": "x-polynovea-preview",
+      "in": "header",
+      "schema": {
+        "type": "string"
+      }
+    },
+    "Fields": {
+      "name": "fields",
+      "in": "query",
+      "schema": {
+        "type": "string"
+      },
+      "description": "Comma-separated field keys to return (each must be readable)"
+    },
+    "Expand": {
+      "name": "expand",
+      "in": "query",
+      "schema": {
+        "type": "string"
+      },
+      "description": "Comma-separated relation paths, e.g. author,author.company (depth up to 2)"
+    }
+  },
+  "responses": {
+    "BadRequest": {
+      "description": "Invalid parameter, filter, sort, expansion or write body",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ItemError"
+          }
+        }
+      }
+    },
+    "Unauthorized": {
+      "description": "Invalid, expired or revoked API token",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ItemError"
+          }
+        }
+      }
+    },
+    "Forbidden": {
+      "description": "Token lacks scope, model access or a preview token",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ItemError"
+          }
+        }
+      }
+    },
+    "NotFound": {
+      "description": "Model or item not found",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ItemError"
+          }
+        }
+      }
+    },
+    "RateLimited": {
+      "description": "Rate limit exceeded",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ItemError"
+          }
+        }
+      }
+    },
+    "Unavailable": {
+      "description": "The model's table is not ready (Retry-After) or the query timed out",
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ItemError"
+          }
+        }
+      }
+    }
+  }
+}

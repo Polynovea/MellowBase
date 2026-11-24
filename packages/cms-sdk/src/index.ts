@@ -1,10 +1,32 @@
 export type CmsRequestOptions = { signal?: AbortSignal; requestId?: string };
 export type SchemaBundle = { format:"polynovea-cms-schema-bundle"; formatVersion:1; environment?:string|null; generatedAt:string; models:Array<{apiKey:string;name:string;version:number;schemaHash:string;schema:Record<string,unknown>;description?:string|null;icon?:string|null}> };
-export class PolynoveaCmsError extends Error { constructor(public status:number,public code:string,message:string,public details?:unknown,public requestId?:string){super(message);this.name="PolynoveaCmsError";} }
+import { PolynoveaCmsError } from "./errors.js";
+import { ItemsClient, type LooseModels, type ModelMap } from "./items.js";
+import { SchemaDriftMonitor, type DriftOptions, type SchemaManifest } from "./drift.js";
 
-export class PolynoveaCMS {
+export * from "./contract.js";
+export * from "./errors.js";
+export * from "./items.js";
+export * from "./drift.js";
+
+export interface PolynoveaCmsOptions extends DriftOptions {
+  baseUrl: string;
+  token: string;
+  /** Preview token sent with items requests (drafts); a call can override it. */
+  preview?: string;
+  /** The `schema` constant of your generated types file: sends its hashes and warns on breaking changes. */
+  schema?: SchemaManifest;
+  /** A fetch implementation (default: the global fetch). */
+  fetch?: typeof fetch;
+}
+
+export class PolynoveaCMS<M extends ModelMap<M> = LooseModels> {
   readonly baseUrl:string; readonly token:string;
-  constructor(options:{baseUrl:string;token:string}){this.baseUrl=options.baseUrl.replace(/\/$/,"");this.token=options.token;}
+  private readonly itemsTransport: ConstructorParameters<typeof ItemsClient>[0];
+  constructor(options:PolynoveaCmsOptions){this.baseUrl=options.baseUrl.replace(/\/$/,"");this.token=options.token;const fetchImpl=options.fetch??((input:RequestInfo|URL,init?:RequestInit)=>fetch(input,init));this.itemsTransport={baseUrl:this.baseUrl,token:this.token,preview:options.preview,fetch:fetchImpl,drift:new SchemaDriftMonitor(options.schema,options)};}
+
+  /** Typed items of one model: list, all, get, create, update, delete. */
+  items<K extends keyof M & string>(model: K): ItemsClient<M[K]> { return new ItemsClient<M[K]>(this.itemsTransport, model); }
   private async request<T>(path:string,init:RequestInit={},options:CmsRequestOptions={}):Promise<T>{const headers=new Headers(init.headers);headers.set("authorization",`Bearer ${this.token}`);if(options.requestId)headers.set("x-request-id",options.requestId);if(init.body&&!(init.body instanceof FormData)&&!headers.has("content-type"))headers.set("content-type","application/json");const response=await fetch(`${this.baseUrl}${path}`,{...init,headers,signal:options.signal});const body=await response.json().catch(()=>null);if(!response.ok){const err=body?.error??{};throw new PolynoveaCmsError(response.status,String(err.code??"HTTP_ERROR"),String(err.message??response.statusText),err.details,body?.meta?.requestId);}return body?.data as T;}
   private json(method:string,body:unknown):RequestInit{return{method,body:JSON.stringify(body)};}
 
@@ -99,4 +121,9 @@ export class PolynoveaCMS {
   };
   exportWorkspace=<T=unknown>()=>this.request<T>("/api/v1/export");
   openApi=<T=unknown>()=>this.request<T>("/api/v1/openapi.json");
+}
+
+/** A client typed by your generated types file: `createCmsClient<Models>({ baseUrl, token, schema })`. */
+export function createCmsClient<M extends ModelMap<M> = LooseModels>(options: PolynoveaCmsOptions): PolynoveaCMS<M> {
+  return new PolynoveaCMS<M>(options);
 }

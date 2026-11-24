@@ -104,12 +104,16 @@ describeWithDatabase("content releases and the editorial calendar", (backend) =>
     expect(await listCalendarEvents(a.workspaceId, "2031-01-01T00:00:00Z")).toEqual([]);
     await expect(createCalendarEvent({ workspaceId: b.workspaceId, actorId: b.adminUserId, title: "x", kind: "release", startsAt: "2030-01-01T00:00:00Z", releaseId })).rejects.toThrow("Release not found in this workspace");
     await expect(createCalendarEvent({ workspaceId: a.workspaceId, actorId: a.adminUserId, title: "x", kind: "publish", startsAt: "2030-01-02T00:00:00Z", endsAt: "2030-01-01T00:00:00Z" })).rejects.toThrow("End time");
+    // Only a campaign stands alone (the table's check constraint); the others say so instead of failing in the database.
+    await expect(createCalendarEvent({ workspaceId: a.workspaceId, actorId: a.adminUserId, title: "x", kind: "publish", startsAt: "2030-01-02T00:00:00Z" })).rejects.toThrow("Choose the entry or release this event is about");
+    const campaign = await createCalendarEvent({ workspaceId: a.workspaceId, actorId: a.adminUserId, title: "Spring campaign", kind: "campaign", startsAt: "2030-01-03T00:00:00Z" });
+    expect(campaign).toMatchObject({ kind: "campaign", entry_id: null, release_id: null });
 
     expect(await listReleases(b.workspaceId)).toEqual([]);
     expect(await getRelease(b.workspaceId, releaseId)).toBeNull();
     expect(await getReleaseReadiness(b.workspaceId, releaseId)).toMatchObject({ ok: false, status: 404 });
     expect(await replaceReleaseItems({ workspaceId: b.workspaceId, actorId: b.adminUserId, releaseId, itemVersionIds: a.versions })).toMatchObject({ ok: false });
     expect(await listCalendarEvents(b.workspaceId)).toEqual([]);
-    expect(await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'editorial.calendar.scheduled'", [a.workspaceId])).toHaveLength(1);
+    expect(await backend.query("select 1 from platform_audit_events where workspace_id = $1 and action = 'editorial.calendar.scheduled'", [a.workspaceId])).toHaveLength(2);
   });
 });

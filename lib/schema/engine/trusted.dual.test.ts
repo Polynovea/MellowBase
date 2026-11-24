@@ -76,22 +76,39 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     expect(Object.values((await loadModelTable(getDb(), m.modelId))!.shape.columns).map((c) => c.field).sort()).toEqual(["body", "headline"]);
   });
 
-  it("refuses a deletion planned for an older version once a newer version keeps the field", async () => {
+  it("a field waiting to be deleted and saved back is restored: no column change, the waiting deletion is superseded", async () => {
     const m = await model();
     const first = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: m.v1, stage: "expand" });
     await applyExpandStage(owner, { plan: first, requestedBy: null, limits: TEST_LIMITS });
     const save = async (fields: ReturnType<typeof field>[]) => {
       const changed = await applyChange({ model: (await getModel(m.workspaceId, m.modelId))!, proposedSchema: { name: "Post", apiKey: m.apiKey, fields }, acknowledgeUnsafe: true, actorAdminUserId: m.adminUserId });
-      if (!changed.ok || !changed.data.version) throw new Error("version not created");
-      return changed.data.version.id;
+      if (!changed.ok || !changed.data.version) throw new Error(`version not created: ${changed.ok ? changed.data.blockedReason : changed.error}`);
+      return changed.data;
     };
-    const v2 = await save([field("title")]);
+    const v2 = (await save([field("title")])).version!.id;
     const deletion = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: v2, stage: "expand" });
     const destructiveHash = computeStageHash(deletion, "destructive");
     await applyExpandStage(owner, { plan: await workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "expand", requestedPlanHash: computeStageHash(deletion, "expand") }), requestedBy: null, limits: TEST_LIMITS });
-    await save([field("title"), field("secret")]);
-    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "destructive", requestedPlanHash: destructiveHash }))).toMatchObject({ code: "stale_plan" });
-    expect(Object.values((await loadModelTable(getDb(), m.modelId))!.shape.columns).map((c) => c.field).sort()).toEqual(["secret", "title"]);
+    // The model's waiting deletions (the reference executor queued its own rows, superseding the save's).
+    const waitingDeletions = () => backend.query("select id from schema_migration_ledger where content_model_id = $1 and stage = 'destructive' and status = 'awaiting_confirmation'", [m.modelId]);
+    const [waiting] = await waitingDeletions();
+    expect(waiting).toBeTruthy();
+
+    // Saved back as the same kind of field: a new version whose only request is a step-less expand row.
+    const v3 = await save([field("title"), field("secret")]);
+    expect(v3.schemaChange).toMatchObject({ expandLedgerId: expect.any(String), destructiveLedgerId: null, restored: [{ field: "secret", values: 0 }] });
+    // The waiting deletion is superseded (it can no longer be confirmed), and the worker refuses it.
+    expect(await waitingDeletions()).toEqual([]);
+    expect(await backend.query("select status from schema_migration_ledger where id = $1", [(waiting as { id: string }).id])).toEqual([{ status: "superseded" }]);
+    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "destructive", requestedPlanHash: destructiveHash }))).not.toBeNull();
+
+    // The worker's step-less expand stage records the new version on the table; no column changes.
+    const restore = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: v3.version!.id, stage: "expand" });
+    expect(restore.steps).toEqual([]);
+    await applyExpandStage(owner, { plan: await workerCheck({ contentModelId: m.modelId, targetVersionId: v3.version!.id, stage: "expand", requestedPlanHash: computeStageHash(restore, "expand") }), requestedBy: null, limits: TEST_LIMITS });
+    const table = (await loadModelTable(getDb(), m.modelId))!;
+    expect(Object.values(table.shape.columns).map((c) => c.field).sort()).toEqual(["secret", "title"]);
+    expect(table.appliedVersionId).toBe(v3.version!.id);
   });
 
   it("refuses a ledger row whose plan targets another model's table, or another model's version", async () => {

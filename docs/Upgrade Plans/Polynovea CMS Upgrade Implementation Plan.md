@@ -234,6 +234,26 @@ Exit check on `3df79a4`, on Payal's laptop: 1,707 unit tests, build, `npm audit`
 
 Not run locally by design, and covered by the first Azure deployment: cloud builds and publishing, real S3 and Azure backups, a real Let's Encrypt certificate, real systemd and the helper's sandbox on a VM. Publishing public images waits for Subrojit.
 
+### Phase 4 progress (25 November 2026)
+
+Phase 4 ships as one PR, #90, built in two waves on Payal's laptop, with a browser test lane over the whole admin app.
+
+| Area | What it adds |
+| --- | --- |
+| Carried from Phase 3 | One-time-code lockout and recovery-code use made strictly serial through a database lease; `seed:starter` on built-in auth with no secrets on the command line; a clear `content:move` status for a table part-way through a change |
+| Generated API | `/api/v1/models/{model}/items` per model, with a fixed filter language, sorting, signed cursors, relation expansion and per-role limits (migration 0078); one permission function for output, filters, sort, search, expansion, exports, releases, webhooks, scheduled publishing, previews, the MCP server and the older `/api/v1/entries` and `/api/v1/content` routes; a hidden field looks exactly like one that does not exist; published content stays live while a draft is open |
+| Typed SDK | Per-caller OpenAPI and `types.ts` from model metadata, a typed client, `polynovea-cms types pull --check` (token only from the environment or a file, https off loopback), schema-hash drift warnings, and a sample Next.js site built against the generated types |
+| Image and schema wiring | The delivery and schema workers bundled to plain JavaScript and supervised in the image; saving a model queues its schema change; a confirm route and dialog for deletions (typed API key, step-up, CSRF); re-adding a field before its deletion is confirmed restores it; empty models switch to their table on their own; the built-in auth always on in the image; SSH-tunnel installs with a loopback public URL and no proxy list |
+| Admin UI fixes from the browser tests | Publishing on a fresh install, owner route permissions (migration 0079), label-only model changes, sessions no longer signing people out, calendar event types, keyboard media upload, accessibility labels and contrast |
+
+Security: independent reviews of every part. The main findings were restricted fields leaking through the older export and release routes, a token whose creator left gaining every field, and minting a token with more rights than its creator; all were fixed with a permission matrix and a leak-path suite of tests.
+
+Exit check on `ffae780`, on Payal's laptop: 1,929 unit tests, Semgrep 0, `npm audit` 0, the production build and the sample site; on PostgreSQL 15, 16 and 17: migrations 0001 to 0079 and the full database suite, 424/424 on each; the image smoke test with 39 checks, including a model change applied inside the container and the database owner login kept out of the web process's environment; the release-signing and end-to-end upgrade tests. The browser run covered 52 flows across the admin app, accessibility on 212 screen views (no critical or serious issues) and screenshots at phone and desktop widths.
+
+Known and documented: inside the image, the CMS process can reach the database owner login, and in bundled mode superuser access over the socket. Separate operating-system users for the web process, the schema worker and PostgreSQL follow straight after as their own reviewed change. Also after #90: an Agents screen to create AI agents and limit their fields, per-client rate limits from the real socket address, the shared-account template options, and twelve listed UI polish items.
+
+With Phase 4 merged, all five phases of the upgrade are on `main`.
+
 The shared audit logger goes first because every area writes through it. Phase 0 found that it still uses Supabase, so on a database without Supabase the audit events of moved areas are silently dropped. No area counts as moved until its audit events land. The direct-path logger now exists (`lib/platform/audit.postgres.ts`, merged in PR #17: audit row, webhook deliveries and delivery jobs in the caller's transaction) and taxonomy uses it; wave 1 makes every other area call it.
 
 **How each area moves**

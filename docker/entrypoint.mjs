@@ -8,26 +8,33 @@
  *    cluster left by a failed attempt stays stopped; the setup wizard starts it the first time.
  * 3. Runs the CMS (Next.js standalone server.js). If it stops, the container stops, so the restart
  *    policy (systemd or Docker) brings everything back cleanly.
- * 4. Runs the delivery worker once the install has a database. The worker exits with code 3 while
- *    there is none (setup mode); it is retried every 15 seconds, and restarted with a back-off if it
- *    stops for any other reason.
- * 5. On SIGTERM or SIGINT: stops the worker, then the CMS, then PostgreSQL (fast shutdown), in that
+ * 4. Runs the two workers once the install has a database: the delivery worker (as polynovea_app)
+ *    and the schema migration worker (as polynovea_owner; it applies the model changes the CMS
+ *    queues). Each is one bundled JavaScript file (scripts/build-delivery-worker.mjs) and reads
+ *    config.enc itself: no credential is passed on their command line or in their environment.
+ *    Each exits with code 3 while there is no database (setup mode) and is retried every 15 seconds,
+ *    and restarted with a back-off if it stops for any other reason.
+ * 5. On SIGTERM or SIGINT: stops the workers, then the CMS, then PostgreSQL (fast shutdown), in that
  *    order, and exits 0.
  *
- * Exit codes: the CMS's own code when it stops by itself; 1 when the data disk is unusable or the
- * bundled database will not start.
+ * Exit codes: the CMS's own code when it stops by itself; 1 when AUTH_PROVIDER is overridden to
+ * anything but builtin, the data disk is unusable or the bundled database will not start.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { bundledDatabaseDecision } from "./entrypoint-lib.mjs";
+import { authProviderProblem, bundledDatabaseDecision } from "./entrypoint-lib.mjs";
 
 const APP_DIR = process.env.POLYNOVEA_APP_DIR || "/app";
 // Fixed, like lib/setup/database/localServerImage.ts and local-db.sh: no override.
 const DATA_ROOT = "/var/lib/polynovea";
 const LOCAL_DB = "/opt/polynovea/bin/local-db.sh";
-const WORKER = path.join(APP_DIR, "scripts", "delivery-worker.mjs");
+// The bundled workers (scripts/build-delivery-worker.mjs): plain JavaScript, no TypeScript loader.
+const WORKERS = [
+  { name: "delivery worker", file: path.join(APP_DIR, "dist", "delivery-worker.mjs") },
+  { name: "schema worker", file: path.join(APP_DIR, "dist", "schema-migration-worker.mjs") },
+];
 const NOT_CONFIGURED_EXIT = 3;
 const workerEnabled = process.env.POLYNOVEA_WORKER !== "0";
 
@@ -36,6 +43,10 @@ const fail = (message) => {
   console.error(`[entrypoint] ${message}`);
   process.exit(1);
 };
+
+// 0. The sign-in: this image runs the built-in auth only (entrypoint-lib.mjs says why).
+const authProblem = authProviderProblem(process.env);
+if (authProblem) fail(authProblem);
 
 // 1. The data disk.
 try {
@@ -75,30 +86,34 @@ server.on("exit", (code, signal) => {
   void shutdown(typeof code === "number" && code !== 0 ? code : 1);
 });
 
-// 4. The worker.
-let worker = null;
-let workerTimer = null;
-let failures = 0;
-function startWorker() {
-  workerTimer = null;
-  if (stopping) return;
-  const startedAt = Date.now();
-  worker = spawn(process.execPath, [WORKER], { cwd: APP_DIR, stdio: "inherit", env: process.env });
-  worker.on("exit", (code, signal) => {
-    worker = null;
+// 4. The workers, each supervised on its own.
+const supervised = [];
+function supervise({ name, file }) {
+  const state = { name, child: null, timer: null, failures: 0 };
+  supervised.push(state);
+  const start = () => {
+    state.timer = null;
     if (stopping) return;
-    if (code === NOT_CONFIGURED_EXIT) {
-      failures = 0;
-      workerTimer = setTimeout(startWorker, 15_000);
-      return;
-    }
-    failures = Date.now() - startedAt > 60_000 ? 1 : failures + 1;
-    const delay = Math.min(60_000, 2_000 * 2 ** Math.min(failures, 5));
-    log(`The worker stopped (${signal ?? `exit ${code}`}); restarting in ${Math.round(delay / 1000)}s.`);
-    workerTimer = setTimeout(startWorker, delay);
-  });
+    const startedAt = Date.now();
+    // The environment is the server's own: no database credential is added for the workers.
+    state.child = spawn(process.execPath, [file], { cwd: APP_DIR, stdio: "inherit", env: process.env });
+    state.child.on("exit", (code, signal) => {
+      state.child = null;
+      if (stopping) return;
+      if (code === NOT_CONFIGURED_EXIT) {
+        state.failures = 0;
+        state.timer = setTimeout(start, 15_000);
+        return;
+      }
+      state.failures = Date.now() - startedAt > 60_000 ? 1 : state.failures + 1;
+      const delay = Math.min(60_000, 2_000 * 2 ** Math.min(state.failures, 5));
+      log(`The ${name} stopped (${signal ?? `exit ${code}`}); restarting in ${Math.round(delay / 1000)}s.`);
+      state.timer = setTimeout(start, delay);
+    });
+  };
+  start();
 }
-if (workerEnabled && existsSync(WORKER)) startWorker();
+if (workerEnabled) for (const worker of WORKERS) if (existsSync(worker.file)) supervise(worker);
 
 // 5. Shutdown.
 function waitForExit(child, ms) {
@@ -118,11 +133,12 @@ function waitForExit(child, ms) {
 async function shutdown(code) {
   if (stopping) return;
   stopping = true;
-  if (workerTimer) clearTimeout(workerTimer);
-  if (worker) {
-    worker.kill("SIGTERM");
-    await waitForExit(worker, 10_000);
-  }
+  for (const state of supervised) if (state.timer) clearTimeout(state.timer);
+  await Promise.all(supervised.map(async (state) => {
+    if (!state.child) return;
+    state.child.kill("SIGTERM");
+    await waitForExit(state.child, 10_000);
+  }));
   if (server.exitCode === null && server.signalCode === null) {
     server.kill("SIGTERM");
     await waitForExit(server, 20_000);

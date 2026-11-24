@@ -55,6 +55,15 @@ and a draft "Welcome to Polynovea" article right after setup. It runs separately
 account is not affected. It retries a few times; if it still fails, the server log says so and an
 administrator can run `npm run seed:starter` later. Running it again never makes duplicates.
 
+With the built-in sign-in, the command signs in as the owner:
+`npm run seed:starter -- --email=you@example.com --url=https://cms.example.com`.
+It asks for your password and then the one-time code from your authenticator app (or one recovery
+code), without showing what you type. To run it unattended, set `POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD`
+and `POLYNOVEA_OWNER_OTP` instead. The command never accepts the password or the code as arguments,
+because arguments are saved in your shell history and are visible to other users of the machine. It
+prints the address it signs in to first, and refuses plain `http://` to any machine other than this
+one.
+
 ## If two people finish at the same time
 
 Only one owner can ever be created. Setup can be open in one browser at a time, and the final save

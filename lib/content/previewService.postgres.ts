@@ -12,6 +12,14 @@ import { expectOne, getDb, maybeOne, withTransaction } from "@/lib/db/index";
 import { getEntry } from "@/lib/content/entryService";
 import { recordPlatformEvent } from "@/lib/platform/audit.postgres";
 import { hashPreviewToken as hash, previewExpiry } from "@/lib/content/previewService";
+import { adminAccesses, sanitiseFor } from "@/lib/developer/items/sideChannels";
+
+/**
+ * Preview data passes the items API's permission function (phase 4): fields hidden from the token's
+ * issuer are never shown on the preview. The token itself grants viewing its entry; field rules come
+ * from the issuer's roles. A token whose issuer is no longer an active member shows no field data.
+ */
+const PREVIEW_GRANT = ["content.entry.read"];
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- rows are passed through to the preview page as before */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -59,14 +67,18 @@ export async function resolvePreviewToken(token: string): Promise<any | null> {
     : null;
   await db.updateTable("preview_tokens").set({ last_used_at: new Date().toISOString() }).where("id", "=", row.id).execute();
   const { e_id, m_name, m_api_key, ...tokenRow } = row;
+  // Null when the issuer is no longer an active member: the page then says the link is no longer valid.
+  const accesses = await adminAccesses(db, row.workspace_id, row.created_by, "preview", m_api_key ? [m_api_key] : [], PREVIEW_GRANT);
   return {
     ...tokenRow,
-    content_entry_versions: version ?? null,
+    issuer_active: accesses !== null,
+    content_entry_versions: version ? { ...version, data_jsonb: sanitiseFor(accesses, m_api_key, version.data_jsonb) } : null,
     content_entries: e_id ? { content_models: m_api_key ? { name: m_name, api_key: m_api_key } : null } : null,
   };
 }
 
-export async function getReleasePreview(workspaceId: string, releaseId: string): Promise<any | null> {
+/** `viewer`: the admin the preview is shown as (the release preview token's issuer); fields hidden from them are removed. */
+export async function getReleasePreview(workspaceId: string, releaseId: string, viewer: { adminUserId: string | null }): Promise<any | null> {
   if (!UUID.test(releaseId)) return null;
   const db = getDb();
   const release = maybeOne(await db.selectFrom("releases").select(["id", "name", "description"]).where("workspace_id", "=", workspaceId).where("id", "=", releaseId).execute());
@@ -78,13 +90,14 @@ export async function getReleasePreview(workspaceId: string, releaseId: string):
     .select(["i.entry_id", "i.entry_version_id", "v.id as v_id", "v.data_jsonb", "v.locale", "e.id as e_id", "m.name as m_name", "m.api_key as m_api_key"])
     .where("i.release_id", "=", release.id)
     .orderBy("i.created_at").orderBy("i.id").execute();
+  const accesses = await adminAccesses(db, workspaceId, viewer.adminUserId, "preview", items.map((item) => item.m_api_key).filter((key): key is string => Boolean(key)), PREVIEW_GRANT);
   return {
     ...release,
     release_items: items.map((item) => ({
       entry_id: item.entry_id,
       entry_version_id: item.entry_version_id,
       content_entry_versions: item.v_id
-        ? { data_jsonb: item.data_jsonb, locale: item.locale, content_entries: item.e_id ? { content_models: item.m_api_key ? { name: item.m_name, api_key: item.m_api_key } : null } : null }
+        ? { data_jsonb: sanitiseFor(accesses, item.m_api_key, item.data_jsonb), locale: item.locale, content_entries: item.e_id ? { content_models: item.m_api_key ? { name: item.m_name, api_key: item.m_api_key } : null } : null }
         : null,
     })),
   };

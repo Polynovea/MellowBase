@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { requirePlatformAccess } from "@/lib/platform/permissions";
-import { getModel, updateModelMetadata } from "@/lib/schema/modelService";
+import { hasPermission, requirePlatformAccess } from "@/lib/platform/permissions";
+import { getModel, getVersion, updateModelMetadata } from "@/lib/schema/modelService";
+import { getDb } from "@/lib/db/index";
+import { modelSchemaChanges } from "@/lib/schema/schemaChanges";
 import { clientErrorMessage } from "@/lib/http/clientError";
 
 const ts = () => new Date().toISOString();
@@ -12,7 +14,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
   const model = await getModel(auth.data!.actor.workspaceId, id);
   if (!model) return NextResponse.json({ success: false, data: null, error: "Not found", timestamp: ts() }, { status: 404 });
-  return NextResponse.json({ success: true, data: model, error: null, timestamp: ts() });
+  // Phase 4: the model's schema changes still waiting, running or failed, each with its plan in plain
+  // words (a deletion waiting for confirmation also says how many values it would delete).
+  const version = await getVersion(model.id, model.current_schema_version);
+  // Counts of values a deletion would delete only for those who may confirm it (schema.manage).
+  const schemaChanges = await modelSchemaChanges(getDb(), model, version?.schema_json ?? null, { countValues: hasPermission(auth.data!.actor, "schema.manage") })
+    .catch(() => []);
+  return NextResponse.json({ success: true, data: { ...model, schemaChanges }, error: null, timestamp: ts() });
 }
 
 /**
