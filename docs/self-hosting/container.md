@@ -7,6 +7,8 @@ The Polynovea server image holds everything the CMS needs on one server:
 - the schema worker, which applies the model changes saved in the CMS to the database;
 - PostgreSQL 16 and pgBackRest, used only if you choose **On this server** in the setup wizard.
 
+It always uses the built-in sign-in (`AUTH_PROVIDER=builtin`, set by the image; it refuses to start with any other value): Supabase is supported as a database, not as the sign-in provider.
+
 It runs as an unprivileged user (uid/gid 10001), never as root, on Node.js 24 (24.7 or later, needed for the password hashing). Every base image is pinned by digest, and every release is signed (see [release-signing.md](release-signing.md)). Always run the image by digest (`…@sha256:…`), never by a tag.
 
 On AWS or Azure, use our VM images or cloud templates instead: they do all of this for you. See [vm-images.md](vm-images.md).

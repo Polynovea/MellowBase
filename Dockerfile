@@ -19,6 +19,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund --loglevel=error
 COPY . .
+# The image's setup wizard creates the owner in the built-in auth's tables, so the built-in auth is the
+# only sign-in this image can run. The browser bundle reads this at build time; AUTH_PROVIDER (runtime,
+# below) must match, and the entrypoint refuses any other value.
+ENV NEXT_PUBLIC_AUTH_PROVIDER=builtin
 # The delivery worker runs as one bundled JavaScript file (no TypeScript loader in the image).
 RUN POLYNOVEA_STANDALONE=1 npm run build \
  && node scripts/build-delivery-worker.mjs \
@@ -105,6 +109,7 @@ ENV NODE_ENV=production \
     HOSTNAME=127.0.0.1 \
     PORT=3000 \
     POLYNOVEA_IMAGE=1 \
+    AUTH_PROVIDER=builtin \
     POLYNOVEA_CONFIG_DIR=/var/lib/polynovea \
     POLYNOVEA_RELEASE_ID=${POLYNOVEA_RELEASE_ID} \
     PATH=/usr/lib/postgresql/16/bin:/usr/local/bin:/usr/bin:/bin

@@ -17,14 +17,14 @@
  * 5. On SIGTERM or SIGINT: stops the workers, then the CMS, then PostgreSQL (fast shutdown), in that
  *    order, and exits 0.
  *
- * Exit codes: the CMS's own code when it stops by itself; 1 when the data disk is unusable or the
- * bundled database will not start.
+ * Exit codes: the CMS's own code when it stops by itself; 1 when AUTH_PROVIDER is overridden to
+ * anything but builtin, the data disk is unusable or the bundled database will not start.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { bundledDatabaseDecision } from "./entrypoint-lib.mjs";
+import { authProviderProblem, bundledDatabaseDecision } from "./entrypoint-lib.mjs";
 
 const APP_DIR = process.env.POLYNOVEA_APP_DIR || "/app";
 // Fixed, like lib/setup/database/localServerImage.ts and local-db.sh: no override.
@@ -43,6 +43,10 @@ const fail = (message) => {
   console.error(`[entrypoint] ${message}`);
   process.exit(1);
 };
+
+// 0. The sign-in: this image runs the built-in auth only (entrypoint-lib.mjs says why).
+const authProblem = authProviderProblem(process.env);
+if (authProblem) fail(authProblem);
 
 // 1. The data disk.
 try {
