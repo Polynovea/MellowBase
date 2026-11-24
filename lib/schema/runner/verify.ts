@@ -279,7 +279,12 @@ export function verifyRowAgainstPlan(
   if (stage === "destructive" && !plan.requiresConfirmation) throw new RefusedError("destructive_not_confirmed");
 
   const steps = plan.steps.map((step, planIndex) => ({ planIndex, step })).filter(({ step }) => step.stage === stage);
-  if (steps.length === 0) throw new RefusedError("stage_has_no_steps");
+  // A stage with no steps is refused, except one kind: an expand stage of a plan with no steps at all,
+  // for a saved version of a model whose table exists. Its only effect is the bookkeeping: the table
+  // records the new version (so reads stay on it) and the request supersedes older waiting stages
+  // (e.g. a deletion the new version undoes by adding the field back).
+  const versionOnly = stage === "expand" && plan.steps.length === 0 && plan.targetVersionId !== null && plan.baseShape !== null;
+  if (steps.length === 0 && !versionOnly) throw new RefusedError("stage_has_no_steps");
   return { ledgerId: row.id, plan, stage, steps };
 }
 

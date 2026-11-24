@@ -19,7 +19,7 @@ import { uniqueKey } from "@/lib/schema/engine/testing";
 import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
 import { requestSchemaChange } from "@/lib/schema/runner/request";
 import { TEST_LIMITS } from "@/lib/schema/engine/testing";
-import { backfillModel, describeTableStatus, modelsNeedingResync, moveModel, moveRun, readSourceOf, resyncChangedModels, setReadSource, syncEntries, verifyModel } from "@/lib/content/contentMove";
+import { adoptEmptyModels, backfillModel, describeTableStatus, modelsNeedingResync, moveModel, moveRun, readSourceOf, resyncChangedModels, setReadSource, syncEntries, verifyModel } from "@/lib/content/contentMove";
 import { bringModelTableUp, closeTableMoveSession, runWorker } from "@/lib/content/testing/tableMove";
 import { createEntry } from "@/lib/content/entryService";
 import { searchContent } from "@/lib/content/searchService";
@@ -753,6 +753,44 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(await tableSource(workspaceId, modelId)).not.toBeNull();
     expect(await due()).toEqual([]);
     await owner.query("update content_model_storage set read_source = 'snapshot' where content_model_id = $1", [modelId]);
+  });
+
+  it("adopting an empty new model that keeps failing waits before each try, doubling, and logs once per try", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Adopt", apiKey: uniqueKey("adopt"), fields: [field({ key: "title", type: "text" })] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    // The worker builds the table and adopts the model; undo the adoption so it is a candidate again.
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    await owner.query("update content_model_storage set last_run_id = null, read_source = 'snapshot' where content_model_id = $1", [modelId]);
+    await owner.query("delete from content_model_move_runs where content_model_id = $1", [modelId]);
+    // Sabotage: the table is not where its record says, so every adoption throws before recording a run.
+    const [{ table_name: table }] = (await owner.query<{ table_name: string }>("select table_name from content_model_tables where content_model_id = $1", [modelId])).rows;
+    await owner.query(`alter table content.${table} rename to ${table}_away`);
+    try {
+      const events: Array<{ event: string; fields: Record<string, unknown> }> = [];
+      let clock = 1_000_000;
+      const adopt = () => adoptEmptyModels(getDb(), { modelId, now: () => clock, log: (event, fields) => events.push({ event, fields }) });
+      expect(await adopt()).toBe(0);
+      expect(events).toEqual([{ event: "content_adopt_failed", fields: expect.objectContaining({ modelId, code: "42P01", pauseMs: 60_000 }) }]);
+      // Within the pause: not tried, nothing logged.
+      clock += 30_000;
+      expect(await adopt()).toBe(0);
+      expect(events).toHaveLength(1);
+      // After it: tried again, and the pause doubles.
+      clock += 31_000;
+      expect(await adopt()).toBe(0);
+      expect(events.at(-1)).toMatchObject({ event: "content_adopt_failed", fields: { pauseMs: 120_000 } });
+      // Fixed: the next try after the pause adopts it, and the pause is forgotten.
+      await owner.query(`alter table content.${table}_away rename to ${table}`);
+      clock += 121_000;
+      expect(await adopt()).toBe(1);
+      expect(events.at(-1)).toEqual({ event: "content_adopted", fields: { modelId } });
+      expect(await tableSource(workspaceId, modelId)).not.toBeNull();
+    } finally {
+      await owner.query(`alter table if exists content.${table}_away rename to ${table}`);
+    }
   });
 
   it("random sequences of model changes, each applied and reverted, keep the table matching the snapshots", async () => {

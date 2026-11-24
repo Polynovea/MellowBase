@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/permissions";
-import { getDb } from "@/lib/db/index";
+import { getDb, withTransaction } from "@/lib/db/index";
 import { getModel, getVersion } from "@/lib/schema/modelService";
 import { confirmPlanStage } from "@/lib/schema/runner/request";
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { recordPlatformEvent } from "@/lib/platform/audit.postgres";
 import { modelSchemaChanges } from "@/lib/schema/schemaChanges";
 
 const ts = () => new Date().toISOString();
@@ -14,7 +14,8 @@ const fail = (error: string, status: number) => NextResponse.json({ success: fal
  * Confirms a model's waiting deletion stage: the admin types the model's API key (the Phase 3 rule
  * for destructive steps). Same permission as editing the model, with a recent sign-in (step-up); the
  * CSRF check comes with the admin session. The database checks the typed key and the confirming
- * admin's membership (polynovea_confirm_schema_stage); the schema worker then runs the stage. Audited.
+ * admin's membership (polynovea_confirm_schema_stage); the schema worker then runs the stage. The
+ * confirmation and its audit event commit together.
  */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string; ledgerId: string }> }) {
   const auth = await requirePlatformAccess(req, { permission: "schema.manage", stepUp: true });
@@ -37,18 +38,31 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!typed) return fail(`Type the model's API key (${model.api_key}) to confirm the deletion.`, 400);
 
   try {
-    await confirmPlanStage(db, { ledgerId, confirmedBy: actor.adminUserId, typedApiKey: typed });
+    // The confirmation and its audit event commit together.
+    await withTransaction(async (trx) => {
+      await confirmPlanStage(trx, { ledgerId, confirmedBy: actor.adminUserId, typedApiKey: typed });
+      await recordPlatformEvent(trx, {
+        workspaceId: actor.workspaceId, actorAdminUserId: actor.adminUserId, action: "schema.migration.confirmed",
+        entityType: "content_model", entityId: model.id, metadata: { ledgerId, stage: "destructive" },
+      });
+    });
   } catch (error) {
-    const code = (error as { code?: string })?.code;
+    const { code, message } = (error ?? {}) as { code?: string; message?: string };
+    // 22023 is also raised when the confirming admin is not an active member of this workspace.
+    if (code === "22023" && message === "schema_confirmation_unknown_user") return fail("Your account can't confirm changes in this workspace. Nothing was deleted.", 403);
     if (code === "22023") return fail(`That is not the model's API key (${model.api_key}). Nothing was deleted.`, 400);
     if (code === "55000") return fail("This change is not waiting for a confirmation", 409);
     if (code === "P0002") return fail("Change not found", 404);
     return fail("The deletion could not be confirmed. Try again.", 500);
   }
-  await logPlatformEvent({
-    workspaceId: actor.workspaceId, actorAdminUserId: actor.adminUserId, action: "schema.migration.confirmed",
-    entityType: "content_model", entityId: model.id, metadata: { ledgerId, stage: "destructive" },
-  });
-  const version = await getVersion(model.id, model.current_schema_version);
-  return NextResponse.json({ success: true, data: { confirmed: true, schemaChanges: await modelSchemaChanges(db, model, version?.schema_json ?? null) }, error: null, timestamp: ts() });
+  // The deletion is confirmed from here on: a failure to read the changes back never turns that into
+  // an error (the page reloads them; null tells it to).
+  let schemaChanges: Awaited<ReturnType<typeof modelSchemaChanges>> | null = null;
+  try {
+    const version = await getVersion(model.id, model.current_schema_version);
+    schemaChanges = await modelSchemaChanges(db, model, version?.schema_json ?? null, { countValues: true });
+  } catch {
+    schemaChanges = null;
+  }
+  return NextResponse.json({ success: true, data: { confirmed: true, schemaChanges }, error: null, timestamp: ts() });
 }

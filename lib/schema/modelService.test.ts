@@ -20,7 +20,9 @@ vi.mock("@/lib/platform/audit", () => ({
 // Phase 4: the write and its schema change run in one transaction (faked: the callback gets a marker).
 const TRX = { trx: true };
 vi.mock("@/lib/db/index", () => ({ withTransaction: vi.fn(async (fn: (trx: unknown) => unknown) => fn(TRX)) }));
-vi.mock("@/lib/schema/runner/request", () => ({ requestSchemaChange: vi.fn(async () => ({ expandLedgerId: "ledger-expand", destructiveLedgerId: null })) }));
+vi.mock("@/lib/schema/runner/request", () => ({ requestSchemaChange: vi.fn(async () => ({ plan: { steps: [] }, expandLedgerId: "ledger-expand", destructiveLedgerId: null })) }));
+// Audit events of a model write are recorded in its transaction.
+vi.mock("@/lib/platform/audit.postgres", () => ({ recordPlatformEvent: vi.fn() }));
 
 import { logPlatformEvent } from "@/lib/platform/audit";
 import * as records from "@/lib/schema/modelService.postgres";

@@ -9,8 +9,14 @@ export interface SchemaChangeView {
   status: string;
   createdAt: string;
   plan: string[];
-  confirmation?: { prompt: string; valuesDeleted: number };
+  /** valuesDeleted is null when it was not counted. */
+  confirmation?: { prompt: string; valuesDeleted: number | null };
   errorRef?: string | null;
+}
+
+function deletesLine(values: number | null): string {
+  if (values === null) return "This deletes the saved values of the fields listed.";
+  return `This deletes ${values.toLocaleString("en-US")} saved value${values === 1 ? "" : "s"}.`;
 }
 
 /**
@@ -57,7 +63,9 @@ export default function SchemaChangeStatus({ modelId, apiKey, changes, onChanged
           <Clock3 size={16} className="mt-0.5 shrink-0 text-action" aria-hidden />
           <div>
             <p className="font-semibold">Applying your changes to the database</p>
-            <ul className="mt-1 list-disc pl-5 text-fg-muted">{applying.flatMap((change) => change.plan).map((line, i) => <li key={i}>{line}</li>)}</ul>
+            {applying.some((change) => change.plan.length > 0)
+              ? <ul className="mt-1 list-disc pl-5 text-fg-muted">{applying.flatMap((change) => change.plan).map((line, i) => <li key={i}>{line}</li>)}</ul>
+              : <p className="mt-1 text-fg-muted">No columns change; the table is moving to the new version.</p>}
             <p className="mt-1 text-xs text-fg-muted">Until this finishes, entries of this model are read from their saved versions.</p>
           </div>
         </div>
@@ -72,7 +80,7 @@ export default function SchemaChangeStatus({ modelId, apiKey, changes, onChanged
         <div key={change.ledgerId} className="rounded-xl border border-warning bg-warning-muted px-4 py-3 text-sm">
           <p className="font-semibold">A deletion is waiting for your confirmation</p>
           <ul className="mt-1 list-disc pl-5">{change.plan.map((line, i) => <li key={i}>{line}</li>)}</ul>
-          <p className="mt-1">This deletes {change.confirmation!.valuesDeleted.toLocaleString("en-US")} saved value{change.confirmation!.valuesDeleted === 1 ? "" : "s"}. Nothing is deleted until you confirm.</p>
+          <p className="mt-1">{deletesLine(change.confirmation!.valuesDeleted)} Nothing is deleted until you confirm.</p>
           {open === change.ledgerId ? (
             <div role="dialog" aria-label="Confirm deletion" className="mt-3 space-y-2">
               <label className="block text-sm">

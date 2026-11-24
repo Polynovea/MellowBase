@@ -96,7 +96,7 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
 
     // The model response's view: the deletion in plain words, with the values it would delete.
     const model = (await getModel(workspaceId, modelId))!;
-    const changes = await modelSchemaChanges(getDb(), model, null);
+    const changes = await modelSchemaChanges(getDb(), model, null, { countValues: true });
     const waiting = changes.find((change) => change.stage === "destructive")!;
     expect(waiting).toMatchObject({ status: "awaiting_confirmation", confirmation: { prompt: expect.stringContaining(apiKey) } });
     expect(waiting.plan.join(" ")).toMatch(/body/i);
@@ -123,9 +123,86 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
     const changed = await applyChange({ model: (await getModel(workspaceId, modelId))!, proposedSchema: { name: "Tile", apiKey, fields: [f("title")] }, acknowledgeUnsafe: true, actorAdminUserId: adminUserId });
     if (!changed.ok || !changed.data.applied) throw new Error("change not applied");
     await runWorker(modelId);
-    const waiting = (await modelSchemaChanges(getDb(), (await getModel(workspaceId, modelId))!, null)).find((change) => change.stage === "destructive")!;
+    const waiting = (await modelSchemaChanges(getDb(), (await getModel(workspaceId, modelId))!, null, { countValues: true })).find((change) => change.stage === "destructive")!;
     expect(waiting.confirmation!.valuesDeleted).toBe(3);
   }, 120_000);
+
+  it("a deletion whose count fails is still shown, without a count, and the other changes are not hidden", async () => {
+    const { workspaceId, adminUserId } = await workspace(backend);
+    const apiKey = uniqueKey("slab");
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Slab", apiKey, fields: [f("title"), f("note")] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    await runWorker(modelId);
+    const changed = await applyChange({ model: (await getModel(workspaceId, modelId))!, proposedSchema: { name: "Slab", apiKey, fields: [f("title")] }, acknowledgeUnsafe: true, actorAdminUserId: adminUserId });
+    if (!changed.ok || !changed.data.applied) throw new Error("change not applied");
+    await runWorker(modelId);
+    const [{ table_name: table }] = await backend.query<{ table_name: string }>("select table_name from content_model_tables where content_model_id = $1", [modelId]);
+    // Behind the engine's back, the column is not where the recorded shape says: counting it fails (42703).
+    await backend.query(`alter table content.${table} rename column note to note_away`);
+    try {
+      const changes = await modelSchemaChanges(getDb(), (await getModel(workspaceId, modelId))!, null, { countValues: true });
+      const waiting = changes.find((change) => change.stage === "destructive")!;
+      expect(waiting).toMatchObject({ status: "awaiting_confirmation", confirmation: { prompt: expect.stringContaining(apiKey), valuesDeleted: null } });
+      expect(waiting.plan.join(" ")).toMatch(/note/i);
+      // A caller who may not confirm gets no count either way (nothing is counted for them).
+      const forReaders = await modelSchemaChanges(getDb(), (await getModel(workspaceId, modelId))!, null, { countValues: false });
+      expect(forReaders.find((change) => change.stage === "destructive")!.confirmation!.valuesDeleted).toBeNull();
+    } finally {
+      await backend.query(`alter table content.${table} rename column note_away to note`);
+    }
+  });
+
+  it("adding back a field waiting to be deleted restores it with its values and rules; the deletion is superseded", async () => {
+    const { workspaceId, adminUserId } = await workspace(backend);
+    const apiKey = uniqueKey("memo");
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Memo", apiKey, fields: [f("title"), f("secret")] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    for (let i = 0; i < 2; i += 1) {
+      const entry = await createEntry({ workspaceId, modelId, data: { title: `T${i}`, secret: `S${i}` }, actorAdminUserId: adminUserId });
+      if (!entry.ok) throw new Error(entry.error);
+    }
+    const [role] = await backend.query<{ id: string }>("insert into roles (workspace_id, key, name, description, is_system) values ($1, 'memo_reader', 'Memo reader', 'test', false) returning id", [workspaceId]);
+    await backend.query("insert into content_field_permissions (workspace_id, content_model_id, field_key, role_id, can_read, can_write) values ($1, $2, 'secret', $3, false, false)", [workspaceId, modelId, role.id]);
+    const save = async (fields: FieldDefinition[]) => {
+      const changed = await applyChange({ model: (await getModel(workspaceId, modelId))!, proposedSchema: { name: "Memo", apiKey, fields }, acknowledgeUnsafe: true, actorAdminUserId: adminUserId });
+      if (!changed.ok || !changed.data.applied) throw new Error(`change not applied: ${changed.ok ? changed.data.blockedReason : changed.error}`);
+      return changed.data;
+    };
+    const removed = await save([f("title")]);
+    await runWorker(modelId);
+    expect((await ledger(backend, modelId)).at(-1)).toEqual({ stage: "destructive", status: "awaiting_confirmation" });
+
+    const restored = await save([f("title"), f("secret")]);
+    expect(restored.schemaChange?.restored).toEqual([{ field: "secret", values: 2 }]);
+    expect(await backend.query("select status from schema_migration_ledger where id = $1", [removed.schemaChange!.destructiveLedgerId])).toEqual([{ status: "superseded" }]);
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    expect(await columns(backend, modelId)).toEqual(expect.arrayContaining(["title", "secret"]));
+    const [table] = await backend.query<{ table_name: string; applied_version_id: string }>("select table_name, applied_version_id from content_model_tables where content_model_id = $1", [modelId]);
+    expect(table.applied_version_id).toBe(restored.version!.id);
+    expect((await backend.query<{ secret: string }>(`select secret from content.${table.table_name} where _variant = 'draft' order by secret`)).map((row) => row.secret)).toEqual(["S0", "S1"]);
+    // Its permission rule came back with it.
+    expect(await backend.query("select can_read from content_field_permissions where content_model_id = $1 and field_key = 'secret'", [modelId])).toEqual([{ can_read: false }]);
+    // Nothing is waiting any more.
+    expect((await modelSchemaChanges(getDb(), (await getModel(workspaceId, modelId))!, null, { countValues: true })).filter((change) => change.status === "awaiting_confirmation")).toEqual([]);
+  });
+
+  it("a save that changes no column keeps the model on its table (the worker records the new version)", async () => {
+    const { workspaceId, adminUserId } = await workspace(backend);
+    const apiKey = uniqueKey("page");
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Page", apiKey, fields: [f("title")] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    expect(await tableSource(workspaceId, modelId)).not.toBeNull();
+    const changed = await applyChange({ model: (await getModel(workspaceId, modelId))!, proposedSchema: { name: "Page", apiKey, fields: [f("title", "text", { label: "Headline" })] }, acknowledgeUnsafe: false, actorAdminUserId: adminUserId });
+    if (!changed.ok || !changed.data.applied) throw new Error(`change not applied: ${changed.ok ? changed.data.blockedReason : changed.error}`);
+    expect(changed.data.schemaChange).toMatchObject({ expandLedgerId: expect.any(String), destructiveLedgerId: null });
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    expect(await tableSource(workspaceId, modelId)).not.toBeNull();
+  });
 
   it("a refused request rolls the write back: no version without its ledger rows, no ledger rows without their version", async () => {
     const { workspaceId, adminUserId } = await workspace(backend);

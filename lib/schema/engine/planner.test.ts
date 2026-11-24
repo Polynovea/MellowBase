@@ -253,14 +253,39 @@ describe("migration plan: hash and plain words", () => {
 });
 
 describe("migration plan: a field waiting to be deleted", () => {
-  it("cannot be re-added until its deletion is confirmed or cancelled", () => {
-    // The table still has `body`, but the schema it was last planned to no longer does.
-    const table = model(f("title"), f("body", "long_text"));
-    const result = buildMigrationPlan({
-      workspaceId: "ws", modelId: "model-1", modelApiKey: "post", table: TABLE,
-      currentShape: shapeForSchema(TABLE, table), currentSchema: model(f("title")), targetSchema: model(f("title"), f("body", "long_text")),
-    });
-    expect(result.ok ? [] : result.problems).toEqual([{ code: "pending_deletion", message: 'The field "body" is waiting to be deleted. To use the name again, confirm that deletion on the model page first; its old values will not come back.' }]);
+  // The table still has `body`, but the schema it was last planned to no longer does.
+  const waiting = (target: ReturnType<typeof model>) => buildMigrationPlan({
+    workspaceId: "ws", modelId: "model-1", modelApiKey: "post", table: TABLE,
+    currentShape: shapeForSchema(TABLE, model(f("title"), f("body", "long_text"))), currentSchema: model(f("title")), targetSchema: target,
+  });
+
+  it("added back as the same kind of field: restored with its column, no steps", () => {
+    const result = waiting(model(f("title"), f("body", "long_text")));
+    if (!result.ok) throw new Error(JSON.stringify(result.problems));
+    expect(result.plan.steps).toEqual([]);
+    expect(result.plan.restoredFields).toEqual(["body"]);
+    expect(result.plan.notes).toContain('"body" was waiting to be deleted; adding it back restores it with its saved values.');
+  });
+
+  it("added back as a kind whose column keeps the values (text to markdown): restored", () => {
+    const result = waiting(model(f("title"), f("body", "markdown")));
+    if (!result.ok) throw new Error(JSON.stringify(result.problems));
+    expect(result.plan.restoredFields).toEqual(["body"]);
+    expect(result.plan.steps.every((step) => step.stage === "expand")).toBe(true);
+  });
+
+  it("added back as a kind that cannot keep the values: refused, with what the admin can do", () => {
+    const result = waiting(model(f("title"), f("body", "number")));
+    expect(result.ok ? [] : result.problems).toEqual([{
+      code: "pending_deletion",
+      message: `The field "body" is waiting to be deleted, and its saved values can't be kept as the new kind of field. Add it back as the same kind of field to restore it with its values, or confirm the deletion on the model page first.`,
+    }]);
+  });
+
+  it("a plan that does not add it back has no restored fields", () => {
+    const result = waiting(model(f("title"), f("other")));
+    if (!result.ok) throw new Error(JSON.stringify(result.problems));
+    expect(result.plan.restoredFields).toBeUndefined();
   });
 });
 

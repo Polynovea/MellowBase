@@ -3,12 +3,13 @@
 // The database primitives come from PostgreSQL in modelService.postgres.ts. Everything that decides
 // what is allowed (canonical schema validation, apiKey immutability, diff classification, the
 // acknowledge-unsafe gate) stays here.
-import { logPlatformEvent } from "@/lib/platform/audit";
+import { recordPlatformEvent } from "@/lib/platform/audit.postgres";
 import { hashModelSchema } from "@/lib/schema/engine/hash";
 import * as postgres from "@/lib/schema/modelService.postgres";
 import { withTransaction, type DbExecutor } from "@/lib/db/index";
 import { requestSchemaChange } from "@/lib/schema/runner/request";
 import { schemaLimitsFromEnv } from "@/lib/schema/engine/limits";
+import { countRestoredValues } from "@/lib/schema/engine/impact";
 import { SchemaEngineError } from "@/lib/schema/engine/errors";
 import { validateCanonicalSchema } from "@/lib/schema/canonicalSchema";
 import { computeSchemaDiff, type SchemaDiff } from "@/lib/schema/diff";
@@ -96,6 +97,11 @@ export interface QueuedSchemaChange {
   expandLedgerId: string | null;
   /** Deleting steps: awaiting_confirmation until someone types the model's api key. */
   destructiveLedgerId: string | null;
+  /**
+   * Fields added back while their deletion was waiting: they keep their column, values and permission
+   * rules, and the waiting deletion is superseded. `values` is how many saved values come back.
+   */
+  restored?: Array<{ field: string; values: number }>;
 }
 
 // No parameter properties: scripts load this file with Node's type stripping.
@@ -123,10 +129,11 @@ async function inTransactionWithSchemaChange<D extends object>(
     return await withTransaction(async (trx) => {
       const written = await write(trx);
       if (!written.ok) throw new RollbackWith({ ok: false, error: written.error ?? "Could not save the model", status: written.status ?? 500 });
-      const { expandLedgerId, destructiveLedgerId } = await requestSchemaChange(trx, {
+      const { plan, expandLedgerId, destructiveLedgerId } = await requestSchemaChange(trx, {
         contentModelId: written.modelId, targetVersionId: written.versionId, requestedBy: actorId, limits: schemaLimitsFromEnv(),
       });
-      return { ok: true as const, data: { ...written.data, schemaChange: { expandLedgerId, destructiveLedgerId } } };
+      const restored = plan.restoredFields?.length ? await countRestoredValues(trx, plan) : [];
+      return { ok: true as const, data: { ...written.data, schemaChange: { expandLedgerId, destructiveLedgerId, ...(restored.length ? { restored } : {}) } } };
     });
   } catch (error) {
     if (error instanceof RollbackWith) return error.outcome;
@@ -251,17 +258,17 @@ export async function applyChange(params: {
     };
   }
 
-  await logPlatformEvent({
-    workspaceId: params.model.workspace_id,
-    actorAdminUserId: params.actorAdminUserId,
-    action: "schema.migration.started",
-    entityType: "content_model",
-    entityId: params.model.id,
-    metadata: { fromVersion: currentVersion.version_number, toVersion: currentVersion.version_number + 1 },
-  });
-
-  // The new version and the request to reshape the model's table commit together (or not at all).
+  // The new version, its "started" audit event and the request to reshape the model's table commit
+  // together (or not at all).
   const queued = await inTransactionWithSchemaChange(params.actorAdminUserId, async (trx) => {
+    await recordPlatformEvent(trx, {
+      workspaceId: params.model.workspace_id,
+      actorAdminUserId: params.actorAdminUserId,
+      action: "schema.migration.started",
+      entityType: "content_model",
+      entityId: params.model.id,
+      metadata: { fromVersion: currentVersion.version_number, toVersion: currentVersion.version_number + 1 },
+    });
     const result = await postgres.applySchemaVersion({
       model: params.model,
       actorId: params.actorAdminUserId,
@@ -280,14 +287,16 @@ export async function applyChange(params: {
     : { ok: false as const, error: queued.error, status: queued.status };
 
   if (!applied.ok) {
-    await logPlatformEvent({
+    // The change rolled back: its failure is recorded in a transaction of its own. A failure to record
+    // it never replaces the change's own error.
+    await withTransaction((trx) => recordPlatformEvent(trx, {
       workspaceId: params.model.workspace_id,
       actorAdminUserId: params.actorAdminUserId,
       action: "schema.migration.failed",
       entityType: "content_model",
       entityId: params.model.id,
       metadata: { error: applied.error },
-    });
+    })).catch((error: unknown) => console.error("schema.migration.failed audit event was not recorded", { modelId: params.model.id, error: error instanceof Error ? error.message : String(error) }));
     return { ok: false, error: applied.error, status: applied.status ?? 500 };
   }
 

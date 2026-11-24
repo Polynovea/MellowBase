@@ -436,11 +436,18 @@ export function moveErrorFields(error: unknown): { code: string; message?: strin
  * Models with a table that are not reading from it yet, have never been moved (no run), have no
  * entries at all, and have no schema stage queued or running: typically a model just created in the
  * CMS. With nothing to copy, the worker verifies the empty table and switches reads to it, so a new
- * model is served from its table without anyone running content:move. A model WITH entries is never
- * switched here: moving existing content stays an operator decision (content:move).
+ * model is served from its table without anyone running content:move. Only models with no entries are
+ * picked: moving existing content stays an operator decision (content:move). An entry created between
+ * the pick and the switch is not a risk: moveModel copies whatever is there and switches only when the
+ * check matches, exactly as content:move would.
+ *
+ * A model whose adoption throws (nothing recorded) waits before the next try, with the same doubling
+ * pause as a failed verification (verifyBackoff: 1 minute, 2, 4 ... at most 1 hour), and the failure is
+ * logged once per try, not on every poll.
  */
-export async function adoptEmptyModels(db: Kysely<DB>, options: { modelId?: string; log?: ResyncLog; limit?: number } = {}): Promise<number> {
+export async function adoptEmptyModels(db: Kysely<DB>, options: { modelId?: string; log?: ResyncLog; limit?: number; now?: () => number } = {}): Promise<number> {
   const log: ResyncLog = options.log ?? (() => undefined);
+  const now = options.now ?? Date.now;
   const { rows } = await sql<{ content_model_id: string; workspace_id: string }>`
     select t.content_model_id, t.workspace_id
       from public.content_model_tables t
@@ -461,13 +468,18 @@ export async function adoptEmptyModels(db: Kysely<DB>, options: { modelId?: stri
      limit ${Math.min(50, Math.max(1, options.limit ?? 20))}`.execute(db);
   let adopted = 0;
   for (const row of rows) {
+    const paused = verifyBackoff.get(row.content_model_id);
+    if (paused && paused.until > now()) continue;
     try {
       const moved = await moveModel(db, { workspaceId: row.workspace_id, modelId: row.content_model_id, switchReads: true });
+      verifyBackoff.delete(row.content_model_id);
       if (moved.switched) adopted += 1;
       // Logged only when something happened: a skipped model is not news on every poll.
       if (moved.switched) log("content_adopted", { modelId: row.content_model_id });
     } catch (error) {
-      log("content_adopt_failed", { modelId: row.content_model_id, ...moveErrorFields(error) });
+      const failures = (paused?.failures ?? 0) + 1;
+      verifyBackoff.set(row.content_model_id, { failures, until: now() + pauseMs(failures) });
+      log("content_adopt_failed", { modelId: row.content_model_id, ...moveErrorFields(error), pauseMs: pauseMs(failures) });
     }
   }
   return adopted;

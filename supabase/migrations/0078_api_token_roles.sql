@@ -32,15 +32,12 @@ create unique index if not exists roles_workspace_id_id_key on public.roles (wor
 
 alter table public.developer_api_tokens add column if not exists role_id uuid;
 
-do $$
-begin
-  if not exists (select 1 from pg_catalog.pg_constraint where conname = 'developer_api_tokens_role_fk' and conrelid = 'public.developer_api_tokens'::regclass) then
-    alter table public.developer_api_tokens
-      add constraint developer_api_tokens_role_fk foreign key (workspace_id, role_id)
-      references public.roles (workspace_id, id) on delete no action;
-  end if;
-end;
-$$;
+-- Dropped and added again, never "add if missing": an earlier draft of this migration created the
+-- constraint ON DELETE RESTRICT, and a database that ran that draft must end up with NO ACTION too.
+alter table public.developer_api_tokens drop constraint if exists developer_api_tokens_role_fk;
+alter table public.developer_api_tokens
+  add constraint developer_api_tokens_role_fk foreign key (workspace_id, role_id)
+  references public.roles (workspace_id, id) on delete no action;
 
 create index if not exists developer_api_tokens_role_idx on public.developer_api_tokens (role_id) where role_id is not null;
 

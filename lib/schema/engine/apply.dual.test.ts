@@ -110,11 +110,16 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     const { awaitingConfirmationId } = await applyExpandStage(owner, { plan, requestedBy: m.adminUserId, limits: TEST_LIMITS });
     expect(awaitingConfirmationId).toBeTruthy();
     expect(Object.keys((await physicalShape(backend.query, table))!)).toContain("secret");
-    // The field left the schema: its permission rows went with the expand stage.
-    expect((await backend.query("select field_key from content_field_permissions where content_model_id = $1", [m.modelId])).map((r) => r.field_key)).toEqual(["title"]);
-    // Re-adding it before the deletion is confirmed would bring its old values back: refused.
+    // The field left the schema, but its permission rows stay until the deletion runs: a restore must
+    // bring it back with the same rules, never open to everyone with model access.
+    expect((await backend.query("select field_key from content_field_permissions where content_model_id = $1 order by field_key", [m.modelId])).map((r) => r.field_key)).toEqual(["secret", "title"]);
+    // Re-adding it before the deletion is confirmed restores it: no steps, the column and values stay.
     m.setCurrent(m.schema(f("title")));
-    expect(String(await errorOf(m.prepare(m.schema(f("title"), f("secret")))))).toMatch(/waiting to be deleted\. To use the name again, confirm that deletion on the model page first/);
+    const restore = await m.prepare(m.schema(f("title"), f("secret")));
+    expect(restore.steps).toEqual([]);
+    expect(restore.restoredFields).toEqual(["secret"]);
+    // As a kind of field that cannot keep the values: refused, saying what the admin can do.
+    expect(String(await errorOf(m.prepare(m.schema(f("title"), f("secret", "number")))))).toMatch(/waiting to be deleted, and its saved values can't be kept/);
 
     for (const confirmation of ["", "Post", `${m.apiKey}x`]) {
       expect(await errorOf(applyDestructiveStage(owner, { ledgerId: awaitingConfirmationId!, confirmation, confirmedBy: m.adminUserId })))
@@ -153,7 +158,8 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     expect(await perms()).toEqual(["alpha", "beta"]);
     await backend.query(`alter table content.${table} drop column gamma`);
     const { awaitingConfirmationId } = await applyExpandStage(owner, { plan, requestedBy: null, limits: TEST_LIMITS });
-    expect(await perms()).toEqual([]);
+    // The fields wait for their deletion with their permission rows (they go with the destructive stage).
+    expect(await perms()).toEqual(["alpha", "beta"]);
     // Sabotage behind the engine's back: the second drop will fail after the first drop and its clean-up ran.
     await backend.query(`alter table content.${table} drop column beta`);
 
@@ -162,6 +168,8 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     expect((error as SchemaEngineError).code).toBe("apply_failed");
     expect((error as Error).message).toMatch(/nothing was changed\. Reference: [0-9a-f-]{36}$/);
     expect(Object.keys((await physicalShape(backend.query, table))!)).toContain("alpha");
+    // The first drop's permission clean-up rolled back with it.
+    expect(await perms()).toEqual(["alpha", "beta"]);
     expect(await backend.query("select 1 from schema_name_reservations where content_model_id = $1", [m.modelId])).toEqual([]);
     expect((await backend.query("select status, error_ref from schema_migration_ledger where id = $1", [awaitingConfirmationId]))[0])
       .toMatchObject({ status: "awaiting_confirmation", error_ref: expect.stringMatching(/^[0-9a-f-]{36}$/) });

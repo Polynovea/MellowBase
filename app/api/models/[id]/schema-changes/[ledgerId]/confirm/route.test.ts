@@ -7,6 +7,7 @@ vi.mock("@/lib/schema/modelService", () => ({
   getVersion: vi.fn(async () => ({ schema_json: { name: "Card", apiKey: "card", fields: [] } })),
 }));
 const stage = { value: { id: "11111111-1111-4111-8111-111111111111", stage: "destructive", status: "awaiting_confirmation" } as Record<string, string> | undefined };
+const TRX = { trx: true };
 vi.mock("@/lib/db/index", () => ({
   getDb: () => {
     const chain: Record<string, unknown> = {};
@@ -14,12 +15,15 @@ vi.mock("@/lib/db/index", () => ({
     chain.executeTakeFirst = async () => stage.value;
     return chain;
   },
+  // The confirmation and its audit event share one transaction (faked: the callback gets a marker).
+  withTransaction: async (fn: (trx: unknown) => unknown) => fn(TRX),
 }));
 const confirm = vi.fn();
 vi.mock("@/lib/schema/runner/request", () => ({ confirmPlanStage: (...args: unknown[]) => confirm(...args) }));
 const audit = vi.fn();
-vi.mock("@/lib/platform/audit", () => ({ logPlatformEvent: (...args: unknown[]) => audit(...args) }));
-vi.mock("@/lib/schema/schemaChanges", () => ({ modelSchemaChanges: vi.fn(async () => []) }));
+vi.mock("@/lib/platform/audit.postgres", () => ({ recordPlatformEvent: (...args: unknown[]) => audit(...args) }));
+const changes = vi.fn();
+vi.mock("@/lib/schema/schemaChanges", () => ({ modelSchemaChanges: (...args: unknown[]) => changes(...args) }));
 
 import { POST } from "./route";
 
@@ -31,6 +35,7 @@ describe("confirming a model's waiting deletion", () => {
     access.mockReset().mockResolvedValue({ data: { actor: { workspaceId: "ws", adminUserId: "admin-1" } } });
     confirm.mockReset().mockResolvedValue(undefined);
     audit.mockReset();
+    changes.mockReset().mockResolvedValue([]);
     stage.value = { id: LEDGER, stage: "destructive", status: "awaiting_confirmation" };
   });
 
@@ -44,8 +49,26 @@ describe("confirming a model's waiting deletion", () => {
   it("confirms with the typed api key and audits it", async () => {
     const response = await call({ typedApiKey: " card " });
     expect(response.status).toBe(200);
-    expect(confirm).toHaveBeenCalledWith(expect.anything(), { ledgerId: LEDGER, confirmedBy: "admin-1", typedApiKey: "card" });
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: "schema.migration.confirmed", entityId: "m1", metadata: { ledgerId: LEDGER, stage: "destructive" } }));
+    expect(confirm).toHaveBeenCalledWith(TRX, { ledgerId: LEDGER, confirmedBy: "admin-1", typedApiKey: "card" });
+    expect(audit).toHaveBeenCalledWith(TRX, expect.objectContaining({ action: "schema.migration.confirmed", entityId: "m1", metadata: { ledgerId: LEDGER, stage: "destructive" } }));
+    expect(changes).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: "m1" }), expect.anything(), { countValues: true });
+  });
+
+  it("a confirmed deletion stays confirmed when reading the changes back fails", async () => {
+    changes.mockRejectedValueOnce(Object.assign(new Error("column does not exist"), { code: "42703" }));
+    const response = await call({ typedApiKey: "card" });
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toEqual({ confirmed: true, schemaChanges: null });
+  });
+
+  it("an admin who is not an active member is told so, not that the key was wrong", async () => {
+    confirm.mockRejectedValueOnce(Object.assign(new Error("schema_confirmation_unknown_user"), { code: "22023" }));
+    const response = await call({ typedApiKey: "card" });
+    expect(response.status).toBe(403);
+    const { error } = await response.json();
+    expect(error).toMatch(/can't confirm changes in this workspace/);
+    expect(error).not.toMatch(/API key/);
+    expect(audit).not.toHaveBeenCalled();
   });
 
   it("a wrong key deletes nothing and is not audited as confirmed", async () => {
