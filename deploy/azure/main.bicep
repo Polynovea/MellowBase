@@ -73,6 +73,14 @@ param location string = resourceGroup().location
 @description('First day of the budget period. Leave as it is.')
 param budgetStartDate string = utcNow('yyyy-MM-01')
 
+// Key Vault keeps a deleted vault's name for 90 days (purge protection), so a name fixed by the
+// resource group would block a fresh install into the same group. The vault name also takes this
+// install ID, generated on the first deployment. To UPDATE an install, pass the installId output of
+// the first deployment back in (the button's "Install Id" field, or --parameters installId=...):
+// a new ID means a new vault, which an existing VM can't use.
+@description('Leave as it is for a new install. To update an existing install, enter the installId output of its first deployment.')
+param installId string = newGuid()
+
 // The database admin password: generated fresh by Azure Resource Manager at deployment time. A
 // @secure() parameter is never shown in the portal or kept in the deployment history. newGuid() is
 // 122 random bits; the "P" prefix plus the GUID's hyphens and its fixed version digit "4" always meet
@@ -321,7 +329,7 @@ resource databaseLock 'Microsoft.Authorization/locks@2020-05-01' = if (managed) 
 }
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = if (managed) {
-  name: 'pnv-${suffix}'
+  name: 'pnv-${uniqueString(resourceGroup().id, installId)}'
   location: location
   properties: {
     tenantId: subscription().tenantId
@@ -637,3 +645,6 @@ output databaseHost string = managed ? database.properties.fullyQualifiedDomainN
 output storageAccountName string = storage.name
 
 output containerName string = containerName
+
+@description('Keep this. Pass it back as installId whenever you update or redeploy this install.')
+output installId string = installId

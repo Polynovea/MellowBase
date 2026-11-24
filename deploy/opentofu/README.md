@@ -36,4 +36,4 @@ The database, the bucket or storage account and the data disk have `prevent_dest
 
 - **AWS:** OpenTofu generates the database password (`random_password`, 40 letters and digits) and writes the full secret, host included, itself. CloudFormation uses Secrets Manager's generator and a secret attachment instead. Both secrets have the same shape.
 - **Azure:** OpenTofu generates the password with `random_password` (upper case, lower case and digits), not `newGuid()`.
-- **Names:** OpenTofu has no `uniqueString()`, so names end in 10 characters of a hash of the resource group's ID. The Key Vault is `pnv-<10 characters>`.
+- **Names:** OpenTofu has no `uniqueString()`, so names end in 10 characters of a hash of the resource group's ID. The Key Vault is `pnv-<10 random characters>`, made once per install and kept in state, so a fresh install into the same resource group never collides with a vault Azure is still holding (deleted vaults keep their name for 90 days). Bicep does the same with its `installId` parameter.

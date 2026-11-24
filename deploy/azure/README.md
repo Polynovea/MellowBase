@@ -69,6 +69,10 @@ az deployment group create  --resource-group polynovea --template-file deploy/az
 
 Edit `main.bicepparam` first: replace the example email and SSH key.
 
+### Updating an install: keep the install ID
+
+The Key Vault's name includes an **install ID** made on the first deployment. It's shown as the `installId` output. Azure keeps a deleted vault's name for 90 days, so without the ID a fresh install into the same resource group would collide with it. To **update** an existing install (a new release or a changed setting), pass the same ID back: in the portal, paste it into **Install Id**; on the command line, add `--parameters installId=<value>`. A new ID creates a new vault, which the existing VM can't use.
+
 ## After deployment
 
 The deployment's **Outputs** tab lists:
@@ -95,6 +99,7 @@ Then open the setup wizard:
 
 - [ ] Deployment succeeds from the button alone, in a fresh resource group.
 - [ ] `databaseSecretRef` has the form `https://pnv-<13 characters>.vault.azure.net/secrets/polynovea-database-admin`.
+- [ ] The `installId` output is recorded. An update with the same `installId` keeps the same vault, and a fresh install into the same resource group (new `installId`) doesn't collide with a deleted vault.
 - [ ] On the VM, `/etc/polynovea/polynovea.env` contains no password, `/var/lib/polynovea` is mounted from the data disk (`findmnt /var/lib/polynovea`), and `systemctl status polynovea polynovea-bootstrap` shows the first boot finished.
 - [ ] Without a domain, ports 80 and 443 are closed. With one, `https://<domain>/setup` has a valid certificate.
 - [ ] The wizard's **Created for you** step passes. A deliberate failure (remove the VM's role assignment on the secret) shows the plain "couldn't read the database secret" message.
