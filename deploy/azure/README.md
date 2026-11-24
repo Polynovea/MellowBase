@@ -14,7 +14,7 @@
 | Private DNS zone *(managed only)* | For the database's private address | 0.50 |
 | Key Vault *(managed only)* | RBAC, purge protection, firewall admits only the VM's subnet; one secret | under 0.10 |
 | Storage account + one container | Locally redundant, Entra ID only (no shared keys), no public access, TLS 1.2, 14-day soft delete, delete lock | under 0.50 for a few GB |
-| Budget alert | Emails you at 80% of the monthly budget, and when spending is forecast to pass 100% | free |
+| Budget alert | Emails you at 80% of the monthly budget, and when spending is forecast to pass 100%. Belongs to the install's resource group, so it counts that group's costs only | free |
 | **Total** | | **about 56 managed, about 39 on-this-server** |
 
 Prices are estimates from Azure's pay-as-you-go list prices, before tax, with light traffic. Other regions and heavy traffic cost more; your Azure bill is what counts. They are printed in the template's description too.
@@ -57,7 +57,12 @@ In the portal:
 5. **Admin Cidr**: your IP address with `/32`. Leave it blank only if you set a domain and never need SSH.
 6. **Domain** and **Acme Email**: optional, see "Before you start". Set a domain, an Admin Cidr, or both; with neither, nobody can reach the setup wizard.
 7. **Container Image** and **Caddy Image**: the release's link fills these in (pinned by digest). Leave **Database Admin Password**, **Budget Start Date** and **Custom Image Id** as they are.
-8. **Review + create**, then **Create**. It takes about 10 to 15 minutes (the database takes longest).
+8. **Name Prefix** and **Project Tag**: leave them as they are, unless the subscription is shared (see below).
+9. **Review + create**, then **Create**. It takes about 10 to 15 minutes (the database takes longest).
+
+### In a subscription shared with other work
+
+Give the install a resource group of its own (step 1). The budget belongs to that resource group, so it counts this install's costs only, with nothing to switch on first. Every resource that takes tags also gets `Project=<projectTag>` (default `MellowBase`), so Cost Management can show the install's costs by tag too. The defaults (`namePrefix` = `polynovea`) suit a subscription of its own and give the same names as earlier versions. To start the names with something else, set **Name Prefix** (3 to 11 lowercase letters and digits, for example `mellowbase`) on the first deployment, and pass the same value on every update: a new prefix creates new resources.
 
 ## Deploy from the command line
 

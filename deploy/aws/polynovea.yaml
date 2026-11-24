@@ -18,6 +18,8 @@ Metadata:
         Parameters: [Domain, AcmeEmail, AdminCidr, KeyPairName]
       - Label: { default: "Server" }
         Parameters: [InstanceType, Architecture, DataVolumeGb]
+      - Label: { default: "Names and cost tracking (the defaults suit an AWS account of its own)" }
+        Parameters: [NamePrefix, ProjectTag]
       - Label: { default: "Release package (filled in by the release's link; leave as they are)" }
         Parameters: [ContainerImage, CaddyImage]
     ParameterLabels:
@@ -34,6 +36,8 @@ Metadata:
       AcmeEmail: { default: "Email for HTTPS certificate notices (optional)" }
       AdminCidr: { default: "Your IP address for SSH (optional, for example 203.0.113.7/32)" }
       KeyPairName: { default: "EC2 key pair for SSH (optional)" }
+      NamePrefix: { default: "Name prefix (set once, when the stack is created)" }
+      ProjectTag: { default: "Project tag (what the budget counts)" }
       ContainerImage: { default: "Polynovea CMS image, pinned by digest" }
       CaddyImage: { default: "HTTPS proxy (Caddy) image, pinned by digest" }
 
@@ -115,6 +119,34 @@ Parameters:
     Type: String
     Default: ""
     Description: An existing EC2 key pair in this region, needed only for SSH. Leave blank for none.
+  # The names below start with NamePrefix: the database (<prefix>-<stack ID>) and its log group, the
+  # database secret (<prefix>/<stack name>/database-admin) and the budget (<prefix>-<stack name>). The
+  # default keeps the names every earlier version of this template gave. Everything else is named
+  # after the stack by CloudFormation itself (the bucket, the role, the security groups), so the stack
+  # name already tells installs apart.
+  NamePrefix:
+    Type: String
+    Default: polynovea
+    MinLength: 3
+    MaxLength: 26
+    # The strictest of its uses: an RDS identifier (a letter first; letters, digits and single hyphens;
+    # no hyphen at the end; 63 characters with the 37 of "-<stack ID>").
+    AllowedPattern: "^[a-z](-?[a-z0-9])*$"
+    ConstraintDescription: 3 to 26 lowercase letters, digits and single hyphens, starting with a letter and not ending with a hyphen.
+    Description: >-
+      Leave as it is in an AWS account of its own. In a shared account, set it when the stack is created
+      (for example mellowbase) and never change it afterwards: it is part of the database's name, and a
+      new name would make CloudFormation replace the database, which deletion protection blocks, so the
+      update fails.
+  ProjectTag:
+    Type: String
+    Default: MellowBase
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9_.:/=+@-]{0,62}$"
+    ConstraintDescription: "1 to 63 letters, digits and _ . : / = + @ -, starting with a letter or digit."
+    Description: >-
+      Every resource gets the tag Project=<this value>, and the budget counts only costs with that tag.
+      Activate Project as a cost allocation tag in AWS Billing first (see the README); until then the
+      budget counts nothing.
   # Images come only from the release (deploy/release-images.json, baked in by
   # deploy/scripts/release-templates.mjs). The patterns stop a quick-create link from swapping in
   # anyone else's image: the CMS only from ghcr.io/polynovea/, the proxy only Caddy's official image,
@@ -215,12 +247,12 @@ Resources:
       CidrBlock: 10.20.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-vpc" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-vpc" }, { Key: Project, Value: !Ref ProjectTag }]
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-igw" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-igw" }, { Key: Project, Value: !Ref ProjectTag }]
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -235,13 +267,13 @@ Resources:
       CidrBlock: 10.20.0.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
       MapPublicIpOnLaunch: false
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-server" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-server" }, { Key: Project, Value: !Ref ProjectTag }]
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref Vpc
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-public" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-public" }, { Key: Project, Value: !Ref ProjectTag }]
 
   PublicDefaultRoute:
     Type: AWS::EC2::Route
@@ -263,7 +295,7 @@ Resources:
     Condition: ManagedDb
     Properties:
       VpcId: !Ref Vpc
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }, { Key: Project, Value: !Ref ProjectTag }]
 
   DatabaseSubnetA:
     Type: AWS::EC2::Subnet
@@ -273,7 +305,7 @@ Resources:
       CidrBlock: 10.20.10.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
       MapPublicIpOnLaunch: false
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database-a" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database-a" }, { Key: Project, Value: !Ref ProjectTag }]
 
   DatabaseSubnetB:
     Type: AWS::EC2::Subnet
@@ -283,7 +315,7 @@ Resources:
       CidrBlock: 10.20.11.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
       MapPublicIpOnLaunch: false
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database-b" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database-b" }, { Key: Project, Value: !Ref ProjectTag }]
 
   DatabaseSubnetARoutes:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -322,7 +354,7 @@ Resources:
       SecurityGroupEgress:
         - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS: AWS APIs, image registry, updates" }
         - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: "Ubuntu package mirrors" }
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-server" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-server" }, { Key: Project, Value: !Ref ProjectTag }]
 
   ServerToDatabaseEgress:
     Type: AWS::EC2::SecurityGroupEgress
@@ -346,7 +378,7 @@ Resources:
       # A rule to an unused loopback address replaces AWS's default allow-all egress: the database starts no connections.
       SecurityGroupEgress:
         - { IpProtocol: "-1", CidrIp: 127.0.0.1/32, Description: "No outbound traffic" }
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }, { Key: Project, Value: !Ref ProjectTag }]
 
   # ---------------------------------------------------------------- database ("Created for you")
   # Not the RDS-managed master password: that secret holds only username and password, and RDS
@@ -361,8 +393,9 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      Name: !Sub "polynovea/${AWS::StackName}/database-admin"
+      Name: !Sub "${NamePrefix}/${AWS::StackName}/database-admin"
       Description: Polynovea database admin login. Read once by the setup wizard through the server's role.
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
       GenerateSecretString:
         SecretStringTemplate: '{"username":"polynovea_admin","dbname":"polynovea","port":5432}'
         GenerateStringKey: password
@@ -378,18 +411,22 @@ Resources:
     Properties:
       DBSubnetGroupDescription: Polynovea database subnets (no internet route)
       SubnetIds: [!Ref DatabaseSubnetA, !Ref DatabaseSubnetB]
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
 
   # The database's own log (errors, slow autovacuum, checkpoints) goes to CloudWatch, kept 14 days, so
   # it survives the instance and support can read it. Made here, before RDS would make it with no
-  # expiry, so the database has a fixed lowercase name: polynovea-<this stack's ID>.
-  # That name is fixed when the stack is created and must never change in a later template version:
-  # a new name makes CloudFormation replace the database, which deletion protection then blocks.
+  # expiry, so the database has a fixed lowercase name: <NamePrefix>-<this stack's ID>, by default
+  # polynovea-<this stack's ID> as in every earlier version of this template.
+  # That name is fixed when the stack is created and must never change in a later template version or
+  # stack update: a new name makes CloudFormation replace the database, which deletion protection then
+  # blocks.
   DatabaseLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: ManagedDb
     Properties:
-      LogGroupName: !Join ["", ["/aws/rds/instance/polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]], "/postgresql"]]
+      LogGroupName: !Join ["", ["/aws/rds/instance/", !Ref NamePrefix, "-", !Select [2, !Split ["/", !Ref "AWS::StackId"]], "/postgresql"]]
       RetentionInDays: 14
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
 
   Database:
     Type: AWS::RDS::DBInstance
@@ -398,7 +435,7 @@ Resources:
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
-      DBInstanceIdentifier: !Join ["", ["polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]
+      DBInstanceIdentifier: !Join ["", [!Ref NamePrefix, "-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]
       Engine: postgres
       EngineVersion: !Ref PostgresVersion
       AutoMinorVersionUpgrade: true
@@ -419,7 +456,7 @@ Resources:
       DeletionProtection: true
       CopyTagsToSnapshot: true
       EnableCloudwatchLogsExports: [postgresql]
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }, { Key: Project, Value: !Ref ProjectTag }]
 
   DatabaseSecretAttachment:
     Type: AWS::SecretsManager::SecretTargetAttachment
@@ -452,7 +489,7 @@ Resources:
             Status: Enabled
             NoncurrentVersionExpiration: { NoncurrentDays: 14 }
             AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-bucket" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-bucket" }, { Key: Project, Value: !Ref ProjectTag }]
 
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -503,6 +540,7 @@ Resources:
                   Action: secretsmanager:GetSecretValue
                   Resource: !Ref DatabaseSecret
           - !Ref AWS::NoValue
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
 
   ServerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -521,12 +559,19 @@ Resources:
       Size: !Ref DataVolumeGb
       VolumeType: gp3
       Encrypted: true
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-data" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-data" }, { Key: Project, Value: !Ref ProjectTag }]
 
   ServerLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags: [{ Key: Project, Value: !Ref ProjectTag }]
       LaunchTemplateData:
+        # EC2 makes the root disk at launch, outside the stack, so the disk takes its tags from here.
+        TagSpecifications:
+          - ResourceType: volume
+            Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-root" }, { Key: Project, Value: !Ref ProjectTag }]
         # IMDSv2 tokens are always required. Hop limit 2, not 1: the release package's bridged
         # container profile runs pgBackRest inside a container, one network hop from the instance,
         # and it needs the instance role from IMDS to reach the bucket.
@@ -562,7 +607,7 @@ Resources:
           SubnetId: !Ref ServerSubnet
           GroupSet: [!Ref ServerSecurityGroup]
           AssociatePublicIpAddress: false
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-server" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-server" }, { Key: Project, Value: !Ref ProjectTag }]
       # User data is readable through the metadata service and copied to disk by cloud-init, so it
       # holds no secrets: only the secret's ARN, the bucket's name, the region, the domain and the
       # image digests. The release package's own files do the rest (see the generated block).
@@ -766,22 +811,28 @@ Resources:
     Properties:
       Domain: vpc
       InstanceId: !Ref Server
-      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-address" }]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-address" }, { Key: Project, Value: !Ref ProjectTag }]
 
   # ---------------------------------------------------------------- budget alert
+  # Counts only costs tagged Project=<ProjectTag>, so in an AWS account shared with other work it
+  # alerts on this install alone. Project must be activated as a cost allocation tag in AWS Billing;
+  # until it is (and for up to 24 hours after), the budget sees no costs.
   Budget:
     Type: AWS::Budgets::Budget
     Properties:
       Budget:
-        BudgetName: !Sub "polynovea-${AWS::StackName}"
+        BudgetName: !Sub "${NamePrefix}-${AWS::StackName}"
         BudgetType: COST
         TimeUnit: MONTHLY
         BudgetLimit: { Amount: !Ref BudgetMonthlyUsd, Unit: USD }
+        CostFilters:
+          TagKeyValue: [!Join ["", ["user:Project$", !Ref ProjectTag]]]
       NotificationsWithSubscribers:
         - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
           Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
         - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
           Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
+      ResourceTags: [{ Key: Project, Value: !Ref ProjectTag }]
 
 Outputs:
   SetupAddress:

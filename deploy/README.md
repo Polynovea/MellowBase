@@ -19,6 +19,13 @@ Every path has the same two options:
 
 These are estimates from on-demand list prices (AWS us-east-1, Azure East US, November 2026), before tax, with light traffic. Your cloud bill is what counts, and the budget alert tells you early if it runs high. Some costs outlive the server, so they're not in the monthly figures: the database's and data disk's **final snapshots** when you delete the install, the **retained bucket or storage account** and its backups, and the **database secret** (US$0.40 a month on AWS) until you delete them. On AWS the managed database's own log goes to CloudWatch and is kept 14 days, usually a few cents a month. Database storage also **grows automatically** (AWS up to 200 GB, Azure in steps), and each step costs more.
 
+## Installing into an account shared with other work
+
+The defaults suit an AWS account or Azure subscription that holds only this install. In an account that already runs other things:
+
+- **The budget must count this install only.** Every resource is tagged `Project=MellowBase` (`ProjectTag` / `projectTag` / `project_tag`). On AWS the budget counts only costs with that tag, which works only after you activate `Project` as a cost allocation tag in AWS Billing (see [aws/README.md](aws/README.md#in-an-aws-account-shared-with-other-work)); until then the budget sees nothing. On Azure the budget already belongs to the install's own resource group, so it counts that group only.
+- **Give the names your own prefix if you like**, for example `mellowbase` (`NamePrefix` on AWS CloudFormation, `namePrefix` on Azure, `name` in the OpenTofu modules). Set it on the first install and never change it: the database's name includes it, and a new name would mean a new database.
+
 ## Reaching the setup wizard
 
 The CMS listens on the server itself only (127.0.0.1:3000). There are two ways in, and every template asks you to pick at least one:

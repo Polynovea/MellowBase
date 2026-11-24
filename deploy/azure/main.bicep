@@ -57,6 +57,19 @@ param databaseSku string = 'Standard_B1ms'
 @allowed([32, 64, 128, 256])
 param databaseStorageGb int = 32
 
+// Names normally start with 'polynovea'. The default keeps the names every earlier version of this
+// template gave; the storage account takes the prefix too, so it is letters and digits only, and at
+// most 11 characters (24 with the 13-character suffix).
+@description('Start of the resource names. Leave as it is unless you want other names (for example mellowbase); set it on the first deployment and keep it for updates, because a new prefix creates new resources. 3 to 11 lowercase letters and digits, starting with a letter.')
+@minLength(3)
+@maxLength(11)
+param namePrefix string = 'polynovea'
+
+@description('Every resource that takes tags gets Project=<this value>, so this install\'s costs can be found in Cost Management. The budget already counts only this resource group.')
+@minLength(1)
+@maxLength(64)
+param projectTag string = 'MellowBase'
+
 // Images come only from the release (deploy/release-images.json). The checks below refuse anything else, so a
 // "Deploy to Azure" link can't swap in someone else's image: the CMS only from ghcr.io/polynovea/,
 // the proxy only Caddy's official image, both pinned by digest. The server checks the CMS image's
@@ -99,7 +112,8 @@ var hasDomain = !empty(domain)
 // The release's published Polynovea gallery image for this processor; blank = Ubuntu 24.04 LTS.
 var galleryImage = loadJsonContent('../release-images.json').azure.galleryImages[architecture]
 var suffix = uniqueString(resourceGroup().id) // 13 characters, for names only (never for secrets)
-var prefix = 'polynovea'
+var prefix = namePrefix
+var tags = { Project: projectTag }
 var vnetCidr = '10.30.0.0/16'
 var vmSubnetCidr = '10.30.0.0/24'
 var dbSubnetCidr = '10.30.1.0/24'
@@ -149,7 +163,11 @@ var domainOk = length(domain) <= 253 && contains(domain, '.') && empty(filter(ra
 var acmeEmailOk = length(split(acmeEmail, '@')) == 2 && !empty(first(split(acmeEmail, '@'))) && contains(last(split(acmeEmail, '@')), '.') && !contains(acmeEmail, ' ') && !contains(acmeEmail, '\n') && !contains(acmeEmail, '\r') && !contains(acmeEmail, '\t')
 var budgetEmailOk = length(split(budgetEmail, '@')) == 2 && !empty(first(split(budgetEmail, '@'))) && contains(last(split(budgetEmail, '@')), '.') && !contains(budgetEmail, ' ') && !contains(budgetEmail, '\n') && !contains(budgetEmail, '\r') && !contains(budgetEmail, '\t')
 
+// The name prefix (length is checked by its decorators): a letter, then letters and digits.
+var namePrefixOk = contains('abcdefghijklmnopqrstuvwxyz', substring(namePrefix, 0, 1)) && empty(filter(range(0, length(namePrefix)), i => !contains('abcdefghijklmnopqrstuvwxyz0123456789', substring(namePrefix, i, 1))))
+
 var inputRules = {
+  namePrefixMustBeLowercaseLettersAndDigitsStartingWithALetter: namePrefixOk
   containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || containerImageOk
   caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || caddyImageOk
   adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32: empty(adminCidr) || adminCidrOk
@@ -161,6 +179,7 @@ var inputRules = {
 
 resource inputChecks 'Microsoft.Resources/deployments@2022-09-01' = {
   name: 'polynovea-input-checks'
+  tags: tags
   properties: {
     mode: 'Incremental'
     expressionEvaluationOptions: { scope: 'inner' }
@@ -170,6 +189,7 @@ resource inputChecks 'Microsoft.Resources/deployments@2022-09-01' = {
       '$schema': 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'
       contentVersion: '1.0.0.0'
       parameters: {
+        namePrefixMustBeLowercaseLettersAndDigitsStartingWithALetter: { type: 'bool', allowedValues: [true] }
         containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: { type: 'bool', allowedValues: [true] }
         caddyImageMustBeCaddysOfficialImagePinnedByDigest: { type: 'bool', allowedValues: [true] }
         adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32: { type: 'bool', allowedValues: [true] }
@@ -197,6 +217,7 @@ resource vmNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
   dependsOn: [inputChecks]
   name: '${prefix}-vm-nsg'
   location: location
+  tags: tags
   properties: {
     // Without a domain nothing answers on 80/443 (the CMS listens on 127.0.0.1 only), so they stay closed.
     securityRules: concat(
@@ -264,6 +285,7 @@ resource dbNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = if (manage
   dependsOn: [inputChecks]
   name: '${prefix}-db-nsg'
   location: location
+  tags: tags
   properties: {
     securityRules: [
       {
@@ -281,6 +303,7 @@ resource dbNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = if (manage
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: '${prefix}-vnet'
   location: location
+  tags: tags
   properties: {
     addressSpace: { addressPrefixes: [vnetCidr] }
     subnets: concat(
@@ -327,12 +350,14 @@ resource databaseDns 'Microsoft.Network/privateDnsZones@2024-06-01' = if (manage
   dependsOn: [inputChecks]
   name: '${prefix}-${suffix}.private.postgres.database.azure.com'
   location: 'global'
+  tags: tags
 }
 
 resource databaseDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = if (managed) {
   parent: databaseDns
   name: 'polynovea-vnet'
   location: 'global'
+  tags: tags
   properties: {
     virtualNetwork: { id: vnet.id }
     registrationEnabled: false
@@ -342,6 +367,7 @@ resource databaseDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@
 resource database 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = if (managed) {
   name: '${prefix}-db-${suffix}'
   location: location
+  tags: tags
   sku: { name: databaseSku, tier: 'Burstable' }
   properties: {
     version: '16'
@@ -386,6 +412,7 @@ resource databaseLock 'Microsoft.Authorization/locks@2020-05-01' = if (managed) 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = if (managed) {
   name: 'pnv-${uniqueString(resourceGroup().id, installId)}'
   location: location
+  tags: tags
   properties: {
     tenantId: subscription().tenantId
     sku: { family: 'A', name: 'standard' }
@@ -406,6 +433,7 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = if (managed) {
 resource databaseSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (managed) {
   parent: vault
   name: secretName
+  tags: tags
   properties: {
     contentType: 'application/json'
     attributes: { enabled: true }
@@ -425,8 +453,9 @@ resource databaseSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (man
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   dependsOn: [inputChecks]
-  name: 'polynovea${suffix}'
+  name: '${prefix}${suffix}'
   location: location
+  tags: tags
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
   properties: {
@@ -482,6 +511,7 @@ resource publicIp 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
   dependsOn: [inputChecks]
   name: '${prefix}-ip'
   location: location
+  tags: tags
   sku: { name: 'Standard', tier: 'Regional' }
   properties: {
     publicIPAllocationMethod: 'Static'
@@ -493,6 +523,7 @@ resource publicIp 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
 resource nic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
   name: '${prefix}-nic'
   location: location
+  tags: tags
   properties: {
     ipConfigurations: [
       {
@@ -512,6 +543,7 @@ resource dataDisk 'Microsoft.Compute/disks@2024-03-02' = {
   dependsOn: [inputChecks]
   name: '${prefix}-data'
   location: location
+  tags: tags
   sku: { name: 'StandardSSD_LRS' }
   properties: {
     creationData: { createOption: 'Empty' }
@@ -576,6 +608,7 @@ var cloudInit = join(
 resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   name: '${prefix}-vm'
   location: location
+  tags: tags
   identity: { type: 'SystemAssigned' }
   properties: {
     hardwareProfile: { vmSize: vmSize }
@@ -653,6 +686,8 @@ resource containerWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 }
 
 // ---------------------------------------------------------------- budget alert
+// Deployed by this resource-group template with no scope of its own, the budget is the resource
+// group's: it counts this install's costs only, even in a subscription shared with other work.
 
 resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
   dependsOn: [inputChecks]

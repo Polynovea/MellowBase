@@ -8,7 +8,7 @@ variable "location" {
 }
 
 variable "name" {
-  description = "Name prefix for resources."
+  description = "Name prefix for resources. The default keeps the names earlier versions gave; set your own (for example \"mellowbase\") on the first apply and keep it: a new prefix means new resources."
   type        = string
   default     = "polynovea"
 
@@ -157,7 +157,19 @@ variable "acme_email" {
   }
 }
 
+variable "project_tag" {
+  description = "Every resource that takes tags gets Project=<this value>, so this install's costs can be found in Cost Management. The budget already counts only this resource group."
+  type        = string
+  default     = "MellowBase"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_.:=+@-]{0,62}$", var.project_tag))
+    error_message = "project_tag must be 1 to 63 letters, digits and _ . : = + @ -, starting with a letter or digit."
+  }
+}
+
 variable "tags" {
-  type    = map(string)
-  default = {}
+  description = "Extra tags for every resource. They can't replace Project (see project_tag)."
+  type        = map(string)
+  default     = {}
 }

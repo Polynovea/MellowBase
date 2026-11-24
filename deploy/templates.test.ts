@@ -33,6 +33,31 @@ function cfnResource(name: string): string {
   return next < 0 ? rest : rest.slice(0, next + 1);
 }
 
+/** The NamePrefix parameter's default. */
+function cfnNamePrefixDefault(): string {
+  return /\n {2}NamePrefix:\n {4}Type: String\n {4}Default: (\S+)\n/.exec(cfn)![1];
+}
+
+/** The NamePrefix parameter's AllowedPattern (it has no backslashes, so it reads the same in YAML and JS). */
+function cfnNamePrefixPattern(): RegExp {
+  const yaml = /AllowedPattern: "(.+)"/.exec(cfnResource("NamePrefix"))![1];
+  expect(yaml).not.toContain("\\");
+  return new RegExp(yaml); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- test helper: the AllowedPattern from our own CloudFormation file
+}
+
+/**
+ * The name a CloudFormation name expression resolves to with this NamePrefix, the stack's name and ID
+ * left as <stack> and <stack-id>. Knows the two forms the template uses: !Join of strings and !Sub.
+ */
+function cfnName(expr: string, prefix: string): string {
+  const flat = expr.replace('!Select [2, !Split ["/", !Ref "AWS::StackId"]]', '"<stack-id>"').replace("!Ref NamePrefix", JSON.stringify(prefix));
+  const join = /^!Join \["", (\[.*\])\]$/.exec(flat);
+  if (join) return (JSON.parse(join[1]) as string[]).join("");
+  const sub = /^!Sub "(.*)"$/.exec(flat);
+  if (sub) return sub[1].replaceAll("${NamePrefix}", prefix).replaceAll("${AWS::StackName}", "<stack>");
+  throw new Error(`not a name expression this test knows: ${expr}`);
+}
+
 const bootstrap = read("scripts/vm-bootstrap.sh");
 
 /** The CloudFormation user data's settings part (before the generated bootstrap). */
@@ -69,18 +94,22 @@ describe("AWS: the secret reference CloudFormation sets", () => {
     expect(cfnResource("ServerRole")).toContain("Resource: !Ref DatabaseSecret");
   });
 
-  it("produces ARNs the wizard accepts, for every partition and any valid stack name", () => {
-    const name = /Name: !Sub "(polynovea\/\$\{AWS::StackName\}\/database-admin)"/.exec(cfnResource("DatabaseSecret"))?.[1];
+  it("produces ARNs the wizard accepts, for every partition, any valid stack name and any NamePrefix", () => {
+    const name = /Name: !Sub "(\$\{NamePrefix\}\/\$\{AWS::StackName\}\/database-admin)"/.exec(cfnResource("DatabaseSecret"))?.[1];
     expect(name).toBeDefined();
     const stacks = ["polynovea", "P", "my-cms-2026", `a${"b-1".repeat(42)}`.slice(0, 128)];
+    const prefixes = [cfnNamePrefixDefault(), "mellowbase", `a${"b-1".repeat(9)}`.slice(0, 26)];
     const places = [["aws", "us-east-1"], ["aws", "eu-west-1"], ["aws", "ap-southeast-4"], ["aws", "il-central-1"], ["aws-us-gov", "us-gov-west-1"], ["aws-cn", "cn-northwest-1"]];
     for (const stack of stacks) {
       // CloudFormation stack names: a letter, then letters, digits and hyphens, at most 128.
       expect(stack).toMatch(/^[A-Za-z][A-Za-z0-9-]{0,127}$/);
-      for (const [partition, region] of places) {
-        // Secrets Manager appends a hyphen and six random characters to the name.
-        const arn = `arn:${partition}:secretsmanager:${region}:123456789012:secret:${name!.replace("${AWS::StackName}", stack)}-Ab3xYz`;
-        expect(parseSecretRef(arn), arn).toEqual({ kind: "aws", arn, region });
+      for (const prefix of prefixes) {
+        expect(prefix).toMatch(cfnNamePrefixPattern());
+        for (const [partition, region] of places) {
+          // Secrets Manager appends a hyphen and six random characters to the name.
+          const arn = `arn:${partition}:secretsmanager:${region}:123456789012:secret:${name!.replace("${NamePrefix}", prefix).replace("${AWS::StackName}", stack)}-Ab3xYz`;
+          expect(parseSecretRef(arn), arn).toEqual({ kind: "aws", arn, region });
+        }
       }
     }
   });
@@ -204,11 +233,15 @@ describe("policy: AWS CloudFormation", () => {
     const db = cfnResource("Database");
     expect(db).toContain("EnableCloudwatchLogsExports: [postgresql]");
     expect(db).toContain("DependsOn: DatabaseLogGroup");
-    expect(db).toContain('DBInstanceIdentifier: !Join ["", ["polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]');
+    expect(db).toContain('DBInstanceIdentifier: !Join ["", [!Ref NamePrefix, "-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]');
     const logs = cfnResource("DatabaseLogGroup");
     expect(logs).toContain("RetentionInDays: 14");
     // RDS's own log group name: /aws/rds/instance/<identifier>/postgresql.
-    expect(logs).toContain('LogGroupName: !Join ["", ["/aws/rds/instance/polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]], "/postgresql"]]');
+    expect(logs).toContain('LogGroupName: !Join ["", ["/aws/rds/instance/", !Ref NamePrefix, "-", !Select [2, !Split ["/", !Ref "AWS::StackId"]], "/postgresql"]]');
+    for (const prefix of [cfnNamePrefixDefault(), "mellowbase"]) {
+      const identifier = cfnName(/DBInstanceIdentifier: (.+)/.exec(db)![1], prefix);
+      expect(cfnName(/LogGroupName: (.+)/.exec(logs)![1], prefix)).toBe(`/aws/rds/instance/${identifier}/postgresql`);
+    }
   });
 
   it("encrypts every disk and the bucket, and keeps the bucket private and HTTPS-only", () => {
@@ -536,7 +569,7 @@ describe("review item 1: a link can't swap in someone else's images", () => {
     // Each rule in inputRules has a parameter in the nested check template that accepts only true.
     const ruleBlock = bicep.slice(bicep.indexOf("var inputRules = {"), bicep.indexOf("\n}\n", bicep.indexOf("var inputRules = {")));
     const ruleNames = [...ruleBlock.matchAll(/^  (\w+): /gm)].map((m) => m[1]);
-    expect(ruleNames.length).toBe(7);
+    expect(ruleNames.length).toBe(8);
     for (const rule of ruleNames) expect(bicep).toContain(`        ${rule}: { type: 'bool', allowedValues: [true] }`);
     expect(bicep).toContain("parameters: toObject(items(inputRules), rule => rule.key, rule => { value: rule.value })");
     // Every resource with no other dependency waits for the checks.
@@ -731,6 +764,131 @@ describe("review nits 9 and 10: operator clean-up and costs that outlive the ser
       expect(text, file).toMatch(/snapshot|kept/i);
       expect(text, file).toMatch(/grows automatically/);
     }
+  });
+});
+
+describe("shared accounts: the budget counts this install only, and the default names don't change", () => {
+  const project = "{ Key: Project, Value: !Ref ProjectTag }";
+
+  it("CloudFormation's budget counts only costs tagged Project=<ProjectTag>", () => {
+    const budget = cfnResource("Budget");
+    expect(budget).toMatch(/\n {8}CostFilters:\n {10}TagKeyValue: \[!Join \["", \["user:Project\$", !Ref ProjectTag\]\]\]\n/);
+    expect(cfn).toMatch(/\n {2}ProjectTag:\n {4}Type: String\n {4}Default: MellowBase\n/);
+    // The filter is "user:<key>$<value>": a value with a "$" in it would break it.
+    const pattern = new RegExp(/AllowedPattern: "(.+)"/.exec(cfnResource("ProjectTag"))![1]); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- test helper: the AllowedPattern from our own CloudFormation file
+    for (const ok of ["MellowBase", "polynovea-cms", "team/cms"]) expect(pattern.test(ok), ok).toBe(true);
+    for (const bad of ["", "Mellow$Base", "two words", "-x", "a".repeat(64)]) expect(pattern.test(bad), bad).toBe(false);
+  });
+
+  it("CloudFormation tags every resource that takes tags with Project=<ProjectTag>", () => {
+    const taggable = new Set([
+      "AWS::EC2::VPC", "AWS::EC2::InternetGateway", "AWS::EC2::Subnet", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup",
+      "AWS::SecretsManager::Secret", "AWS::RDS::DBSubnetGroup", "AWS::Logs::LogGroup", "AWS::RDS::DBInstance", "AWS::S3::Bucket",
+      "AWS::IAM::Role", "AWS::EC2::Volume", "AWS::EC2::LaunchTemplate", "AWS::EC2::Instance", "AWS::EC2::EIP", "AWS::Budgets::Budget",
+    ]);
+    // No Tags property in CloudFormation (and nothing billed of their own).
+    const untaggable = new Set([
+      "AWS::EC2::VPCGatewayAttachment", "AWS::EC2::Route", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::SecurityGroupEgress",
+      "AWS::SecretsManager::SecretTargetAttachment", "AWS::S3::BucketPolicy", "AWS::IAM::InstanceProfile", "AWS::EC2::VolumeAttachment",
+    ]);
+    const resources = [...cfn.slice(cfn.indexOf("\nResources:\n"), cfn.indexOf("\nOutputs:\n")).matchAll(/\n {2}(\w+):\n {4}Type: (\S+)\n/g)].map((m) => ({ name: m[1], type: m[2] }));
+    expect(resources.length).toBe(cfn.match(/^ {4}Type: AWS::/gm)!.length); // every resource was found
+    for (const { name, type } of resources) {
+      // A new resource type needs a decision: tag it, or say why it can't be tagged.
+      expect(taggable.has(type) || untaggable.has(type), `${name} (${type}): add it to one of the lists`).toBe(true);
+      if (taggable.has(type)) expect(cfnResource(name), name).toContain(project);
+    }
+    // EC2 makes the root disk at launch, so the launch template tags it; the template itself is tagged too.
+    const launch = cfnResource("ServerLaunchTemplate");
+    expect(launch).toMatch(/\n {6}TagSpecifications:\n {8}- ResourceType: launch-template\n {10}Tags: \[\{ Key: Project, Value: !Ref ProjectTag \}\]\n/);
+    expect(launch).toMatch(/\n {8}TagSpecifications:\n {10}- ResourceType: volume\n {12}Tags: \[[^\]]*\{ Key: Project, Value: !Ref ProjectTag \}\]\n/);
+    expect(cfnResource("Budget")).toContain(`ResourceTags: [${project}]`);
+  });
+
+  it("CloudFormation's NamePrefix default keeps today's names, and fits every name it's used in", () => {
+    expect(cfnNamePrefixDefault()).toBe("polynovea");
+    const names = {
+      database: /DBInstanceIdentifier: (.+)/.exec(cfnResource("Database"))![1],
+      logGroup: /LogGroupName: (.+)/.exec(cfnResource("DatabaseLogGroup"))![1],
+      secret: /\n {6}Name: (.+)/.exec(cfnResource("DatabaseSecret"))![1],
+      budget: /BudgetName: (.+)/.exec(cfnResource("Budget"))![1],
+    };
+    for (const expr of Object.values(names)) expect(expr).toContain("NamePrefix");
+    // The names every earlier version gave (a changed database name would replace the database).
+    expect(Object.fromEntries(Object.entries(names).map(([k, expr]) => [k, cfnName(expr, cfnNamePrefixDefault())]))).toEqual({
+      database: "polynovea-<stack-id>",
+      logGroup: "/aws/rds/instance/polynovea-<stack-id>/postgresql",
+      secret: "polynovea/<stack>/database-admin",
+      budget: "polynovea-<stack>",
+    });
+    expect(cfn).not.toMatch(/"polynovea[-/]/); // no name hard-codes the old prefix any more
+
+    // The pattern fits the strictest use, an RDS identifier: a letter first; letters, digits and single
+    // hyphens; no hyphen at the end; at most 63 characters with "-<stack ID>" (a 36-character UUID).
+    const block = cfnResource("NamePrefix");
+    expect(block).toContain("MinLength: 3");
+    expect(block).toContain("MaxLength: 26");
+    const pattern = cfnNamePrefixPattern();
+    const rds = /^[a-z](?!.*--)[a-z0-9-]{0,62}$(?<!-)/;
+    for (const ok of ["polynovea", "mellowbase", "my-cms-2", "a".repeat(26)]) {
+      expect(pattern.test(ok), ok).toBe(true);
+      const identifier = cfnName(names.database, ok).replace("<stack-id>", randomUUID());
+      expect(identifier, identifier).toMatch(rds);
+      expect(identifier.length).toBeLessThanOrEqual(63);
+    }
+    // Uppercase (RDS and S3 names are lowercase), a leading digit or hyphen, a trailing or double hyphen.
+    for (const bad of ["Polynovea", "1cms", "-cms", "cms-", "my--cms", "my_cms", "my.cms", "my/cms"]) expect(pattern.test(bad), bad).toBe(false);
+  });
+
+  it("Azure's budget belongs to the install's resource group, and every resource that takes tags is tagged", () => {
+    expect(bicep).toContain("targetScope = 'resourceGroup'");
+    const budget = bicep.slice(bicep.indexOf("resource budget '"), bicep.indexOf("\n}\n", bicep.indexOf("resource budget '")));
+    expect(budget).toContain("Microsoft.Consumption/budgets@");
+    expect(budget).not.toMatch(/\n {2}scope:/); // no scope of its own: the resource group's budget
+    expect(bicep).toContain("param projectTag string = 'MellowBase'");
+    expect(bicep).toContain("var tags = { Project: projectTag }");
+    const taggable = new Set([
+      "Microsoft.Resources/deployments", "Microsoft.Network/networkSecurityGroups", "Microsoft.Network/virtualNetworks", "Microsoft.Network/privateDnsZones",
+      "Microsoft.Network/privateDnsZones/virtualNetworkLinks", "Microsoft.DBforPostgreSQL/flexibleServers", "Microsoft.KeyVault/vaults", "Microsoft.KeyVault/vaults/secrets",
+      "Microsoft.Storage/storageAccounts", "Microsoft.Network/publicIPAddresses", "Microsoft.Network/networkInterfaces", "Microsoft.Compute/disks", "Microsoft.Compute/virtualMachines",
+    ]);
+    const untaggable = new Set([
+      "Microsoft.DBforPostgreSQL/flexibleServers/configurations", "Microsoft.DBforPostgreSQL/flexibleServers/databases", "Microsoft.Authorization/locks",
+      "Microsoft.Storage/storageAccounts/blobServices", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.Consumption/budgets",
+    ]);
+    const resources = [...bicep.matchAll(/^resource (\w+) '([^@']+)@[^']+' = /gm)].map((m) => ({ name: m[1], type: m[2] }));
+    expect(resources.length).toBe(bicep.match(/^resource /gm)!.length - bicep.match(/^resource .+ existing = /gm)!.length); // every resource was found
+    for (const { name, type } of resources) {
+      expect(taggable.has(type) || untaggable.has(type), `${name} (${type}): add it to one of the lists`).toBe(true);
+      const start = bicep.indexOf(`resource ${name} '`);
+      const body = bicep.slice(start, bicep.indexOf("\n}\n", start) + 1);
+      if (taggable.has(type)) expect(body, name).toContain("\n  tags: tags\n");
+    }
+  });
+
+  it("Azure's namePrefix default keeps today's names", () => {
+    expect(bicep).toMatch(/@minLength\(3\)\n@maxLength\(11\)\nparam namePrefix string = 'polynovea'\n/);
+    expect(bicep).toContain("var prefix = namePrefix");
+    expect(bicep).toContain("name: '${prefix}${suffix}'"); // the storage account: 11 + 13 characters at most
+    expect(bicep).not.toMatch(/name: 'polynovea\$\{suffix\}'|var prefix = 'polynovea'/);
+  });
+
+  it("OpenTofu: the AWS budget filters on the Project tag, the Azure budget is the resource group's, and Project can't be overridden", () => {
+    const budget = tfResource(tofuAws, "aws_budgets_budget", "monthly");
+    expect(budget).toMatch(/cost_filter \{\n\s+name\s+= "TagKeyValue"\n\s+values = \[format\("user:Project\$%s", var\.project_tag\)\]\n\s+\}/);
+    tfResource(tofuAzure, "azurerm_consumption_budget_resource_group", "monthly");
+    for (const [cloud, text] of [["aws", tofuAws], ["azure", tofuAzure]] as const) {
+      expect(text, cloud).toMatch(/tags\s+= merge\(\{ "polynovea:stack" = var\.name \}, var\.tags, \{ Project = var\.project_tag \}\)/);
+      expect(read(`opentofu/modules/${cloud}/variables.tf`), cloud).toMatch(/variable "project_tag" \{[\s\S]+?default\s+= "MellowBase"/);
+      // var.name is the name prefix; its default keeps today's names.
+      expect(read(`opentofu/modules/${cloud}/variables.tf`), cloud).toMatch(/variable "name" \{\n\s+description = "Name prefix[^\n]+\n\s+type\s+= string\n\s+default\s+= "polynovea"/);
+    }
+    expect(tfResource(tofuAws, "aws_instance", "server")).toMatch(/root_block_device \{[\s\S]+?tags\s+= merge\(local\.tags/);
+  });
+
+  it("the READMEs say to activate the Project cost allocation tag, and how to set the name prefix", () => {
+    expect(read("aws/README.md")).toMatch(/### In an AWS account shared with other work[\s\S]+Cost allocation tags[\s\S]+\*\*Project\*\*[\s\S]+24 hours[\s\S]+`NamePrefix`/);
+    expect(read("README.md")).toMatch(/## Installing into an account shared with other work[\s\S]+defaults suit/);
   });
 });
 

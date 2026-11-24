@@ -4,9 +4,10 @@
 # (see deploy/opentofu/examples/azure). The provider must set storage_use_azuread = true, because the
 # storage account accepts Microsoft Entra ID only (no shared keys).
 
+# Project is merged last, so var.tags can't change it.
 locals {
   managed        = var.database_mode == "managed"
-  tags           = merge({ "polynovea:stack" = var.name }, var.tags)
+  tags           = merge({ "polynovea:stack" = var.name }, var.tags, { Project = var.project_tag })
   suffix         = substr(sha1(data.azurerm_resource_group.main.id), 0, 10)
   vm_subnet_cidr = "10.30.0.0/24"
   db_subnet_cidr = "10.30.1.0/24"
@@ -285,6 +286,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "database" {
   private_dns_zone_name = azurerm_private_dns_zone.database[0].name
   virtual_network_id    = azurerm_virtual_network.main.id
   registration_enabled  = false
+  tags                  = local.tags
 }
 
 # Ephemeral: generated in each run, sent once to the server and Key Vault through write-only
@@ -394,6 +396,7 @@ resource "azurerm_key_vault_secret" "database" {
   name             = local.secret_name
   key_vault_id     = azurerm_key_vault.main[0].id
   content_type     = "application/json"
+  tags             = local.tags
   value_wo_version = 1
   value_wo = jsonencode({
     engine   = "postgres"

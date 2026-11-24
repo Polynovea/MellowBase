@@ -14,7 +14,7 @@
 | Secrets Manager secret *(managed only)* | The database admin login | 0.40 |
 | S3 bucket | Encrypted, all public access blocked, HTTPS only, versioned (deleted backups kept 14 days), kept if the stack is deleted | under 0.50 for a few GB |
 | Network | A new VPC, no NAT gateway | free |
-| AWS Budgets alert | Emails you at 80% of the monthly budget, and when spending is forecast to pass 100% | free (first two budgets) |
+| AWS Budgets alert | Emails you at 80% of the monthly budget, and when spending is forecast to pass 100%. Counts only costs tagged `Project=<ProjectTag>` (see below) | free (first two budgets) |
 | **Total** | | **about 34 managed, about 20 on-this-server** |
 
 Prices are estimates from AWS's on-demand list prices, before tax, with light traffic. Other regions and heavy traffic cost more; your AWS bill is what counts. They are printed in the template's description too. On-this-server sites with real traffic should use `t4g.medium` (about US$12 more).
@@ -62,6 +62,14 @@ https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/crea
 4. **Create stack**. It takes about 10 to 15 minutes.
 
 From the command line, `aws cloudformation validate-template` and a change set (`create-change-set`, then review, then execute) show what will happen first.
+
+### In an AWS account shared with other work
+
+The defaults (`NamePrefix` = `polynovea`, `ProjectTag` = `MellowBase`) suit an AWS account of its own, and give the same names as earlier versions of the template. In a shared account:
+
+1. **Turn on the budget's tag, once per account.** Every resource the stack makes is tagged `Project=<ProjectTag>`, and the budget counts only costs with that tag, so it alerts on this install and not on everything else in the account. AWS ignores the tag for billing until it's activated: sign in to the account that pays the bill (the management account in an AWS Organization), open **Billing and Cost Management → Cost allocation tags**, tick **Project** under **User-defined cost allocation tags**, and choose **Activate**. The tag appears in that list only after the stack has made tagged resources, which can take up to 24 hours, and once activated it can take up to 24 hours more before costs count against it. Until then the budget counts nothing, so it can't warn you. If the account already has `Project` activated, there's nothing to do.
+2. **Set `NamePrefix`** (for example `mellowbase`) when you create the stack, if you want the database, its log group and secret, and the budget to start with that name instead of `polynovea`. The bucket, role and security groups are named after the stack by CloudFormation, so choose a clear stack name too. **Never change `NamePrefix` on an existing stack:** the database's name includes it, and CloudFormation would try to replace the database (deletion protection stops it, and the update fails).
+3. Keep `ProjectTag` as `MellowBase`, or use the value your account already uses for this project.
 
 ## After launch
 

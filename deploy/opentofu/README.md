@@ -26,6 +26,10 @@ Set the example's variables in a `terraform.tfvars` file that you don't commit. 
 
 **After the first apply on Azure, take your own access away again.** The module gave the account running OpenTofu **Key Vault Secrets Officer** on the vault (`operator_writes_secret`), and your address is in the vault's and the storage account's firewalls. Neither is needed once the secret is written. Set `operator_ip_ranges = []`, then plan and apply. Remove the role assignment in the portal (**Key vault → Access control (IAM) → Role assignments →** your account, **Key Vault Secrets Officer → Remove**), or with `az role assignment delete --assignee <your object ID> --role "Key Vault Secrets Officer" --scope <vault ID>`. A later apply that changes the secret needs both again, briefly.
 
+### In an account shared with other work
+
+The defaults suit an account of its own. Every resource gets the tag `Project=<project_tag>` (default `MellowBase`), merged after your own `tags` so they can't replace it. On AWS the budget counts only costs with that tag: activate `Project` as a cost allocation tag in AWS Billing first, or the budget counts nothing (steps in [../aws/README.md](../aws/README.md#in-an-aws-account-shared-with-other-work)). On Azure the budget belongs to the resource group, so it counts that group only. `name` is the name prefix (default `polynovea`, the names earlier versions gave): set it, for example to `mellowbase`, on the first apply and keep it, because the database's name includes it.
+
 ## Protection against deletion
 
 The database, the bucket or storage account and the data disk have `prevent_destroy = true`, so `tofu destroy` stops before touching them. The AWS database also has deletion protection, and the Azure database, storage account and data disk have delete locks (`polynovea-keep-database`, `polynovea-keep-storage`, `polynovea-keep-data-disk`). To remove an install deliberately: export your content, remove the `prevent_destroy` lines, turn off deletion protection or remove the locks, then plan and apply.

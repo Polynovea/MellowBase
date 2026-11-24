@@ -3,9 +3,10 @@
 # arguments, so it never reaches state or plan files. The root module still MUST enable state encryption
 # (see deploy/opentofu/examples/aws).
 
+# Project is merged last, so var.tags can't change the tag the budget counts.
 locals {
   managed          = var.database_mode == "managed"
-  tags             = merge({ "polynovea:stack" = var.name }, var.tags)
+  tags             = merge({ "polynovea:stack" = var.name }, var.tags, { Project = var.project_tag })
   ubuntu_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/${var.architecture}/hvm/ebs-gp3/ami-id"
 }
 
@@ -104,6 +105,7 @@ resource "aws_vpc_security_group_ingress_rule" "server_http" {
   from_port         = 80
   to_port           = 80
   cidr_ipv4         = "0.0.0.0/0"
+  tags              = local.tags
 }
 
 resource "aws_vpc_security_group_ingress_rule" "server_https" {
@@ -114,6 +116,7 @@ resource "aws_vpc_security_group_ingress_rule" "server_https" {
   from_port         = 443
   to_port           = 443
   cidr_ipv4         = "0.0.0.0/0"
+  tags              = local.tags
 }
 
 resource "aws_vpc_security_group_ingress_rule" "server_ssh" {
@@ -124,6 +127,7 @@ resource "aws_vpc_security_group_ingress_rule" "server_ssh" {
   from_port         = 22
   to_port           = 22
   cidr_ipv4         = var.admin_cidr
+  tags              = local.tags
 }
 
 resource "aws_vpc_security_group_egress_rule" "server_https" {
@@ -133,6 +137,7 @@ resource "aws_vpc_security_group_egress_rule" "server_https" {
   from_port         = 443
   to_port           = 443
   cidr_ipv4         = "0.0.0.0/0"
+  tags              = local.tags
 }
 
 resource "aws_vpc_security_group_egress_rule" "server_http" {
@@ -142,6 +147,7 @@ resource "aws_vpc_security_group_egress_rule" "server_http" {
   from_port         = 80
   to_port           = 80
   cidr_ipv4         = "0.0.0.0/0"
+  tags              = local.tags
 }
 
 resource "aws_vpc_security_group_egress_rule" "server_database" {
@@ -152,6 +158,7 @@ resource "aws_vpc_security_group_egress_rule" "server_database" {
   from_port                    = 5432
   to_port                      = 5432
   referenced_security_group_id = aws_security_group.database[0].id
+  tags                         = local.tags
 }
 
 resource "aws_security_group" "database" {
@@ -170,6 +177,7 @@ resource "aws_vpc_security_group_ingress_rule" "database_from_server" {
   from_port                    = 5432
   to_port                      = 5432
   referenced_security_group_id = aws_security_group.server.id
+  tags                         = local.tags
 }
 
 # ------------------------------------------------------------------ database ("Created for you")
@@ -405,6 +413,7 @@ resource "aws_iam_role_policy" "one_secret" {
 resource "aws_iam_instance_profile" "server" {
   name_prefix = "${var.name}-server-"
   role        = aws_iam_role.server.name
+  tags        = local.tags
 }
 
 # ------------------------------------------------------------------ server
@@ -449,6 +458,7 @@ resource "aws_instance" "server" {
     volume_type           = "gp3"
     encrypted             = true
     delete_on_termination = true
+    tags                  = merge(local.tags, { Name = "${var.name}-root" })
   }
 
   # EC2 user data is limited to 16 KB; cloud-init unpacks gzip by itself.
@@ -485,12 +495,21 @@ resource "aws_eip" "server" {
 
 # ------------------------------------------------------------------ budget alert
 
+# Counts only costs tagged Project=<project_tag>, so in an AWS account shared with other work it
+# alerts on this install alone. Project must be activated as a cost allocation tag in AWS Billing;
+# until it is (and for up to 24 hours after), the budget sees no costs.
 resource "aws_budgets_budget" "monthly" {
   name         = "polynovea-${var.name}"
   budget_type  = "COST"
   limit_amount = tostring(var.budget_monthly_usd)
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
+  tags         = local.tags
+
+  cost_filter {
+    name   = "TagKeyValue"
+    values = [format("user:Project$%s", var.project_tag)]
+  }
 
   notification {
     comparison_operator        = "GREATER_THAN"

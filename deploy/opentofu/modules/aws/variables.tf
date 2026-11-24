@@ -1,5 +1,5 @@
 variable "name" {
-  description = "Name prefix for every resource, like a CloudFormation stack name."
+  description = "Name prefix for every resource, like a CloudFormation stack name. The default keeps the names earlier versions gave; in a shared AWS account set your own (for example \"mellowbase\") on the first apply and keep it: the database's name includes it."
   type        = string
   default     = "polynovea"
 
@@ -157,7 +157,19 @@ variable "custom_image_id" {
   }
 }
 
+variable "project_tag" {
+  description = "Every resource gets the tag Project=<this value>, and the budget counts only costs with that tag. Activate Project as a cost allocation tag in AWS Billing first (deploy/aws/README.md)."
+  type        = string
+  default     = "MellowBase"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_.:/=+@-]{0,62}$", var.project_tag))
+    error_message = "project_tag must be 1 to 63 letters, digits and _ . : / = + @ -, starting with a letter or digit."
+  }
+}
+
 variable "tags" {
-  type    = map(string)
-  default = {}
+  description = "Extra tags for every resource. They can't replace Project (see project_tag)."
+  type        = map(string)
+  default     = {}
 }
