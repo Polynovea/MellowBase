@@ -11,6 +11,13 @@ import { connect, withPrivilegeLock } from "@/lib/schema/runner/testing/dualFixt
 const PROTECTED = [
   "content_model_tables", "schema_name_reservations", "schema_migration_runs", "schema_expand_contract_tasks",
   "schema_migration_confirmations", "polynovea_migration_ledger", "schema_migration_ledger",
+  // 0076: the read switch and the content move runs.
+  "content_model_storage", "content_model_move_runs",
+];
+/** Functions only polynovea_app may run (0074, 0076): never service_role, even after Supabase grants it everything. */
+const APP_ONLY_FUNCTIONS = [
+  "polynovea_confirm_schema_stage", "polynovea_retry_schema_stage", "polynovea_cancel_schema_stage",
+  "polynovea_content_sync_entries", "polynovea_content_verify_model", "polynovea_content_set_read_source",
 ];
 
 function adminUrl(): string {
@@ -33,6 +40,7 @@ beforeAll(async () => {
   // What Supabase's default privileges amount to, then the helper as every later migration runs it.
   await withPrivilegeLock(admin, async () => {
     await admin.query("grant all on all tables in schema public to service_role");
+    await admin.query("grant execute on all functions in schema public to service_role");
     await owner.query("select public.polynovea_apply_app_access()");
   });
 });
@@ -100,5 +108,13 @@ describe("service_role (Supabase's service key) cannot write what the worker tru
     } finally {
       await admin.query("rollback");
     }
+  });
+
+  it("cannot run the app-only functions (the access helper as the latest migration defines it)", async () => {
+    const { rows } = await owner.query(
+      `select p.proname, has_function_privilege('service_role', p.oid, 'execute') as service_role, has_function_privilege('polynovea_app', p.oid, 'execute') as app
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = any ($1) order by 1`, [APP_ONLY_FUNCTIONS]);
+    expect(rows.map((row) => row.proname).sort()).toEqual([...APP_ONLY_FUNCTIONS].sort());
+    for (const row of rows) expect(row).toEqual({ proname: row.proname, service_role: false, app: true });
   });
 });
