@@ -10,9 +10,11 @@ import { uniqueKey } from "@/lib/schema/engine/testing";
 import { createModel } from "@/lib/schema/modelService";
 import { bringModelTableUp, closeTableMoveSession } from "@/lib/content/testing/tableMove";
 import { setReadSource } from "@/lib/content/contentMove";
-import { searchContent } from "@/lib/content/searchService";
+import { indexEntry, searchContent } from "@/lib/content/searchService";
+import { getEntry, listEntryVersions } from "@/lib/content/entryService";
 import { createPreviewToken } from "@/lib/content/previewService";
 import { listDeveloperEntries } from "@/lib/developer/resourceService";
+import { getPublishedContent, listPublishedContent } from "@/lib/developer/publishedContentService";
 import { logDeveloperApiMutation } from "@/lib/developer/developerAudit";
 import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
 import type { FieldDefinition } from "@/lib/schema/fields/types";
@@ -107,6 +109,12 @@ async function fixture(backend: BackendFixtures): Promise<Fixture> {
     const up = await bringModelTableUp({ workspaceId, modelId, actor: adminUserId, switchReads: true });
     if (!up.verify.matched) throw new Error(`table for ${modelId} did not match`);
   }
+  // The search documents every save writes (search_text holds every string field, the hidden one too).
+  for (const id of [...people, ...articles]) {
+    const entry = await getEntry(workspaceId, id);
+    const published = (await listEntryVersions(workspaceId, id)).find((version) => version.id === entry?.published_version_id);
+    if (entry && published) await indexEntry(entry, published);
+  }
   return { workspaceId, adminUserId, roles, article: { id: articleId, apiKey: articleKey }, person: { id: personId, apiKey: personKey }, people, articles, draftOnly };
 }
 
@@ -185,6 +193,8 @@ describeWithDatabase("generated items API [postgres]", (backend) => {
         const access = accesses!.get(model)!;
         const readableKeys = new Set([...access.readable].filter((key) => key !== field));
         const restrictedScope = { restricted: new Map([[access.model.id, readableKeys]]), readableModelIds: [access.model.id], readable: new Map([[access.model.id, readableKeys]]) };
+        // Control: without a field scope the stored document matches the hidden term.
+        expect((await searchContent({ workspaceId: fx.workspaceId, query: "zebraword" })).length).toBeGreaterThan(0);
         const docs = await searchContent({ workspaceId: fx.workspaceId, query: "zebraword", fieldScope: restrictedScope });
         expect(docs).toEqual([]);
         const titled = await searchContent({ workspaceId: fx.workspaceId, query: "Alpha", modelId: access.model.id, fieldScope: restrictedScope });
@@ -368,6 +378,9 @@ describeWithDatabase("generated items API [postgres]", (backend) => {
 
     const patched = await updateItem(writer, fx.article.apiKey, fx.articles[2], { rating: 3 });
     expect(patched.item.data).not.toHaveProperty("secret");
+    // The new draft does not take the live version away: the published read still serves rating 2.
+    const live = await getItem(editor, fx.article.apiKey, fx.articles[2], P({}));
+    expect(live.item).toMatchObject({ variant: "published", data: { rating: 2 } });
     const [stored] = await backend.query<{ data: Record<string, unknown> }>(
       "select v.data_jsonb as data from content_entries e join content_entry_versions v on v.id = e.current_draft_version_id where e.id = $1", [fx.articles[2]]);
     expect(stored.data).toMatchObject({ secret: `${SECRET}-2`, rating: 3, title: "Alpha 2" });
@@ -375,6 +388,15 @@ describeWithDatabase("generated items API [postgres]", (backend) => {
     const created = await createItem(editor, fx.article.apiKey, { title: "Made by API", rating: 2 });
     expect(created.item).toMatchObject({ variant: "draft", data: { title: "Made by API", rating: 2 } });
     await deleteItem(editor, fx.article.apiKey, created.item.id);
+    // Taking a LIVE entry off the site (archive is the CMS's only such path): gone from items and the legacy delivery.
+    const liveId = fx.articles[4];
+    expect((await listItems(editor, fx.article.apiKey, P({ limit: "100" }))).items.map((item) => item.id)).toContain(liveId);
+    await deleteItem(editor, fx.article.apiKey, liveId);
+    expect((await listItems(editor, fx.article.apiKey, P({ limit: "100" }))).items.map((item) => item.id)).not.toContain(liveId);
+    expect((await refusal(getItem(editor, fx.article.apiKey, liveId, P({})))).code).toBe("ITEM_NOT_FOUND");
+    const legacy = await listPublishedContent({ workspaceId: fx.workspaceId, modelApiKey: fx.article.apiKey, limit: 100 });
+    expect(legacy.records.map((record) => record.id)).not.toContain(liveId);
+    expect((await getPublishedContent({ workspaceId: fx.workspaceId, modelApiKey: fx.article.apiKey, entryId: liveId })).record).toBeNull();
     const [archived] = await backend.query<{ status: string }>("select status from content_entries where id = $1", [created.item.id]);
     expect(archived.status).toBe("archived");
     expect((await refusal(deleteItem(editor, fx.article.apiKey, created.item.id))).code).toBe("ITEM_NOT_FOUND");

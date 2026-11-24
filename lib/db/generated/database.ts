@@ -716,6 +716,9 @@ export interface DeveloperApiTokens {
   name: string;
   rate_limit_per_minute: Generated<number>;
   revoked_at: string | null;
+  /**
+   * Workspace role whose field permissions apply to this token (items API). Null: the creator's member roles.
+   */
   role_id: string | null;
   scopes: Generated<string[]>;
   token_hash: string;
@@ -1814,6 +1817,9 @@ export interface RolePermissions {
 }
 
 export interface Roles {
+  /**
+   * Per-role items API limit overrides (pageSize, filterDepth, joins, statementTimeoutMs...). Clamped by the app; can only lower the hard caps.
+   */
   api_limits: Json | null;
   created_at: Generated<string | null>;
   description: string | null;

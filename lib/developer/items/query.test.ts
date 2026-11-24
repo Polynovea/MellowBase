@@ -60,6 +60,9 @@ describe("items SQL", () => {
     expect(q.parameters).toContain(JSON.stringify(["news"]));
     expect(q.sql).toMatch(/limit \$\d+/);
     expect(q.sql).toContain(`"r"."rating" desc nulls last`);
+    // Published = has a published version and is not archived; a pending draft (status 'draft') keeps it live.
+    expect(q.sql).toContain(`"e"."published_version_id" is not null and "e"."status" <> 'archived'`);
+    expect(q.sql).not.toContain(`"e"."status" = 'published'`);
   });
 
   it("search matches only the given (readable) text columns", async () => {
