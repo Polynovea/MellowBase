@@ -42,7 +42,7 @@ interface StudioShellProps {
   onClearConflict?: () => void;
 }
 
-function useStudioTitle() {
+export function useStudioTitle() {
   useEffect(() => {
     const wanted = "Visual Studio · Polynovea CMS";
     const apply = () => { if (document.title !== wanted) document.title = wanted; };

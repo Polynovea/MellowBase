@@ -68,7 +68,7 @@ function EntryPreview({
         <div className="space-y-6 pt-4">
           {regularEntries.map(([key, value]) => (
             <section key={key} className="mb-6">
-              <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
                 {key}
               </p>
               {isRichTextDocument(value) ? (
@@ -128,8 +128,8 @@ export default async function PreviewPage({ params, searchParams }: Params) {
           href={`/preview/${token}?viewport=${mode}`}
           className={`rounded px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors ${
             mode === viewport
-              ? "bg-[#e6d3a3] text-black"
-              : "text-zinc-500 hover:text-zinc-200"
+              ? "bg-[#e6d3a3] text-[#0a0a0a]"
+              : "text-zinc-400 hover:text-zinc-200"
           }`}
         >
           {mode}
@@ -163,7 +163,7 @@ export default async function PreviewPage({ params, searchParams }: Params) {
               <h1 className="mt-2 font-headline text-3xl font-bold">
                 {release.name}
               </h1>
-              <p className="mt-2 text-xs text-zinc-600">
+              <p className="mt-2 text-xs text-zinc-400">
                 Expires {new Date(preview.expires_at).toLocaleString()}
               </p>
             </div>
@@ -203,7 +203,7 @@ export default async function PreviewPage({ params, searchParams }: Params) {
             <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-[#e6d3a3]">
               Secure draft preview · {model?.name || "Content"}
             </p>
-            <p className="mt-2 text-xs text-zinc-600">
+            <p className="mt-2 text-xs text-zinc-400">
               Expires {new Date(preview.expires_at).toLocaleString()}
             </p>
           </div>
