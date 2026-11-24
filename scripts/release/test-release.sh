@@ -46,7 +46,7 @@ cleanup() {
   fi
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   docker volume rm "$NAME-data" >/dev/null 2>&1 || true
-  docker image ls --format '{{.Repository}}:{{.Tag}}' | grep "^localhost:$PORT/" | xargs -r docker rmi -f >/dev/null 2>&1 || true
+  docker image ls -q --filter "reference=localhost:$PORT/*" | sort -u | xargs -r docker rmi -f >/dev/null 2>&1 || true   # by ID: untagged ones too
   rm -rf "$WORK"
 }
 trap cleanup EXIT

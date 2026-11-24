@@ -257,7 +257,9 @@ export async function main(argv = process.argv.slice(2)) {
 
   step("8. Tag the verified digest");
   // Only now does the version tag appear in the registry, pointing at exactly the signed digest.
-  run("docker", ["buildx", "imagetools", "create", "--tag", release.tag, ref]);
+  // --prefer-index=false copies the signed manifest as it is; by default a single source is wrapped
+  // in a new index, whose digest would not be the signed one.
+  run("docker", ["buildx", "imagetools", "create", "--prefer-index=false", "--tag", release.tag, ref]);
   const tagged = JSON.parse(run("docker", ["buildx", "imagetools", "inspect", release.tag, "--format", "{{json .Manifest}}"], { capture: true })).digest;
   if (tagged !== digest) throw new Error(`${release.tag} points at ${tagged}, not the signed ${digest}`);
   console.log(`tagged ${release.tag} -> ${digest}`);
