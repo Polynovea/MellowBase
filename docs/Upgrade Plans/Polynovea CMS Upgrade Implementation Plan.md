@@ -202,6 +202,22 @@ Carried forward: "On this server" waits for Phase 5's image (`localServerHostFor
 
 From Phase 3 on, every test run, including each phase's exit check, runs on Payal's laptop. Next: Phases 3 and 5 in parallel, then Phase 4, one PR per phase.
 
+### Phase 3 progress (24 November 2026)
+
+Phase 3 ships as one PR, #88, built in three waves on Payal's laptop.
+
+| Wave | What it adds |
+| --- | --- |
+| Schema engine | Migrations 0073 and 0075: the `content` schema and its metadata, one SHA-256 schema hash across the system (0075 re-hashes stored versions and fixes a hash collision), a planner that turns model edits into plain-words plans with stage hashes, physical column names derived from field keys, caps, 30-day name reservations, and `pg_trgm` search indexes for prose fields |
+| Migration runner | Migration 0074 and a separate worker on the `polynovea_owner` pool: advisory-lock leases, resumable steps logged in an owner-only table, 3-second lock timeouts with retries (a patient wait for concurrent index builds), our own expand and contract for renames and type changes with rollback, and plans always rebuilt from trusted state |
+| Moving existing content | Migration 0076: an owner-side sync from snapshots to each model's table on every save, `content:move` backfill in batches, per-field checksums and counts, a per-model read source with verified switch and instant rollback; search inside a model uses its table, while cross-model ranking stays on `content_search_documents` |
+
+Security: three independent reviews. The main finding was that the app role could write the tables the owner worker trusted; the app role and Supabase's `service_role` are now read-only there, change requests are insert-only, confirmations are owner-written, and the worker rebuilds every plan from trusted data. All findings were fixed with tests.
+
+Exit check on `a2022a4`, on Payal's laptop: 1,555 unit tests, build, `npm audit` and Semgrep clean; on PostgreSQL 15, 16 and 17: the full database suite (388/388 on 15 and 17; on 16, two Phase 1 sign-in race tests failed once under load and passed alone twice), an owner through `bootstrap:admin`, the app `running` with `/setup` closed, all 26 certification scripts, and `content:move` matching and switching the seeded data.
+
+The runner uses its own expand and contract rather than pgroll: pgroll serves schema versions through views, which does not fit direct table reads under row-level security, and would add a separate binary to every install. Carried to Phase 4: make the one-time-code lockout and recovery-code use strictly serial and their race tests reliable; `seed:starter` on built-in auth; a clear status from `content:move` for a table part-way through a change.
+
 The shared audit logger goes first because every area writes through it. Phase 0 found that it still uses Supabase, so on a database without Supabase the audit events of moved areas are silently dropped. No area counts as moved until its audit events land. The direct-path logger now exists (`lib/platform/audit.postgres.ts`, merged in PR #17: audit row, webhook deliveries and delivery jobs in the caller's transaction) and taxonomy uses it; wave 1 makes every other area call it.
 
 **How each area moves**
@@ -354,6 +370,7 @@ Each model gets its own table for current content, while the immutable version h
 - [ ] Per model: create the table, backfill current draft and published versions from the JSONB snapshots in batches of 1,000, compare row counts and a checksum of each field.
 - [ ] Switch that model's reads to the table; keep writing the JSONB snapshot (as history) as before, so rolling back a model is just switching reads back.
 - [ ] Search moves to `pg_trgm` indexes on each model's text columns.
+  Deviation (approved): once a model's reads are switched, model-scoped search matches on its table's text columns (`pg_trgm` indexes); ranking and cross-model search stay on `content_search_documents`, which every save still maintains.
 
 **Tests:** random sequences of model changes applied and reverted on fixture data; a schema change while a 30-second query holds a lock (the change must wait and retry, never block other queries); a migration of a copy of a real install with every count and checksum matching.
 

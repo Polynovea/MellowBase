@@ -15,6 +15,7 @@ import { callFunction, DEFAULT_LIST_LIMIT, getDb, maybeOne, SqlFunctionError } f
 import { clientErrorMessage } from "@/lib/http/clientError";
 import type { ContentEntryRow, ContentEntryVersionRow } from "@/lib/content/entryService";
 import type { EntryFunctionName, EntryFunctionResult } from "@/lib/content/entryData";
+import { currentTableData, readTableRows, tableSource } from "@/lib/content/tableStore";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value: string) => UUID.test(value);
@@ -29,6 +30,9 @@ function versionsOfWorkspace(workspaceId: string) {
 
 export async function currentVersionsOfModel(workspaceId: string, modelId: string): Promise<Array<{ entry_id: string; data_jsonb: Record<string, unknown> }> | null> {
   if (!isUuid(modelId)) return [];
+  // Phase 3: a model switched to its table reads its current draft and published rows from there.
+  const source = await tableSource(workspaceId, modelId);
+  if (source) return (await readTableRows(workspaceId, source)).map((row) => ({ entry_id: row.entryId, data_jsonb: row.data }));
   const rows = await versionsOfWorkspace(workspaceId)
     .select(["v.entry_id", "v.data_jsonb"])
     .where("e.content_model_id", "=", modelId)
@@ -71,8 +75,10 @@ export async function listEntries(workspaceId: string, modelId?: string): Promis
     .select(sql<Record<string, unknown>>`coalesce(v.data_jsonb, '{}'::jsonb)`.as("data"))
     .where("e.workspace_id", "=", workspaceId);
   if (modelId) query = query.where("e.content_model_id", "=", modelId);
-  const rows = await query.orderBy("e.updated_at", "desc").orderBy("e.id", "desc").limit(DEFAULT_LIST_LIMIT).execute();
-  return rows as unknown as (ContentEntryRow & { data?: Record<string, unknown> })[];
+  const rows = await query.orderBy("e.updated_at", "desc").orderBy("e.id", "desc").limit(DEFAULT_LIST_LIMIT).execute() as unknown as (ContentEntryRow & { data?: Record<string, unknown> })[];
+  // Phase 3: entries of models switched to their tables take their current data from the table.
+  const fromTables = await currentTableData(workspaceId, rows);
+  return fromTables.size ? rows.map((row) => (fromTables.has(row.id) ? { ...row, data: fromTables.get(row.id)!.data } : row)) : rows;
 }
 
 export async function getEntry(workspaceId: string, entryId: string): Promise<ContentEntryRow | null> {

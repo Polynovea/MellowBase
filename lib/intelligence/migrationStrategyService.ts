@@ -135,7 +135,7 @@ async function targetSchemaForAssessment(workspaceId: string, assessment: any) {
   const targetVersion = Number(assessment.target_schema_version ?? 0);
   const version = targetVersion > 0 ? await getVersion(model.id, targetVersion) : null;
   if (!version) throw Object.assign(new Error("Pinned canonical target version is unavailable"), { status: 409 });
-  if (String(version.schema_hash) !== String(assessment.target_schema_hash)) throw Object.assign(new Error("Pinned target schema hash no longer matches the canonical version"), { status: 409 });
+  if (String(version.schema_hash) !== String(assessment.target_schema_hash)) throw Object.assign(new Error("This assessment was made before the model's schema changed or before a CMS update recalculated schema fingerprints. Assess it again."), { status: 409 });
   return { model, version, schema: version.schema_json as CanonicalSchema };
 }
 
