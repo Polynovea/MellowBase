@@ -138,7 +138,8 @@ export function decideModelAccess(principal: Principal, model: ModelRef, rules: 
     !principal.applyModelPolicy || bypassesFieldRules(principal) || modelPolicyAllows(model.schema, principal.roleKeys, operation);
   const canRead = modelAllowed && principal.scopes.has(keys.read) && policy("read");
   const canWrite = canRead && principal.scopes.has(keys.write) && policy("edit");
-  const canDelete = canRead && principal.scopes.has(keys.delete) && policy(principal.kind === "admin" ? "archive" : "delete");
+  // DELETE archives the entry (recoverable), so it is the schema's "archive" operation.
+  const canDelete = canRead && principal.scopes.has(keys.delete) && policy("archive");
   const canPublish = canRead && principal.scopes.has(keys.publish) && policy("publish");
 
   const readable = new Set<string>();
@@ -201,6 +202,20 @@ export async function resolveModelAccess(principal: Principal, model: ModelRef, 
       .execute()
     : [];
   return decideModelAccess(principal, model, rules);
+}
+
+/** The same decision for several models with one query for all their field rules. */
+export async function resolveModelAccesses(principal: Principal, models: readonly ModelRef[], db: DbExecutor): Promise<Map<string, ModelAccess>> {
+  const ids = [...new Set(models.map((model) => model.id))];
+  const rules = ids.length && principal.roleIds.length && !bypassesFieldRules(principal)
+    ? await db.selectFrom("content_field_permissions")
+      .select(["content_model_id", "field_key", "role_id", "can_read", "can_write"])
+      .where("workspace_id", "=", principal.workspaceId)
+      .where("content_model_id", "in", ids)
+      .where("role_id", "in", [...principal.roleIds])
+      .execute()
+    : [];
+  return new Map(models.map((model) => [model.apiKey, decideModelAccess(principal, model, rules.filter((rule) => rule.content_model_id === model.id))]));
 }
 
 /**
