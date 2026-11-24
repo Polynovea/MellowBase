@@ -87,6 +87,8 @@ param databaseAdminPassword string = 'P${newGuid()}'
 var managed = databaseMode == 'managed'
 var hasAdminCidr = !empty(adminCidr)
 var hasDomain = !empty(domain)
+// A managed image (not a gallery image) can't use Trusted Launch.
+var isManagedImage = contains(toLower(customImageId), '/providers/microsoft.compute/images/')
 var suffix = uniqueString(resourceGroup().id) // 13 characters, for names only (never for secrets)
 var prefix = 'polynovea'
 var vnetCidr = '10.30.0.0/16'
@@ -461,10 +463,11 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   identity: { type: 'SystemAssigned' }
   properties: {
     hardwareProfile: { vmSize: vmSize }
-    // Trusted Launch (secure boot and a virtual TPM) on x64 with the Ubuntu marketplace image. Azure's
-    // Arm64 sizes don't offer it, and a gallery image supports it only if its definition declares
-    // SecurityType=TrustedLaunchSupported.
-    securityProfile: architecture == 'x64' && empty(customImageId)
+    // Trusted Launch (secure boot and a virtual TPM) on x64, with the Ubuntu marketplace image or a
+    // gallery image (Polynovea's gallery image definition is created with
+    // SecurityType=TrustedLaunchSupported). Not with a managed image, which can't use it, and not on
+    // Azure's Arm64 sizes, which don't offer it.
+    securityProfile: architecture == 'x64' && !isManagedImage
       ? {
           securityType: 'TrustedLaunch'
           uefiSettings: { secureBootEnabled: true, vTpmEnabled: true }

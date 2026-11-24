@@ -425,3 +425,14 @@ describe("first boot fails closed", () => {
     if (hasKey) expect(() => checkReleaseKey(/-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----\n/.exec(bootstrap)![0])).not.toThrow();
   });
 });
+
+describe("Azure server images", () => {
+  it("uses Trusted Launch on x64 with the Ubuntu image or a gallery image, never with a managed image", () => {
+    expect(bicep).toContain("var isManagedImage = contains(toLower(customImageId), '/providers/microsoft.compute/images/')");
+    expect(bicep).toContain("securityProfile: architecture == 'x64' && !isManagedImage");
+    expect(bicep).toContain("startsWith(customImageId, '/CommunityGalleries/')");
+    expect(bicep).toContain("{ communityGalleryImageId: customImageId }");
+    expect(tofuAzure).toContain('trusted_launch = var.architecture == "x64" && !strcontains(lower(var.custom_image_id), "/providers/microsoft.compute/images/")');
+    expect(read("README.md")).toContain("--features SecurityType=TrustedLaunchSupported");
+  });
+});
