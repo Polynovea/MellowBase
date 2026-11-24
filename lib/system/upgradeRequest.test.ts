@@ -37,7 +37,7 @@ const check = (overrides: Partial<ChannelCheck["latest"] & object> = {}, extra: 
 beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), "upgrade-request-"));
   mkdirSync(path.join(root, "status"));
-  env = { POLYNOVEA_DATA_ROOT: path.join(root, "data"), POLYNOVEA_UPGRADE_STATUS_DIR: path.join(root, "status") };
+  env = { POLYNOVEA_UPGRADE_REQUEST_DIR: path.join(root, "data", "upgrade-requests"), POLYNOVEA_UPGRADE_STATUS_DIR: path.join(root, "status") };
   data.open = null;
   data.requested = [];
   data.recorded = [];
