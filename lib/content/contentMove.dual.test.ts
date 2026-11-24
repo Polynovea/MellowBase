@@ -311,7 +311,19 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     expect(storage).toEqual({ out_of_sync_code: "sqlstate_22p02", read_source: "snapshot" });
     expect(await refusal()).toEqual({ code: "55000", message: "content_read_switch_out_of_sync" });
     const bad = await verifyModel(db, { workspaceId, modelId });
-    expect(bad.mismatches).toEqual(expect.arrayContaining([{ kind: "snapshot_value_not_convertible", column: "count" }, { kind: "row_count", variant: "draft" }]));
+    expect(bad.matched).toBe(false);
+    expect(bad.mismatches).toEqual(expect.arrayContaining([
+      { kind: "snapshot_fields_failed" }, { kind: "snapshot_value_not_convertible", column: "count" }, { kind: "row_count", variant: "draft" }]));
+    // The field checksums could not be computed on the snapshot side: recorded as such, never as equal.
+    const badRun = (await moveRun(db, bad.runId))!;
+    expect(Object.values(badRun.fields).every((f) => f.draft.snapshot === null && f.published.snapshot === null)).toBe(true);
+    // Even with every row present, a run whose snapshot checksums failed does not match: the bad
+    // entry's row is written by hand (as if a save had slipped past), so counts and rows agree.
+    const [badTable] = await backend.query<{ table_name: string }>("select table_name from content_model_tables where content_model_id = $1", [modelId]);
+    await owner.query(`insert into content.${badTable.table_name} (_entry_id, _variant, _locale, title) values ($1, 'draft', 'en', 'x')`, [entry.id]);
+    const countsOnly = await verifyModel(db, { workspaceId, modelId });
+    expect(countsOnly.matched).toBe(false);
+    expect(countsOnly.mismatches.map((m) => m.kind).sort()).toEqual(["snapshot_fields_failed", "snapshot_value_not_convertible"]);
 
     // Fixed content, a new matching run: the switch goes through. Then a bad save fails outright.
     await backend.query("update content_entry_versions set data_jsonb = $1 where id = $2", [JSON.stringify({ title: "x", count: 3 }), version.id]);

@@ -459,8 +459,12 @@ begin
          where e.content_model_id = $1 and e.workspace_id = $2
       $sql$, v_snapshot_sql) into v_snapshot_fields using p_content_model_id, p_workspace_id;
     exception when data_exception then
-      -- A snapshot value does not convert to its column type: find which columns.
+      -- A snapshot value does not convert to its column type. The field checksums could not be
+      -- computed, so the run can never match on counts alone: that is a mismatch in itself, whether or
+      -- not the search below names a column (content can change between the two queries).
+      v_mismatches := v_mismatches || jsonb_build_array(jsonb_build_object('kind', 'snapshot_fields_failed'));
       v_snapshot_fields := '{}'::jsonb;
+      -- Find which columns.
       for c in
         select col.key as name, col.value ->> 'field' as field, col.value ->> 'pgType' as pg_type
           from jsonb_each(coalesce(t.applied_shape -> 'columns', '{}'::jsonb)) col
