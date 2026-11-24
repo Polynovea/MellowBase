@@ -109,8 +109,10 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {
 try {
   const stages = only ?? ["wizard", "flows", "audit", "signout"];
 
-  // 1. A fresh database (the wizard needs one without an owner).
+  // 1. A fresh database (the wizard needs one without an owner), and no results from an earlier run:
+  // the audit's final gate reads every recorded screen.
   if (stages.includes("wizard")) {
+    rmSync(path.join(root, "test-results", "ui"), { recursive: true, force: true });
     run(process.execPath, ["scripts/dev-db/setup.mjs", "--reset", "--pg=16"]);
   } else {
     run(process.execPath, ["scripts/dev-db/setup.mjs", "--pg=16"]);
