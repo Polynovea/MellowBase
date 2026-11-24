@@ -12,7 +12,9 @@ function usage(){console.log(`Polynovea CMS CLI\n\ntypes pull [--out polynovea-c
 
 try{
  if(flags.help||flags.h||area==="help"||!area){usage();process.exit(0);}
- if(area==="types"){if(action!=="pull"){usage();process.exit(1);}const{typesPull}=await import("../lib/typesPull.mjs");process.exit(await typesPull({flags}));}
+ // exitCode, not exit(): exiting while fetch's sockets close aborts Node on Windows (libuv UV_HANDLE_CLOSING).
+ if(area==="types"){if(action!=="pull"){usage();process.exitCode=1;}else{const{typesPull}=await import("../lib/typesPull.mjs");process.exitCode=await typesPull({flags});}}
+ else{
  if(!TOKEN){console.error("POLYNOVEA_CMS_TOKEN (or --token) is required");process.exit(2);}
  if(area==="model"&&action==="pull"){const key=rest[0];if(!key)throw new Error("apiKey required");output(await request(`/api/v1/models/${encodeURIComponent(key)}`));}
  else if(area==="model"&&action==="diff"){const[key,file]=rest;if(!key||!file)throw new Error("apiKey and schema file required");const raw=jsonFile(file);const schema=raw.schema??raw;output(await request(`/api/v1/models/${encodeURIComponent(key)}/diff`,{method:"POST",body:{schema}}));}
@@ -76,4 +78,5 @@ try{
  else if(area==="export"){const file=action||rest[0]||flags.out;if(!file)throw new Error("output file required");output(await request("/api/v1/export"),file);}
  else if(area==="openapi"){const file=action||rest[0]||flags.out;if(!file)throw new Error("output file required");output(await request("/api/v1/openapi.json"),file);}
  else{usage();process.exit(area?1:0);}
+ }
 }catch(error){console.error(error instanceof Error?error.message:String(error));process.exit(1);}
