@@ -328,6 +328,20 @@ function flattenSearchText(value, out = []) {
   return out;
 }
 
+let scheduleModule = null;
+/** The one permission check for scheduled publishing, run on this worker's own connection. */
+async function scheduledPublishCheckFor(client, workspaceId, actorId, releaseId) {
+  try {
+    scheduleModule ??= await Promise.all([import("kysely"), import("../lib/developer/items/schedule.ts")]);
+  } catch {
+    return { ok: false, reason: "permission_check_unavailable" };
+  }
+  const [{ Kysely, PostgresDialect }, { scheduledPublishCheck }] = scheduleModule;
+  const pool = { connect: async () => ({ query: (...args) => client.query(...args), release: () => {} }), end: async () => {} };
+  const db = new Kysely({ dialect: new PostgresDialect({ pool }) });
+  return scheduledPublishCheck(db, workspaceId, actorId, releaseId);
+}
+
 async function dispatchScheduledRelease(client, job) {
   const releaseId = job.payload_json?.releaseId;
   if (!releaseId) throw new Error("scheduled_release payload is missing releaseId");
@@ -340,6 +354,10 @@ async function dispatchScheduledRelease(client, job) {
     return failJob(client, job, "NOT_DUE", "Scheduled release is not due yet", { scheduledFor: release.scheduled_for }, 0, seconds);
   }
   const actorId = job.payload_json?.actorId || release.updated_by || release.approved_by || release.created_by || null;
+  // Phase 4: the publisher's rights are re-checked now, through the items API's one permission
+  // function (TypeScript, loaded through the node loader: npm run worker:delivery). Fail closed.
+  const check = await scheduledPublishCheckFor(client, job.workspace_id, actorId, releaseId);
+  if (!check.ok) return completeJob(client, job, { skipped: true, reason: check.reason, ...(check.models ? { models: check.models } : {}) }, 0);
   const startedAt = Date.now();
   const { rows: resultRows } = await client.query("select cms_publish_release($1,$2,$3) as result", [job.workspace_id, actorId, releaseId]);
   await completeJob(client, job, { releaseId, result: resultRows[0]?.result ?? null }, elapsed(startedAt));

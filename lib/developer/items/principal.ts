@@ -3,10 +3,10 @@
  * resolveModelAccess. Roles are always read within the principal's workspace (a role of another
  * workspace never counts), from active memberships only.
  */
+import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
-import { hashPreviewToken } from "@/lib/content/previewService";
 import { mergeLimitOverrides, type Principal, type PrincipalKind } from "@/lib/developer/items/access";
 import type { ApiLimits } from "@/lib/developer/items/types";
 
@@ -53,7 +53,11 @@ export async function principalForToken(db: Kysely<DB>, ctx: Pick<DeveloperApiCo
 }
 
 /** An admin acting through a side channel (preview issuer, scheduler, webhook owner). Null when not an active member. */
-export async function principalForAdmin(db: Kysely<DB>, workspaceId: string, adminUserId: string, kind: PrincipalKind): Promise<Principal | null> {
+/**
+ * `grantedScopes`: model-level grants the channel itself carries (a preview token is the grant to view
+ * its entry); field rules still come from the admin's roles.
+ */
+export async function principalForAdmin(db: Kysely<DB>, workspaceId: string, adminUserId: string, kind: PrincipalKind, grantedScopes: readonly string[] = []): Promise<Principal | null> {
   const roles = await memberRoles(db, workspaceId, adminUserId);
   if (!roles) return null;
   const permissions = roles.length
@@ -64,9 +68,9 @@ export async function principalForAdmin(db: Kysely<DB>, workspaceId: string, adm
     kind,
     roleIds: roles.map((role) => role.id),
     roleKeys: roles.map((role) => role.key),
-    scopes: new Set(permissions.map((row) => row.permission_key)),
+    scopes: new Set([...permissions.map((row) => row.permission_key), ...grantedScopes]),
     allowedModels: null,
-    applyModelPolicy: true,
+    applyModelPolicy: grantedScopes.length === 0,
     limitOverrides: limitsOf(roles),
   };
 }
@@ -81,7 +85,8 @@ export interface PreviewScope {
 /** A live (not expired, not revoked) entry or release preview token, by its SHA-256 hash only. */
 export async function previewScope(db: Kysely<DB>, rawToken: string): Promise<PreviewScope | null> {
   if (!rawToken || rawToken.length > 200) return null;
-  const tokenHash = hashPreviewToken(rawToken);
+  // Same SHA-256 as hashPreviewToken (lib/content/previewService.ts); not imported to keep this module free of the preview service.
+  const tokenHash = createHash("sha256").update(rawToken).digest("hex");
   const row = await db.selectFrom("preview_tokens").select(["id", "workspace_id", "entry_id", "release_id", "created_by"])
     .where("token_hash", "=", tokenHash).where("revoked_at", "is", null).where("expires_at", ">", new Date().toISOString())
     .executeTakeFirst();

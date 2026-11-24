@@ -8,7 +8,9 @@ import { createModel } from "@/lib/schema/modelService";
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
-  const model = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Page", apiKey: "page", fields: [{ key: "title", label: "Title", type: "text", required: true }] } });
+  // Previews show what their issuer may read, so the issuer is an active member (phase 4).
+  await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+  const model = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Page", apiKey: "page", fields: [{ key: "title", label: "Title", type: "text", required: true }, { key: "internal_note", label: "Internal note", type: "text", required: false }] } });
   if (!model.ok) throw new Error(model.error);
   const entry = await createEntry({ workspaceId, modelId: model.data.model.id, data: { title: "Preview me" }, actorAdminUserId: adminUserId });
   if (!entry.ok) throw new Error(entry.error);
@@ -42,12 +44,25 @@ describeWithDatabase("preview tokens, release previews and saved entry views", (
     const release = await createRelease({ workspaceId, actorId: adminUserId, name: "Preview release", itemVersionIds: [versionId] });
     if (!release.ok) throw new Error(release.error);
     const releaseId = (release.data as { id: string }).id;
-    const preview = await getReleasePreview(workspaceId, releaseId);
+    const preview = await getReleasePreview(workspaceId, releaseId, { adminUserId });
     expect(preview).toMatchObject({ id: releaseId, name: "Preview release", release_items: [{ entry_id: entryId, entry_version_id: versionId, content_entry_versions: { locale: "en", data_jsonb: { title: "Preview me" }, content_entries: { content_models: { name: "Page", api_key: "page" } } } }] });
     expect((await createReleasePreviewToken({ workspaceId, releaseId, actorId: adminUserId })).token).toBeTruthy();
     const other = await backend.createWorkspace();
-    expect(await getReleasePreview(other.workspaceId, releaseId)).toBeNull();
+    expect(await getReleasePreview(other.workspaceId, releaseId, { adminUserId: other.adminUserId })).toBeNull();
     await expect(createReleasePreviewToken({ workspaceId: other.workspaceId, releaseId, actorId: other.adminUserId })).rejects.toThrow("Release not found");
+  });
+
+  it("phase 4: a preview never shows a field hidden from its issuer, and shows nothing once the issuer has left", async () => {
+    const { workspaceId, adminUserId, modelId, entryId } = await setup(backend);
+    await backend.query("update content_entry_versions set data_jsonb = data_jsonb || '{\"internal_note\": \"do not ship\"}'::jsonb where entry_id = $1", [entryId]);
+    const [role] = await backend.query<{ id: string }>("insert into roles (workspace_id, key, name) values ($1, 'reviewer', 'Reviewer') returning id", [workspaceId]);
+    await backend.query("insert into member_roles (workspace_member_id, role_id) select id, $2 from workspace_members where workspace_id = $1 and admin_user_id = $3", [workspaceId, role.id, adminUserId]);
+    await backend.query("insert into content_field_permissions (workspace_id, content_model_id, field_key, role_id, can_read, can_write) values ($1, $2, 'internal_note', $3, false, false)", [workspaceId, modelId, role.id]);
+    const { token } = await createPreviewToken({ workspaceId, entryId, actorId: adminUserId });
+    const resolved = await resolvePreviewToken(token);
+    expect(resolved.content_entry_versions.data_jsonb).toEqual({ title: "Preview me" });
+    await backend.query("update workspace_members set status = 'suspended' where workspace_id = $1 and admin_user_id = $2", [workspaceId, adminUserId]);
+    expect((await resolvePreviewToken(token)).content_entry_versions.data_jsonb).toEqual({});
   });
 
   it("saves, lists and deletes saved entry views per user", async () => {

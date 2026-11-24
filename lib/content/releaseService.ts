@@ -1,5 +1,7 @@
 // Content area, releases: the readiness and lifecycle rules live here and are shared by both data
 // paths; queries and SQL function calls are primitives in releaseData.ts.
+import { getDb } from "@/lib/db/index";
+import { scheduledPublishCheck } from "@/lib/developer/items/schedule";
 import * as releaseData from "@/lib/content/releaseData";
 import { runVersionPreflight, type PreflightReport } from "@/lib/content/preflightService";
 
@@ -271,6 +273,12 @@ export async function processDueReleases(params: { workspaceId: string; actorId:
   const data = await releaseData.dueReleases(params.workspaceId, limit);
   const results = [] as Array<{ releaseId: string; ok: boolean; error?: string }>;
   for (const release of data) {
+    // Phase 4: the publisher's rights are checked now, through the items API's permission function.
+    const check = await scheduledPublishCheck(getDb(), params.workspaceId, params.actorId, release.id);
+    if (!check.ok) {
+      results.push({ releaseId: release.id, ok: false, error: `Not published: ${check.reason.replace(/_/g, " ")}` });
+      continue;
+    }
     const result = await publishRelease({ workspaceId: params.workspaceId, actorId: params.actorId, releaseId: release.id });
     results.push(result.ok ? { releaseId: release.id, ok: true } : { releaseId: release.id, ok: false, error: result.error });
   }

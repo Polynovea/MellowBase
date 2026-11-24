@@ -14,6 +14,7 @@ import { getDb } from "@/lib/db/index";
 import { tableSources } from "@/lib/content/tableStore";
 import { archiveEntry, createEntry, getEntry, saveDraft } from "@/lib/content/entryService";
 import type { CanonicalSchema, FieldType } from "@/lib/schema/fields/types";
+import { loadModelRefs } from "@/lib/developer/items/models";
 import { lookupFor, resolveModelAccesses, sanitise, type ModelAccess, type ModelRef, type Principal } from "@/lib/developer/items/access";
 import { decodeCursor, encodeCursor, sortSpecHash } from "@/lib/developer/items/cursor";
 import { ItemsApiError } from "@/lib/developer/items/errors";
@@ -44,16 +45,6 @@ interface Loaded {
   queryModels: Map<string, QueryModel>;
   accesses: Map<string, ModelAccess>;
   lookup: FieldLookup;
-}
-
-async function loadModelRefs(db: Kysely<DB>, workspaceId: string, apiKeys: readonly string[]): Promise<ModelRef[]> {
-  if (!apiKeys.length) return [];
-  const rows = await db.selectFrom("content_models as m")
-    .innerJoin("content_model_versions as v", (join) => join.onRef("v.content_model_id", "=", "m.id").onRef("v.version_number", "=", "m.current_schema_version"))
-    .select(["m.id", "m.api_key", "m.workspace_id", "v.schema_json", "v.schema_hash"])
-    .where("m.workspace_id", "=", workspaceId).where("m.status", "=", "active").where("m.api_key", "in", [...apiKeys])
-    .execute();
-  return rows.map((row) => ({ id: row.id, apiKey: row.api_key, workspaceId: row.workspace_id, schema: row.schema_json as unknown as CanonicalSchema, schemaHash: row.schema_hash }));
 }
 
 /** The model and every model its relations reach within RELATION_DEPTH hops, resolved for the principal. */

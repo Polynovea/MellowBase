@@ -32,9 +32,14 @@ const STATUS: Record<ItemErrorCode, number> = {
 /** An expected refusal with a stable code; its message is safe to show to the caller. */
 export class ItemsApiError extends Error {
   readonly status: number;
-  constructor(readonly code: ItemErrorCode, message: string, readonly details?: unknown) {
+  readonly code: ItemErrorCode;
+  readonly details?: unknown;
+  // No parameter properties: the delivery worker loads this file with Node's type stripping.
+  constructor(code: ItemErrorCode, message: string, details?: unknown) {
     super(message);
     this.name = "ItemsApiError";
+    this.code = code;
+    this.details = details;
     this.status = STATUS[code];
   }
 }
