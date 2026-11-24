@@ -168,8 +168,10 @@ try {
       return false;
     }
   };
-  let signedIn = true;
-  if (stages.includes("wizard")) signedIn = playwright("setup", ["wizard", "signin"]);
+  if (stages.includes("wizard")) playwright("setup", ["wizard", "signin"]);
+  // The later stages need the signed-in owner that sign-in saves; a soft failure earlier (an axe
+  // finding on a wizard screen, say) must not skip them.
+  const signedIn = existsSync(path.join(stateDir, "signed-in.json"));
   if (!signedIn) {
     log("the wizard or sign-in failed: the other stages need the owner they create, so they are skipped");
   } else {
