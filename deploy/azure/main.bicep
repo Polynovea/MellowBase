@@ -116,41 +116,46 @@ var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 // Bicep can't put a pattern on a parameter, so each rule is computed here and handed to a tiny nested
 // deployment whose parameters accept only true. A broken rule fails that deployment, naming the rule,
 // before any other resource is created (everything depends on it).
+//
+// Written with plain variables and single-level lambdas, not user-defined functions: functions make
+// the compiled template ARM language version 2.0, which policy scanners (checkov) can't read. Strings
+// are compared, never converted, so a bad value can't stop a check from running.
+var hex = '0123456789abcdef'
 
-func allIn(text string, alphabet string) bool =>
-  empty(filter(range(0, length(text)), i => !contains(alphabet, substring(text, i, 1))))
+// The CMS image: ghcr.io/polynovea/<name>@sha256:<64 hex>.
+var cmsParts = split(containerImage, '@sha256:')
+var cmsName = first(cmsParts)
+var cmsDigest = last(cmsParts)
+var containerImageOk = length(cmsParts) == 2 && startsWith(cmsName, 'ghcr.io/polynovea/') && length(cmsName) > 18 && empty(filter(range(0, length(cmsName)), i => !contains('abcdefghijklmnopqrstuvwxyz0123456789._/-', substring(cmsName, i, 1)))) && length(cmsDigest) == 64 && empty(filter(range(0, length(cmsDigest)), i => !contains(hex, substring(cmsDigest, i, 1))))
 
-func isDigestRef(ref string, names string[]) bool =>
-  length(split(ref, '@sha256:')) == 2 && contains(names, first(split(ref, '@sha256:'))) && length(last(split(ref, '@sha256:'))) == 64 && allIn(last(split(ref, '@sha256:')), '0123456789abcdef')
+// The proxy: Caddy's official image, caddy@sha256:<64 hex>.
+var caddyParts = split(caddyImage, '@sha256:')
+var caddyDigest = last(caddyParts)
+var caddyImageOk = length(caddyParts) == 2 && contains(['caddy', 'docker.io/library/caddy'], first(caddyParts)) && length(caddyDigest) == 64 && empty(filter(range(0, length(caddyDigest)), i => !contains(hex, substring(caddyDigest, i, 1))))
 
-func isPolynoveaImage(ref string) bool =>
-  length(split(ref, '@sha256:')) == 2 && startsWith(ref, 'ghcr.io/polynovea/') && length(first(split(ref, '@sha256:'))) > 18 && allIn(first(split(ref, '@sha256:')), 'abcdefghijklmnopqrstuvwxyz0123456789._/-') && length(last(split(ref, '@sha256:'))) == 64 && allIn(last(split(ref, '@sha256:')), '0123456789abcdef')
-
-// An IPv4 range such as 203.0.113.7/32. Octets and prefix are compared as strings of equal length
-// ('249' <= '255'), so nothing is converted and a bad value can't stop the check from running.
-func isOctet(o string) bool =>
-  !empty(o) && length(o) <= 3 && allIn(o, '0123456789') && (length(o) < 3 || o <= '255')
-
-func isIpv4Cidr(text string) bool =>
-  length(split(text, '/')) == 2 && length(split(first(split(text, '/')), '.')) == 4 && empty(filter(split(first(split(text, '/')), '.'), o => !isOctet(o))) && !empty(last(split(text, '/'))) && length(last(split(text, '/'))) <= 2 && allIn(last(split(text, '/')), '0123456789') && (length(last(split(text, '/'))) < 2 || last(split(text, '/')) <= '32')
+// One IPv4 range such as 203.0.113.7/32: digits and dots, four octets of at most '255', prefix at most '32'.
+var cidrParts = split(adminCidr, '/')
+var cidrAddress = first(cidrParts)
+var cidrPrefix = last(cidrParts)
+var cidrOctets = split(cidrAddress, '.')
+var adminCidrOk = length(cidrParts) == 2 && empty(filter(range(0, length(cidrAddress)), i => !contains('0123456789.', substring(cidrAddress, i, 1)))) && length(cidrOctets) == 4 && empty(filter(cidrOctets, o => empty(o) || length(o) > 3 || (length(o) == 3 && o > '255'))) && !empty(cidrPrefix) && length(cidrPrefix) <= 2 && empty(filter(range(0, length(cidrPrefix)), i => !contains('0123456789', substring(cidrPrefix, i, 1)))) && (length(cidrPrefix) < 2 || cidrPrefix <= '32')
 
 // A lowercase domain name: letters, digits, dots and hyphens, at least one dot, no empty label, no
 // label starting or ending with a hyphen.
-func isDomain(text string) bool =>
-  length(text) <= 253 && allIn(text, 'abcdefghijklmnopqrstuvwxyz0123456789.-') && contains(text, '.') && empty(filter(split(text, '.'), label => empty(label) || startsWith(label, '-') || endsWith(label, '-')))
+var domainOk = length(domain) <= 253 && contains(domain, '.') && empty(filter(range(0, length(domain)), i => !contains('abcdefghijklmnopqrstuvwxyz0123456789.-', substring(domain, i, 1)))) && empty(filter(split(domain, '.'), label => empty(label) || startsWith(label, '-') || endsWith(label, '-')))
 
-// An email address with no spaces or line breaks (these values are written into the VM's settings
-// file, so a line break could add a setting).
-func isEmail(text string) bool =>
-  length(split(text, '@')) == 2 && !empty(first(split(text, '@'))) && contains(last(split(text, '@')), '.') && !contains(text, ' ') && !contains(text, '\n') && !contains(text, '\r') && !contains(text, '\t')
+// Email addresses with no spaces or line breaks (they're written into the VM's settings file, so a
+// line break could add a setting).
+var acmeEmailOk = length(split(acmeEmail, '@')) == 2 && !empty(first(split(acmeEmail, '@'))) && contains(last(split(acmeEmail, '@')), '.') && !contains(acmeEmail, ' ') && !contains(acmeEmail, '\n') && !contains(acmeEmail, '\r') && !contains(acmeEmail, '\t')
+var budgetEmailOk = length(split(budgetEmail, '@')) == 2 && !empty(first(split(budgetEmail, '@'))) && contains(last(split(budgetEmail, '@')), '.') && !contains(budgetEmail, ' ') && !contains(budgetEmail, '\n') && !contains(budgetEmail, '\r') && !contains(budgetEmail, '\t')
 
 var inputRules = {
-  containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || isPolynoveaImage(containerImage)
-  caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || isDigestRef(caddyImage, ['caddy', 'docker.io/library/caddy'])
-  adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32: empty(adminCidr) || isIpv4Cidr(adminCidr)
-  domainMustBeBlankOrALowercaseDomainNameSuchAsCmsExampleCom: empty(domain) || isDomain(domain)
-  acmeEmailMustBeBlankOrAnEmailAddress: empty(acmeEmail) || isEmail(acmeEmail)
-  budgetEmailMustBeAnEmailAddress: isEmail(budgetEmail)
+  containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || containerImageOk
+  caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || caddyImageOk
+  adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32: empty(adminCidr) || adminCidrOk
+  domainMustBeBlankOrALowercaseDomainNameSuchAsCmsExampleCom: empty(domain) || domainOk
+  acmeEmailMustBeBlankOrAnEmailAddress: empty(acmeEmail) || acmeEmailOk
+  budgetEmailMustBeAnEmailAddress: budgetEmailOk
   setADomainOrAnAdminCidrOtherwiseNobodyCanReachTheSetupWizard: !empty(domain) || !empty(adminCidr)
 }
 
