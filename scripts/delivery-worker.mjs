@@ -8,7 +8,7 @@
  * Unsupported job kinds remain queued rather than being falsely consumed.
  */
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import pg from "pg";
 import { guardedFetch } from "../lib/infrastructure/guardedNetwork.mjs";
@@ -20,6 +20,10 @@ import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs"
 import { decryptConfig } from "../lib/setup/configCipher.mjs";
 import { databaseUrlFromConfig, readInstallConfigSync } from "../lib/setup/configStore.mjs";
 import { tlsConnectionFor } from "../lib/setup/installConnection.mjs";
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { restoreTestDue } from "../lib/system/restoreTest.mjs";
+import { dataRoot, inServerImage } from "../lib/system/serverHost.mjs";
 
 if (existsSync(".env.local")) {
   for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
@@ -503,15 +507,62 @@ async function dispatchAnalyticsSync(client,job){
 
 const client = new pg.Client(connectionSettings);
 await client.connect();
+
+// The System Doctor's worker check reads this (migration 0077). Before 0077 is applied the column is
+// missing; the worker keeps running and says so once.
+let lastHeartbeat = 0;
+let heartbeatWarned = false;
+async function heartbeat() {
+  if (Date.now() - lastHeartbeat < 30_000) return;
+  lastHeartbeat = Date.now();
+  await client.query("update cms_runtime_state set worker_heartbeat_at = now() where singleton = true").catch((error) => {
+    if (!heartbeatWarned) console.error("[delivery-worker] heartbeat not recorded", error.code ?? error.message);
+    heartbeatWarned = true;
+  });
+}
+
+// The monthly restore test of the bundled database's backups (lib/system/restoreTest.mjs), and one
+// right after setup's first backup (the wizard leaves <data root>/restore-test-due). It runs as a
+// separate low-priority process so deliveries keep flowing; its result goes to system_restore_tests.
+let restoreTestChild = null;
+async function maybeStartRestoreTest() {
+  if (restoreTestChild || !inServerImage()) return;
+  try {
+    const { rows: [install] } = await client.query("select database_mode from public.installation limit 1");
+    if (install?.database_mode !== "local") return;
+    const { rows: [state] } = await client.query(
+      "select max(finished_at) filter (where status = 'passed') as last_passed, max(started_at) as last_attempt from public.system_restore_tests",
+    );
+    const marker = path.join(dataRoot(), "restore-test-due");
+    const reason = restoreTestDue({
+      lastPassedAt: state?.last_passed ? new Date(state.last_passed).toISOString() : null,
+      lastAttemptAt: state?.last_attempt ? new Date(state.last_attempt).toISOString() : null,
+      dueMarker: existsSync(marker),
+    });
+    if (!reason) return;
+    const cli = path.join(process.cwd(), "scripts", "polynovea-cms.mjs");
+    const lowPriority = existsSync("/usr/bin/ionice") ? ["/usr/bin/ionice", "-c", "3", "/usr/bin/nice", "-n", "19"] : ["/usr/bin/nice", "-n", "19"];
+    console.log(`[delivery-worker] starting a restore test (${reason})`);
+    restoreTestChild = spawn(lowPriority[0], [...lowPriority.slice(1), process.execPath, cli, "system", "restore-test", "--reason", reason], { stdio: "inherit", env: process.env });
+    restoreTestChild.on("exit", (code) => {
+      restoreTestChild = null;
+      if (code === 0 && reason === "first_backup") rmSync(marker, { force: true });
+    });
+  } catch (error) {
+    console.error("[delivery-worker] restore test scheduling skipped", error.code ?? error.message);
+  }
+}
 console.log(`[delivery-worker] started ${workerId}; adapters=${SUPPORTED_KINDS.join(",")}; queues=${SUPPORTED_QUEUES.join(",")}`);
 let lastMaintenanceSeed = 0;
 
 try {
   while (!stopping) {
+    await heartbeat();
     if (maintenanceEnabled && Date.now() - lastMaintenanceSeed > 3_600_000) {
       await client.query("select cms_age_analytics_freshness()").catch((error) => console.error("[delivery-worker] freshness aging failed", error.message));
       await client.query("select cms_enqueue_daily_maintenance_jobs()").catch((error) => console.error("[delivery-worker] maintenance enqueue failed", error.message));
       lastMaintenanceSeed = Date.now();
+      await maybeStartRestoreTest();
     }
     const jobs = [];
     for (const queueName of SUPPORTED_QUEUES) {

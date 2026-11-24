@@ -1,3 +1,6 @@
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+import { dataRoot } from "@/lib/system/serverHost.mjs";
 import { DatabaseSetupError } from "@/lib/setup/database/errors";
 import { LOCAL_SERVER_UNAVAILABLE, localServerHostForThisImage, localServerSettings, parseBackupChoice, runLocalServerSetup } from "@/lib/setup/database/localServer";
 import { openDatabaseStep, readJsonBody, saveDatabaseConfig, startDatabaseRun } from "@/lib/setup/database/routeSupport";
@@ -39,9 +42,11 @@ export async function POST(request: Request): Promise<Response> {
       ...localServerSettings(),
       emit,
       saveConfig: (result) => saveDatabaseConfig(result, session),
-      // The backup worker's first job is a real restore test; it reads this flag (Phase 5 worker).
+      // The worker runs a real restore test as soon as it sees this marker (lib/system/restoreTest.mjs).
       recordRestoreTestPending: async () => {
-        console.info("[setup/database] First backup verified; a restore test is due as the backup worker's first job.");
+        await writeFile(path.posix.join(dataRoot(), "restore-test-due"), `${new Date().toISOString()}
+`, { mode: 0o600 });
+        console.info("[setup/database] First backup verified; the worker runs a restore test next.");
       },
     });
   });
