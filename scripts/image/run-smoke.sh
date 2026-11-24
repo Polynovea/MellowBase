@@ -132,6 +132,22 @@ docker exec "$PREFIX-tunnel" sh -ec '
   echo "FAIL  no recent worker heartbeat (got [$beat])"; exit 1
 '
 
+step "Schema worker: the bundle runs, as polynovea_owner from config.enc, with no credential in its environment"
+docker exec "$PREFIX-tunnel" sh -ec '
+  found=""
+  for p in /proc/[0-9]*; do
+    if tr "\0" " " < "$p/cmdline" 2>/dev/null | grep -q "dist/schema-migration-worker.mjs"; then found="$p"; fi
+  done
+  if [ -n "$found" ]; then echo "ok    schema worker process runs dist/schema-migration-worker.mjs"; else echo "FAIL  no schema worker process"; exit 1; fi
+  if tr "\0" "\n" < "$found/environ" | grep -qiE "^(POLYNOVEA_MIGRATION_DATABASE_URL|DATABASE_URL)=.*polynovea_owner|postgres(ql)?://polynovea_owner"; then echo "FAIL  the owner credential is in the schema worker environment"; exit 1; else echo "ok    no owner credential in the schema worker environment"; fi
+'
+for i in $(seq 1 30); do
+  if docker logs "$PREFIX-tunnel" 2>&1 | grep -q "\"worker\":\"schema\",\"event\":\"started\".*\"connection\":\"config.enc\""; then echo "ok    schema worker started as polynovea_owner from config.enc"; break; fi
+  if [ "$i" = 30 ]; then echo "FAIL  schema worker did not start"; docker logs "$PREFIX-tunnel" 2>&1 | grep "\"worker\":\"schema\"" | tail -5; exit 1; fi
+  sleep 2
+done
+if docker logs "$PREFIX-tunnel" 2>&1 | grep -q "\"worker\":\"schema\",\"event\":\"loop_error\""; then echo "FAIL  schema worker loop errors"; docker logs "$PREFIX-tunnel" 2>&1 | grep "\"worker\":\"schema\"" | tail -5; exit 1; else echo "ok    schema worker loop without errors"; fi
+
 step "Published port + 0.0.0.0: plain-HTTP setup refused"
 docker volume create "$PREFIX-data2" >/dev/null
 docker run -d --name "$PREFIX-public" -e HOSTNAME=0.0.0.0 -p 127.0.0.1:38080:3000 -v "$PREFIX-data2:/var/lib/polynovea" "$IMAGE" >/dev/null

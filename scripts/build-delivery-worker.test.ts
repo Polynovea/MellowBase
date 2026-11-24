@@ -44,3 +44,28 @@ describe("the delivery worker bundle (what the image runs)", () => {
     });
   }, 120_000);
 });
+
+describe("the schema migration worker bundle", () => {
+  it("builds; only it carries the owner pool (the delivery worker bundle never does)", async () => {
+    const delivery = await buildWorker({ outFile: `${OUT}/delivery-worker.mjs` });
+    const schema = await buildWorker({ input: "scripts/schema-migration-worker.mjs", outFile: `${OUT}/schema-migration-worker.mjs` });
+    execFileSync(process.execPath, ["--check", schema.outFile]);
+    expect(delivery.typeScriptModules).not.toContain("lib/schema/runner/ownerPool.ts");
+    expect(schema.typeScriptModules).toContain("lib/schema/runner/ownerPool.ts");
+    const deliveryText = readFileSync(delivery.outFile, "utf8");
+    expect(deliveryText).not.toMatch(/owner_pool_in_app|polynovea-schema-runner/);
+    expect(readFileSync(schema.outFile, "utf8")).toMatch(/polynovea-schema-runner/);
+  }, 120_000);
+
+  it("in setup mode (no config.enc, no database URL) it exits 3 and logs not_configured, in plain Node", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const empty = mkdtempSync(path.join(tmpdir(), "p4-schema-worker-"));
+    const env: NodeJS.ProcessEnv = { NODE_ENV: "production", PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "", POLYNOVEA_CONFIG_DIR: empty };
+    const { spawnSync } = await import("node:child_process");
+    const run = spawnSync(process.execPath, ["--no-warnings", path.join(root, OUT, "schema-migration-worker.mjs")], { cwd: empty, env, encoding: "utf8", timeout: 60_000 });
+    expect(run.status).toBe(3);
+    expect(run.stdout).toMatch(/"event":"not_configured"/);
+    expect(`${run.stdout}${run.stderr}`).not.toMatch(/postgres(ql)?:\/\//);
+  }, 120_000);
+});

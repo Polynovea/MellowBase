@@ -26,6 +26,8 @@ const ENTRY_POINTS = [
   // The bundle from scripts/build-delivery-worker.mjs: the worker and the TypeScript it imports, as
   // plain JavaScript. Its npm packages are traced from here; no lib/**/*.ts or loader ships for it.
   "dist/delivery-worker.mjs",
+  // The schema migration worker, bundled the same way (it applies model changes as polynovea_owner).
+  "dist/schema-migration-worker.mjs",
   "scripts/run-migrations.mjs",
   "scripts/polynovea-cms.mjs",
 ];

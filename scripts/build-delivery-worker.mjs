@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 /**
- * Bundles the delivery worker to one plain-JavaScript file for the server image:
+ * Bundles the server image's workers, each to one plain-JavaScript file:
  *
- *   node scripts/build-delivery-worker.mjs [--out=dist/delivery-worker.mjs]
+ *   node scripts/build-delivery-worker.mjs   # dist/delivery-worker.mjs, dist/schema-migration-worker.mjs
+ *
+ * The schema migration worker (polynovea_owner, its own pool) is bundled the same way; it reads the
+ * owner login from config.enc itself, so the credential never passes through the server's env.
  *
  * The worker imports TypeScript (the items API's permission check, lib/developer/items/schedule.ts,
  * with `@/` imports) that plain Node cannot load without the development loader. The image ships no
@@ -46,11 +49,17 @@ export async function buildWorker({ input = "scripts/delivery-worker.mjs", outFi
   return { outFile: path.join(root, outFile), typeScriptModules: modules };
 }
 
+/** The workers the server image runs, each as one bundle. */
+export const WORKERS = [
+  { input: "scripts/delivery-worker.mjs", outFile: "dist/delivery-worker.mjs" },
+  { input: "scripts/schema-migration-worker.mjs", outFile: "dist/schema-migration-worker.mjs" },
+];
+
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedDirectly) {
-  const outArg = process.argv.find((arg) => arg.startsWith("--out="));
-  const outFile = outArg ? outArg.slice("--out=".length) : "dist/delivery-worker.mjs";
-  const { outFile: written, typeScriptModules } = await buildWorker({ outFile });
-  if (!existsSync(written)) throw new Error(`The worker bundle was not written: ${written}`);
-  console.log(`[build-delivery-worker] ${path.relative(ROOT, written)} (${typeScriptModules.length} TypeScript modules inlined)`);
+  for (const worker of WORKERS) {
+    const { outFile: written, typeScriptModules } = await buildWorker(worker);
+    if (!existsSync(written)) throw new Error(`The worker bundle was not written: ${written}`);
+    console.log(`[build-delivery-worker] ${path.relative(ROOT, written)} (${typeScriptModules.length} TypeScript modules inlined)`);
+  }
 }
