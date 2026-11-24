@@ -15,12 +15,13 @@ COSIGN_PASSWORD='<from the password manager>' node scripts/release/build-and-sig
 It stops at the first failure, and in order:
 
 1. checks the working tree is committed and the key pair exists (it never prints or copies the private key);
-2. builds `linux/amd64` and `linux/arm64` and pushes once, recording the image digest;
+2. builds `linux/amd64` and `linux/arm64` and pushes them **by digest only** (no tag yet), recording the digest;
 3. makes an SPDX SBOM for each platform with **syft**;
 4. signs the image index and every platform image with cosign;
 5. attaches each SBOM to its platform image as a **signed attestation**;
 6. writes `release.json` (release ID, digests, SBOM hashes, base image and tool digests, the public key's hash) and signs it;
-7. verifies all of it again with the public key alone, as an installer would.
+7. verifies all of it again with the public key alone, as an installer would;
+8. only then tags `<image>:<version>` to that exact digest (`docker buildx imagetools create`), so a tag never points at an unsigned image.
 
 Output folder (`dist/release/<release ID>/`): `release.json`, `release.json.sig`, `sbom-amd64.spdx.json`, `sbom-arm64.spdx.json`, `cosign.pub`, `build-metadata.json`. Publish them with the release.
 

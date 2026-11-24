@@ -27,7 +27,8 @@
  *   4. signs the index and every platform manifest with cosign (--recursive);
  *   5. attaches each SBOM to its platform manifest as a signed SPDX attestation;
  *   6. writes release.json (digests, SBOM hashes, tool and base image digests) and signs it as a blob;
- *   7. verifies everything again with the public key alone, as an installer or upgrade would.
+ *   7. verifies everything again with the public key alone, as an installer or upgrade would;
+ *   8. only then tags <image>:<version> to that digest (the build pushed by digest, with no tag).
  *
  * syft and cosign run from their images, pinned by digest, so the release machine needs only Docker.
  * Only the three signing steps (sign, attest, sign-blob) see the private key (that one file, read-only)
@@ -175,8 +176,8 @@ export async function main(argv = process.argv.slice(2)) {
     "--build-arg", `POLYNOVEA_REVISION=${revision}`,
     "--provenance=false",
     "--metadata-file", metadataFile,
-    "--tag", `${options.image}:${options.version}`,
-    "--push",
+    // Pushed by digest only: no tag exists until every signature has verified (step 8).
+    "--output", `type=image,name=${options.image},push-by-digest=true,name-canonical=true,push=true`,
     ".",
   ]);
   const buildSeconds = Math.round((Date.now() - started) / 1000);
@@ -216,6 +217,7 @@ export async function main(argv = process.argv.slice(2)) {
     image: options.image,
     digest,
     ref,
+    tag: `${options.image}:${options.version}`,
     platforms,
     sboms,
     baseImages: baseImages(),
@@ -231,7 +233,14 @@ export async function main(argv = process.argv.slice(2)) {
 
   step("7. Verify with the public key only");
   verifyRelease({ out, image: options.image, digest, platforms, tlog: options.tlog });
-  console.log(`\nRelease ${releaseId} signed and verified. Files: ${out}`);
+
+  step("8. Tag the verified digest");
+  // Only now does the version tag appear in the registry, pointing at exactly the signed digest.
+  run("docker", ["buildx", "imagetools", "create", "--tag", release.tag, ref]);
+  const tagged = JSON.parse(run("docker", ["buildx", "imagetools", "inspect", release.tag, "--format", "{{json .Manifest}}"], { capture: true })).digest;
+  if (tagged !== digest) throw new Error(`${release.tag} points at ${tagged}, not the signed ${digest}`);
+  console.log(`tagged ${release.tag} -> ${digest}`);
+  console.log(`\nRelease ${releaseId} signed, verified and tagged. Files: ${out}`);
   return release;
 }
 

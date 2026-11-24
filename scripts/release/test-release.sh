@@ -62,6 +62,9 @@ node scripts/release/build-and-sign.mjs --image "$IMAGE" --version 0.0.0-test.1 
 DIGEST="$(node -e "console.log(require(process.argv[1]).digest)" "$(winpath "$OUT/release.json")")"
 echo "release.json: $(node -e "const r=require(process.argv[1]);console.log(r.releaseId, r.digest, Object.keys(r.platforms).join(','), 'SBOM packages:', Object.keys(r.sboms).map(a=>a+'='+require(require('path').join(require('path').dirname(process.argv[1]), r.sboms[a].file)).packages.length).join(' '))" "$(winpath "$OUT/release.json")")"
 
+TAGGED="$(docker buildx imagetools inspect "$IMAGE:0.0.0-test.1" --format '{{json .Manifest}}' | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).digest))")"
+if [ "$TAGGED" = "$DIGEST" ]; then echo "ok    the version tag was added after verification and points at the signed digest"; else echo "FAIL: tag points at $TAGGED, signed digest is $DIGEST"; exit 1; fi
+
 echo "== Negative checks"
 fails() { if "$@" >/dev/null 2>&1; then echo "FAIL: expected this to fail: $*" >&2; exit 1; fi; }
 fails docker run --rm --network host -v "$(winpath "$OTHER"):/keys:ro" "$COSIGN" verify --key /keys/cosign.pub --insecure-ignore-tlog=true "$IMAGE@$DIGEST"
