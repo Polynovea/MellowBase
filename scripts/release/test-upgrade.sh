@@ -66,6 +66,10 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+# A signal (Ctrl-C, timeout's SIGTERM) also ends in cleanup: the Docker-socket stand-in never outlives us.
+trap 'exit 130' INT TERM HUP
+# Leftovers of an earlier, killed run.
+docker rm -f "$CMS" "$AGENT" "$PREFIX-registry" "$PREFIX-channel" >/dev/null 2>&1 || true
 
 step() { printf '\n== %s\n' "$*"; }
 ok() { echo "ok    $*"; }
