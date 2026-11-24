@@ -63,6 +63,18 @@ run() { # run NAME [--entrypoint X] IMAGE CMD...
   docker run --rm --name "$PREFIX-$name" --memory 2g --cpus 2 -v "$MOUNT:/deploy" -w /deploy "${extra[@]}" "$@"
 }
 
+checkov_scan() { # checkov_scan FRAMEWORK -f FILE | -d DIR
+  local framework="$1" out rc; shift
+  out="$(run "checkov-$framework" bridgecrew/checkov:3.2.495 --config-file /deploy/scripts/checkov.yaml --framework "$framework" "$@" 2>&1)"
+  rc=$?
+  printf '%s\n' "$out" | grep -v "WARNI\]  No defaultValue"
+  if ! printf '%s\n' "$out" | grep -q "^$framework scan results:"; then
+    echo "checkov printed no $framework scan results: the file was not scanned" >&2
+    return 1
+  fi
+  return "$rc"
+}
+
 FAILED=()
 step() { # step LABEL CMD...
   local label="$1"; shift
@@ -107,13 +119,13 @@ for s in "${STEPS[@]}"; do
         -S warning scripts/vm-bootstrap.sh scripts/validate.sh scripts/build-azure.sh
       ;;
     checkov)
-      # Two scans: given a directory, checkov ignores -f files.
-      step "checkov (CloudFormation + ARM)" run checkov-templates bridgecrew/checkov:3.2.495 \
-        --config-file /deploy/scripts/checkov.yaml --framework cloudformation arm \
-        -f /deploy/aws/polynovea.yaml -f /deploy/azure/azuredeploy.json
-      step "checkov (OpenTofu)" run checkov-tofu bridgecrew/checkov:3.2.495 \
-        --config-file /deploy/scripts/checkov.yaml --framework terraform \
-        -d /deploy/opentofu
+      # One scan per framework. The Azure template is scanned from its Bicep source: with
+      # user-defined functions it compiles to ARM language version 2.0, which checkov's ARM scanner
+      # skips without a word. Each scan must print its "<framework> scan results" line, so a skipped
+      # file fails instead of passing silently.
+      step "checkov (CloudFormation)" checkov_scan cloudformation -f /deploy/aws/polynovea.yaml
+      step "checkov (Azure Bicep)" checkov_scan bicep -f /deploy/azure/main.bicep
+      step "checkov (OpenTofu)" checkov_scan terraform -d /deploy/opentofu
       ;;
     *) echo "unknown step: $s" >&2; FAILED+=("$s") ;;
   esac

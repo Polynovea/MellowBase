@@ -83,7 +83,7 @@ The templates in the repository are a **development build**: they carry no image
 
 ```bash
 npx vitest run deploy/templates.test.ts   # secret reference + policy checks, no Docker
-bash deploy/scripts/validate.sh           # cfn-lint, bicep build + lint, tofu fmt/validate, checkov
+bash deploy/scripts/validate.sh           # release gate, cfn-lint, bicep build + lint, tofu fmt/validate, shellcheck, checkov
 bash deploy/scripts/build-azure.sh        # recompile azure/azuredeploy.json after editing main.bicep
 node deploy/scripts/sync-vm-bootstrap.mjs # regenerate the first-boot script after the release package's VM files change
 ```
