@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { checkBaseUrl, typesPull } from "../lib/typesPull.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const FIXTURE = readFileSync(resolve(here, "../../cms-sdk/test/fixture/polynovea-cms.ts"), "utf8");
+const FIXTURE = readFileSync(resolve(here, "../../cms-sdk/test/fixture/polynovea-cms.ts"), "utf8").replace(/\r\n/g, "\n");
 const TOKEN = "pnv_cli_secret_token";
 
 function run(flags: Record<string, unknown>, fetchImpl: typeof fetch, cwd: string, env: Record<string, string> = { POLYNOVEA_CMS_TOKEN: TOKEN }) {
