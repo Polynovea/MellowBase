@@ -13,6 +13,8 @@
  *   are `__Host-`, HttpOnly, Secure, SameSite=Lax. 12-hour idle and 7-day absolute timeouts. Every
  *   sign-in creates a new session and ends the one the browser had, so the session ID changes on
  *   login and a step-up re-authentication never leaves the old session behind.
+ * - Second-factor checks run strictly one at a time per account (serialVerification.ts), so the
+ *   per-challenge attempt budget and the account pause count every parallel attempt.
  * - Rate limits stored in the database; client IPs read from X-Forwarded-For only through the
  *   configured trusted proxies, and IPv6 addresses bucketed per /64. Sign-in is also throttled per
  *   account.
@@ -28,6 +30,7 @@ import { sql, type Kysely } from "kysely";
 import type { DB } from "@/lib/db/generated/database";
 import { AuthDateColumnsPlugin } from "@/lib/auth/betterAuth/dateColumns";
 import { hashPassword, needsRehash, verifyPassword } from "@/lib/auth/betterAuth/passwordHash";
+import { createRateLimitLeaseStore, createSerialGate, holdForRequest, runSerialScope, SerialGateBusyError, SERIAL_VERIFICATION_PATHS, serialVerificationKey } from "@/lib/auth/betterAuth/serialVerification";
 import { assertAcceptablePassword, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH_WITH_MFA, PasswordPolicyError, type PwnedRangeFetch } from "@/lib/auth/passwordPolicy";
 
 export const AUTH_SCHEMA = "polynovea_auth";
@@ -81,7 +84,9 @@ export function createPolynoveaAuth(settings: PolynoveaAuthSettings) {
   const userHasMfa = async (adapter: { count: (q: { model: string; where: { field: string; value: string }[] }) => Promise<number> }, user: HookUser) =>
     Boolean(user.twoFactorEnabled) || (await adapter.count({ model: "passkey", where: [{ field: "userId", value: user.id }] })) > 0;
 
-  return betterAuth({
+  const serialGate = createSerialGate({ store: createRateLimitLeaseStore(settings.db, `${AUTH_SCHEMA}.rateLimit`) });
+
+  const auth = betterAuth({
     appName: "Polynovea CMS",
     baseURL: settings.baseURL,
     secret: settings.secret,
@@ -164,6 +169,22 @@ export function createPolynoveaAuth(settings: PolynoveaAuthSettings) {
     },
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
+        // Second-factor checks for one sign-in wait in line per account (see serialVerification.ts).
+        // The account comes from the signed challenge cookie, checked by the library; anything
+        // without a live challenge is refused by the endpoint itself, so it is not queued.
+        if (SERIAL_VERIFICATION_PATHS.has(ctx.path)) {
+          const challenge = await ctx.getSignedCookie(ctx.context.createAuthCookie("two_factor").name, ctx.context.secret).catch(() => null);
+          const verification = challenge ? await ctx.context.internalAdapter.findVerificationValue(challenge).catch(() => null) : null;
+          if (verification && new Date(verification.expiresAt).getTime() > Date.now()) {
+            try {
+              await holdForRequest(serialGate, serialVerificationKey(verification.value));
+            } catch (error) {
+              if (error instanceof SerialGateBusyError) throw new APIError("TOO_MANY_REQUESTS", { message: error.message });
+              throw error;
+            }
+          }
+        }
+
         // Never remember a device past the second factor: MFA is required at every sign-in.
         if (ctx.path.startsWith("/two-factor/") && ctx.body && typeof ctx.body === "object" && "trustDevice" in ctx.body) {
           ctx.body.trustDevice = false;
@@ -257,6 +278,13 @@ export function createPolynoveaAuth(settings: PolynoveaAuthSettings) {
     ],
     telemetry: { enabled: false },
   });
+
+  // Every HTTP request runs in its own scope, so a lease taken by the before hook is always given
+  // back when the request ends, whether the endpoint succeeded, refused or threw.
+  const handler = auth.handler;
+  auth.handler = (request: Request) => runSerialScope(() => handler(request));
+  if ("fetch" in auth) (auth as { fetch: (request: Request) => Promise<Response> }).fetch = auth.handler;
+  return auth;
 }
 
 export type PolynoveaAuth = ReturnType<typeof createPolynoveaAuth>;
