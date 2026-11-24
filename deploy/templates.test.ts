@@ -318,7 +318,7 @@ describe("policy: OpenTofu", () => {
     expect(tfResource(tofuAws, "aws_instance", "server")).toMatch(/http_tokens\s+= "required"/);
     const db = tfResource(tofuAws, "aws_db_instance", "database");
     for (const re of [/publicly_accessible\s+= false/, /storage_encrypted\s+= true/, /deletion_protection\s+= true/, /backup_retention_period\s+= 7/]) expect(db).toMatch(re);
-    expect(tfResource(tofuAzure, "azurerm_postgresql_flexible_server", "main")).toMatch(/public_network_access_enabled = false/);
+    expect(tfResource(tofuAzure, "azurerm_postgresql_flexible_server", "main")).toMatch(/public_network_access_enabled\s+= false/);
     expect(tfResource(tofuAzure, "azurerm_storage_account", "main")).toMatch(/shared_access_key_enabled\s+= false/);
   });
 });
@@ -522,5 +522,45 @@ describe("review item 1: a link can't swap in someone else's images", () => {
     }
     expect(tfPattern(read("opentofu/modules/aws/variables.tf"), "custom_image_id").test("ami-attacker")).toBe(false);
     expect(tfPattern(read("opentofu/modules/azure/variables.tf"), "custom_image_id").test("/subscriptions/x/providers/Microsoft.Compute/images/y")).toBe(false);
+  });
+});
+
+describe("review item 2: the OpenTofu database password never reaches state or plans", () => {
+  const modules = { aws: tofuAws, azure: tofuAzure };
+
+  it("is an ephemeral value, passed only to write-only arguments", () => {
+    for (const [cloud, text] of Object.entries(modules)) {
+      expect(text, cloud).not.toMatch(/resource "random_password"/);
+      expect(text, cloud).toMatch(/ephemeral "random_password" "database_admin" \{/);
+      // Every use of the ephemeral password sits inside a *_wo argument.
+      const uses = text.split("\n").filter((l) => l.includes("ephemeral.random_password.database_admin"));
+      expect(uses.length, cloud).toBe(2);
+    }
+    const db = tfResource(tofuAws, "aws_db_instance", "database");
+    expect(db).toMatch(/password_wo\s+= ephemeral\.random_password\.database_admin\[0\]\.result/);
+    expect(db).toMatch(/password_wo_version\s+= 1/);
+    expect(db).not.toMatch(/^\s+password\s+=/m);
+    const secret = tfResource(tofuAws, "aws_secretsmanager_secret_version", "database");
+    expect(secret).toMatch(/secret_string_wo_version\s+= 1/);
+    expect(secret).toMatch(/secret_string_wo = jsonencode\(\{[\s\S]+password\s+= ephemeral\.random_password/);
+    expect(secret).not.toMatch(/^\s+secret_string\s+=/m);
+    const server = tfResource(tofuAzure, "azurerm_postgresql_flexible_server", "main");
+    expect(server).toMatch(/administrator_password_wo\s+= ephemeral\.random_password\.database_admin\[0\]\.result/);
+    expect(server).toMatch(/administrator_password_wo_version\s+= 1/);
+    expect(server).not.toMatch(/^\s+administrator_password\s+=/m);
+    const kv = tfResource(tofuAzure, "azurerm_key_vault_secret", "database");
+    expect(kv).toMatch(/value_wo_version\s+= 1/);
+    expect(kv).toMatch(/value_wo = jsonencode\(\{[\s\S]+password = ephemeral\.random_password/);
+    expect(kv).not.toMatch(/^\s+value\s+=/m);
+  });
+
+  it("requires the OpenTofu and provider versions that support it", () => {
+    for (const cloud of ["aws", "azure"]) {
+      const versions = read(`opentofu/modules/${cloud}/versions.tf`);
+      expect(versions).toMatch(/required_version = ">= 1\.11\.0"/);
+      expect(versions).toMatch(/hashicorp\/random"\n\s+version = ">= 3\.7, < 4\.0"/);
+      expect(read(`opentofu/examples/${cloud}/main.tf`)).toMatch(/required_version = ">= 1\.11\.0"/);
+    }
+    expect(read("opentofu/modules/azure/versions.tf")).toMatch(/hashicorp\/azurerm"\n\s+version = ">= 4\.30, < 5\.0"/);
   });
 });

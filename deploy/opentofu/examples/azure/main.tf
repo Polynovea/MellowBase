@@ -1,6 +1,7 @@
 # Example root module: Polynovea CMS on Azure with OpenTofu.
 #
-# State encryption is REQUIRED, not optional: state holds the generated database password. Every
+# State encryption is REQUIRED, not optional. The database password never reaches state or plans
+# (ephemeral and write-only), but state still describes the whole install. Every
 # state and plan file is encrypted with AES-GCM under a key wrapped by your own Azure Key Vault key
 # (a separate vault from the CMS's), and `enforced = true` makes OpenTofu refuse to write either
 # unencrypted. State lives in your own storage account; nothing goes to Polynovea.
@@ -11,7 +12,7 @@
 #   tofu apply polynovea.plan
 
 terraform {
-  required_version = ">= 1.10.0"
+  required_version = ">= 1.11.0"
 
   backend "azurerm" {
     resource_group_name  = var.state_resource_group
@@ -46,7 +47,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = ">= 4.20, < 5.0"
+      version = ">= 4.30, < 5.0"
     }
   }
 }
