@@ -108,7 +108,7 @@ export default function AddressChoice({ current, port = "3000" }: { current: Add
               <li>
                 On your own computer, open a terminal and run:{" "}
                 <code className="whitespace-nowrap">
-                  ssh -L {port}:localhost:{port} you@your-server
+                  ssh -L {port}:127.0.0.1:{port} you@your-server
                 </code>
               </li>
               <li>Leave that window open.</li>

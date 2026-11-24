@@ -1,7 +1,7 @@
 # Polynovea CMS with Docker Compose. Two ways to reach the setup wizard; pick one profile.
 #
 #   tunnel  The CMS uses the machine's own network (host networking) and listens on 127.0.0.1:3000
-#           only. Reach it with an SSH tunnel: ssh -L 3000:localhost:3000 you@server, then open
+#           only. Reach it with an SSH tunnel: ssh -L 3000:127.0.0.1:3000 you@server, then open
 #           http://localhost:3000/setup (exactly that address: tunnel.env sets it as POLYNOVEA_PUBLIC_URL;
 #           override it in polynovea.env). Linux hosts only (Docker Desktop has no real host networking).
 #

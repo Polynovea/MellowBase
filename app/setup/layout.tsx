@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import AddressCheck from "@/components/setup/AddressCheck";
 import { resolveMode } from "@/lib/setup/mode";
+import { configuredOrigin } from "@/lib/setup/publicAddress";
 
 // The setup wizard's shell. Server-rendered; each step is its own page under /setup.
 // The mode check here is the page-side second layer under middleware.ts: on a finished install every
@@ -23,6 +25,7 @@ const SETUP_STEPS = [
 export default async function SetupLayout({ children }: { children: React.ReactNode }) {
   const { mode } = await resolveMode();
   if (mode === "running") notFound();
+  const expected = configuredOrigin(process.env.POLYNOVEA_PUBLIC_URL);
 
   return (
     <div className="bg-canvas min-h-screen text-fg-primary">
@@ -43,6 +46,7 @@ export default async function SetupLayout({ children }: { children: React.ReactN
           </ol>
         </aside>
         <main className="ui-surface border-subtle min-w-0 flex-1 rounded-lg border p-6">
+          <AddressCheck expected={expected} />
           {mode === "unavailable" ? (
             <section className="ui-section">
               <h2 className="ui-section-title">The database cannot be reached</h2>

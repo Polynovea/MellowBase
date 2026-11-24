@@ -78,12 +78,12 @@ docker run -d --name polynovea --restart unless-stopped --network host \
 `--network host` puts the CMS on the server's own loopback, so an SSH tunnel reaches it from `127.0.0.1`. Then, on your own computer:
 
 ```
-ssh -L 3000:localhost:3000 you@your-server
+ssh -L 3000:127.0.0.1:3000 you@your-server
 ```
 
 Open `http://localhost:3000/setup`, and enter the setup code from `docker logs polynovea`. Host networking needs a Linux server; Docker Desktop on Windows or macOS does not give containers the computer's own loopback.
 
-**Open exactly the address in `POLYNOVEA_PUBLIC_URL`.** The setup wizard's passkey and every sign-in belong to that address, and the CMS cannot work without it. The `tunnel` profile sets it to `http://localhost:3000` (in `docker/tunnel.env`); with plain `docker run`, pass it as above. To your browser, `http://127.0.0.1:3000` is a different address from `http://localhost:3000`: opening it gives a passkey and sign-ins that fail. If you tunnel to another local port or name, set `POLYNOVEA_PUBLIC_URL` to the address you open, in `polynovea.env` (it wins over `tunnel.env`).
+**Open exactly the address in `POLYNOVEA_PUBLIC_URL`.** The setup wizard's passkey and every sign-in belong to that address, and the CMS cannot work without it. The `tunnel` profile sets it to `http://localhost:3000` (in `docker/tunnel.env`); with plain `docker run`, pass it as above. To your browser, `http://127.0.0.1:3000` is a different address from `http://localhost:3000`: opening it gives a passkey and sign-ins that fail. If you tunnel to another local port or name, set `POLYNOVEA_PUBLIC_URL` to the address you open, in `polynovea.env` (it wins over `tunnel.env`): for example `ssh -L 8080:127.0.0.1:3000 you@your-server` with `POLYNOVEA_PUBLIC_URL=http://localhost:8080`. Every setup page shows the configured address and warns when your browser is on a different one.
 
 ### Route 2: HTTPS through Caddy (`proxy` profile)
 
