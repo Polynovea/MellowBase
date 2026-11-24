@@ -10,7 +10,8 @@ import { uniqueKey } from "@/lib/schema/engine/testing";
 import { createModel } from "@/lib/schema/modelService";
 import { bringModelTableUp, closeTableMoveSession } from "@/lib/content/testing/tableMove";
 import { setReadSource } from "@/lib/content/contentMove";
-import { searchContent } from "@/lib/content/searchService";
+import { indexEntry, searchContent } from "@/lib/content/searchService";
+import { getEntry, listEntryVersions } from "@/lib/content/entryService";
 import { createPreviewToken } from "@/lib/content/previewService";
 import { listDeveloperEntries } from "@/lib/developer/resourceService";
 import { logDeveloperApiMutation } from "@/lib/developer/developerAudit";
@@ -107,6 +108,12 @@ async function fixture(backend: BackendFixtures): Promise<Fixture> {
     const up = await bringModelTableUp({ workspaceId, modelId, actor: adminUserId, switchReads: true });
     if (!up.verify.matched) throw new Error(`table for ${modelId} did not match`);
   }
+  // The search documents every save writes (search_text holds every string field, the hidden one too).
+  for (const id of [...people, ...articles]) {
+    const entry = await getEntry(workspaceId, id);
+    const published = (await listEntryVersions(workspaceId, id)).find((version) => version.id === entry?.published_version_id);
+    if (entry && published) await indexEntry(entry, published);
+  }
   return { workspaceId, adminUserId, roles, article: { id: articleId, apiKey: articleKey }, person: { id: personId, apiKey: personKey }, people, articles, draftOnly };
 }
 
@@ -185,6 +192,8 @@ describeWithDatabase("generated items API [postgres]", (backend) => {
         const access = accesses!.get(model)!;
         const readableKeys = new Set([...access.readable].filter((key) => key !== field));
         const restrictedScope = { restricted: new Map([[access.model.id, readableKeys]]), readableModelIds: [access.model.id], readable: new Map([[access.model.id, readableKeys]]) };
+        // Control: without a field scope the stored document matches the hidden term.
+        expect((await searchContent({ workspaceId: fx.workspaceId, query: "zebraword" })).length).toBeGreaterThan(0);
         const docs = await searchContent({ workspaceId: fx.workspaceId, query: "zebraword", fieldScope: restrictedScope });
         expect(docs).toEqual([]);
         const titled = await searchContent({ workspaceId: fx.workspaceId, query: "Alpha", modelId: access.model.id, fieldScope: restrictedScope });
