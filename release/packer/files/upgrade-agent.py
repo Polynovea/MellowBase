@@ -66,12 +66,16 @@ PINNED = re.compile(r"^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$")
 REL_PATH = re.compile(r"^[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9_+-][A-Za-z0-9._+-]*)*$")
 LABEL = re.compile(r"^[0-9A-Za-z_-]{1,64}$")
 SECRETISH = re.compile(r"(postgres(?:ql)?://\S+|password=\S+|PGPASSWORD=\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----)", re.I)
+# The operator command inside the CMS image (scripts/polynovea-cms.mjs, run from /app).
+CLI = ["node", "scripts/polynovea-cms.mjs"]
 COSIGN_IMAGE = "ghcr.io/sigstore/cosign/cosign:v2.6.1@sha256:68839b7f13dac5a6744a5d8818e984dd39183374e37855c19e14d623d9bc9037"
 
 DEFAULTS = {
     "RUNTIME": "systemd",  # systemd | compose
     "REQUEST_DIR": "/var/lib/polynovea/upgrade-requests",
     "STATUS_DIR": "/var/lib/polynovea-upgrade",
+    "DATA_DIR": "/var/lib/polynovea",  # the data disk as dockerd sees it (systemd runtime one-shots)
+    "WORK_DIR": "",  # where release files are checked; must be a path dockerd can bind (default: /tmp)
     "CMS_UID": "10001",
     "CONTAINER": "polynovea",
     "PUBKEY": "/etc/polynovea/release.pub",
@@ -440,7 +444,7 @@ def fetch_and_verify_release(config: dict, release_id: str, status: Status) -> d
         raise Refused("the requested release is not the channel's latest; check for updates again")
     release_bytes = fetch(child_url(base, pointer.get("release")), MAX_RELEASE_BYTES, allow_http)
     signature = fetch(child_url(base, pointer.get("signature")), MAX_SIG_BYTES, allow_http)
-    with tempfile.TemporaryDirectory(prefix="polynovea-release-") as work:
+    with tempfile.TemporaryDirectory(prefix="polynovea-release-", dir=config["WORK_DIR"] or None) as work:
         # Read-only bind mount into the cosign container (another uid): signed public files only.
         os.chmod(work, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
         with open(os.path.join(work, "release.json"), "wb") as handle:
@@ -523,9 +527,11 @@ def cms_command(config: dict, image_ref: str | None, args: list[str], timeout: i
     """polynovea-cms in the running container (image_ref None) or a one-shot container of image_ref."""
     docker = config["DOCKER"]
     if image_ref is None:
-        return run([docker, "exec", config["CONTAINER"], "polynovea-cms"] + args, timeout)
-    command = [docker, "run", "--rm", "--network", f"container:{config['CONTAINER']}"] + one_shot_args(config)
-    return run(command + ["--entrypoint", "polynovea-cms", image_ref] + args, timeout)
+        return run([docker, "exec", "-w", "/app", config["CONTAINER"]] + CLI + args, timeout)
+    # The CMS's own network: the host's on a VM (run-cms.sh), its container's namespace under compose.
+    network = "host" if config["RUNTIME"] == "systemd" else f"container:{config['CONTAINER']}"
+    command = [docker, "run", "--rm", "--network", network] + one_shot_args(config)
+    return run(command + ["--entrypoint", "node", "-w", "/app", image_ref] + CLI[1:] + args, timeout)
 
 
 def one_shot_args(config: dict) -> list[str]:
@@ -533,7 +539,7 @@ def one_shot_args(config: dict) -> list[str]:
     args = ["--security-opt", "no-new-privileges:true", "--cap-drop", "ALL"]
     if config["RUNTIME"] == "systemd":
         # run-cms.sh starts the CMS with --rm, so there is no stopped container to borrow volumes from.
-        args += ["-v", "/var/lib/polynovea:/var/lib/polynovea"]
+        args += ["-v", f"{config['DATA_DIR']}:/var/lib/polynovea"]
         env_file = config["ENV_FILE"]
     else:
         args += ["--volumes-from", config["CONTAINER"]]
@@ -648,7 +654,7 @@ def switch_back(config, folder, runtime, status, previous_ref, from_release, rol
 def run_restore(config: dict, image_ref: str, label: str) -> bool:
     """Restores the pre-upgrade pgBackRest backup into the stopped bundled database."""
     docker = config["DOCKER"]
-    command = [docker, "run", "--rm"] + one_shot_args(config) + ["--entrypoint", "polynovea-cms", image_ref,
+    command = [docker, "run", "--rm"] + one_shot_args(config) + ["--entrypoint", "node", "-w", "/app", image_ref] + CLI[1:] + [
                "system", "restore-backup", "--set", label]
     return run(command, 3600).returncode == 0
 
