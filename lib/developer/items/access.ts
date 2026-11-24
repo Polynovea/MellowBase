@@ -272,3 +272,15 @@ export function canUseField(access: ModelAccess, key: string, channel: Channel):
   if (channel === "write") return access.writable.has(key);
   return access.fields.has(key);
 }
+
+/**
+ * The narrower of two accesses to the same model: a field is readable only if both may read it. Used
+ * when a request carries a preview token, so the preview's issuer's field rules apply as well.
+ */
+export function intersectAccess(a: ModelAccess, b: ModelAccess): ModelAccess {
+  const canRead = a.canRead && b.canRead;
+  const readable = new Set([...a.readable].filter((key) => canRead && b.readable.has(key)));
+  const writable = new Set([...a.writable].filter((key) => readable.has(key)));
+  const fields = new Map([...a.fields].filter(([key, field]) => canRead && (field.system || readable.has(key))));
+  return { ...a, canRead, canWrite: a.canWrite && canRead, canDelete: a.canDelete && canRead, canPublish: a.canPublish && canRead, readable, writable, fields, restricted: canRead && readable.size < a.model.schema.fields.length };
+}

@@ -34,11 +34,21 @@ async function memberRoles(db: Kysely<DB>, workspaceId: string, adminUserId: str
  * Without: its creator's member roles for field rules, and no schema policy (as before phase 4).
  */
 export async function principalForToken(db: Kysely<DB>, ctx: Pick<DeveloperApiContext, "workspaceId" | "roleId" | "actorAdminUserId" | "scopes" | "allowedModels" | "agentIdentityId">): Promise<Principal> {
-  let roles: RoleRow[] = [];
+  // Fail closed: a token whose role cannot be found, or that has no role and no ACTIVE creator
+  // (suspended, removed, or never set), reads nothing. Otherwise "no role rows" would mean "every
+  // field readable".
+  const nothing: Principal = {
+    workspaceId: ctx.workspaceId, kind: ctx.agentIdentityId ? "agent" : "token", roleIds: [], roleKeys: [],
+    scopes: new Set(), allowedModels: null, applyModelPolicy: true,
+  };
+  let roles: RoleRow[];
   if (ctx.roleId) {
     roles = await db.selectFrom("roles").select(["id", "key", "api_limits"]).where("id", "=", ctx.roleId).where("workspace_id", "=", ctx.workspaceId).execute();
-  } else if (ctx.actorAdminUserId) {
-    roles = (await memberRoles(db, ctx.workspaceId, ctx.actorAdminUserId)) ?? [];
+    if (!roles.length) return nothing;
+  } else {
+    const creatorRoles = ctx.actorAdminUserId ? await memberRoles(db, ctx.workspaceId, ctx.actorAdminUserId) : null;
+    if (!creatorRoles) return nothing;
+    roles = creatorRoles;
   }
   return {
     workspaceId: ctx.workspaceId,

@@ -9,7 +9,7 @@ import { getDb } from "@/lib/db/index";
 import { requireDeveloperApi, type DeveloperApiContext } from "@/lib/developer/apiAuth";
 import type { DeveloperApiScope } from "@/lib/developer/apiTokenService";
 import { ItemsApiError } from "@/lib/developer/items/errors";
-import { principalForToken, previewScope } from "@/lib/developer/items/principal";
+import { principalForAdmin, principalForToken, previewScope } from "@/lib/developer/items/principal";
 import type { ItemsContext, ModelView } from "@/lib/developer/items/service";
 import { schemaChangeHeaders } from "@/lib/developer/sdkTypes/drift";
 import type { CanonicalSchema } from "@/lib/schema/fields/types";
@@ -98,8 +98,12 @@ export async function itemsRequest(req: Request, options: { scope: DeveloperApiS
     const rawPreview = req.headers.get(PREVIEW_TOKEN_HEADER);
     if (rawPreview && !drafts.allowed) {
       const scope = await previewScope(db, rawPreview.trim());
-      // A token of another workspace is treated exactly like an invalid one.
-      if (scope && scope.workspaceId === api.workspaceId) drafts = { allowed: true, entryIds: scope.entryIds };
+      // A token of another workspace, or whose issuer is no longer an active member, is treated
+      // exactly like an invalid one. A valid one also applies its issuer's field rules.
+      const issuer = scope && scope.workspaceId === api.workspaceId && scope.issuer
+        ? await principalForAdmin(db, api.workspaceId, scope.issuer, "preview", ["content.entry.read"])
+        : null;
+      if (scope && issuer) drafts = { allowed: true, entryIds: scope.entryIds, issuer };
     }
     return { api, ctx: { principal, callerId: api.tokenId, actorAdminUserId: api.actorAdminUserId, drafts, db } };
   } catch (error) {

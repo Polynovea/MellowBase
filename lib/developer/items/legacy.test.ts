@@ -38,3 +38,21 @@ describe("legacy developer routes: one sanitiser", () => {
     expect(() => legacyWriteData(writer, { rating: 1 }, null, true)).toThrow(/requires fields/);
   });
 });
+
+describe("security review: releases and schema documents", async () => {
+  const { filterSchemaBundle } = await import("@/lib/developer/items/legacy");
+  it("release items take their model from content_entries", () => {
+    const release = { id: "r", release_items: [{ content_entries: { id: "e", content_model_id: ARTICLE.id }, content_entry_versions: { data_jsonb: { title: "T", secret: "S" } } }] };
+    expect(sanitiseLegacyPayload(release, editor).release_items[0].content_entry_versions.data_jsonb).toEqual({ title: "T" });
+  });
+
+  it("schema bundles drop hidden fields and unreadable models", () => {
+    const bundle = { format: "b", models: [
+      { apiKey: "article", schema: { name: "A", fields: [{ key: "title" }, { key: "secret" }] } },
+      { apiKey: "ghost", schema: { name: "G", fields: [{ key: "x" }] } },
+    ] };
+    const filtered = filterSchemaBundle(bundle, editor);
+    expect(filtered.models.map((m) => m.apiKey)).toEqual(["article"]);
+    expect(filtered.models[0].schema.fields.map((field) => field.key)).toEqual(["title"]);
+  });
+});

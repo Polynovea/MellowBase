@@ -18,9 +18,12 @@ export interface TokenAccesses {
 }
 
 /** The token's access to the given models (by api key), or to every active model when none are given. */
-export async function tokenAccesses(api: DeveloperApiContext, apiKeys?: readonly string[], db: Kysely<DB> = getDb()): Promise<TokenAccesses> {
+export async function tokenAccesses(api: DeveloperApiContext, apiKeys?: readonly string[], db: Kysely<DB> = getDb(), options: { fieldView?: boolean } = {}): Promise<TokenAccesses> {
   const keys = apiKeys ?? (await db.selectFrom("content_models").select("api_key").where("workspace_id", "=", api.workspaceId).where("status", "=", "active").limit(500).execute()).map((row) => row.api_key);
-  const principal = await principalForToken(db, api);
+  const base = await principalForToken(db, api);
+  // fieldView: which fields the token may SEE in schema documents (schema.read), decided by the same
+  // field rules; it never grants content reads. A fail-closed principal (no scopes) stays closed.
+  const principal = options.fieldView && base.scopes.size ? { ...base, scopes: new Set([...base.scopes, "content.read"]) } : base;
   const models = await loadModelRefs(db, api.workspaceId, keys);
   const byKey = await resolveModelAccesses(principal, models, db);
   return { byKey, byId: new Map([...byKey.values()].map((access) => [access.model.id, access])) };
@@ -42,6 +45,7 @@ export function sanitiseLegacyPayload<T>(value: T, accesses: TokenAccesses, mode
     ?? (isPlain(modelRef) && typeof modelRef.id === "string" ? modelRef.id : null)
     ?? (typeof modelRef === "string" ? accesses.byKey.get(modelRef)?.model.id ?? "unknown" : null)
     ?? (isPlain(value.entry) && typeof value.entry.content_model_id === "string" ? value.entry.content_model_id : null)
+    ?? (isPlain(value.content_entries) && typeof value.content_entries.content_model_id === "string" ? value.content_entries.content_model_id : null)
     ?? modelId;
   const out: Record<string, unknown> = {};
   for (const [key, inner] of Object.entries(value)) {
@@ -67,4 +71,23 @@ export function legacyWriteData(access: ModelAccess, body: unknown, stored: Reco
   }
   const kept = Object.fromEntries(Object.entries(stored ?? {}).filter(([key]) => !access.writable.has(key)));
   return { ...kept, ...accepted };
+}
+
+interface SchemaBundleModelLike {
+  apiKey: string;
+  schema: { fields: ReadonlyArray<{ key: string }> };
+}
+
+/**
+ * A schema bundle as the token may see it: models it cannot read are left out, and each model's
+ * fields are only the ones it can read (a hidden field's key never appears). Owners see everything.
+ */
+export function filterSchemaBundle<M extends SchemaBundleModelLike, T extends { models: M[] }>(bundle: T, accesses: TokenAccesses): T {
+  const models = bundle.models
+    .filter((model) => accesses.byKey.get(model.apiKey)?.canRead)
+    .map((model) => {
+      const access = accesses.byKey.get(model.apiKey)!;
+      return { ...model, schema: { ...model.schema, fields: model.schema.fields.filter((field) => access.readable.has(field.key)) } } as M;
+    });
+  return { ...bundle, models };
 }

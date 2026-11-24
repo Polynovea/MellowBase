@@ -15,7 +15,7 @@ import { tableSources } from "@/lib/content/tableStore";
 import { archiveEntry, createEntry, getEntry, saveDraft } from "@/lib/content/entryService";
 import type { CanonicalSchema, FieldType } from "@/lib/schema/fields/types";
 import { loadModelRefs } from "@/lib/developer/items/models";
-import { lookupFor, resolveModelAccesses, sanitise, type ModelAccess, type ModelRef, type Principal } from "@/lib/developer/items/access";
+import { intersectAccess, lookupFor, resolveModelAccesses, sanitise, type ModelAccess, type ModelRef, type Principal } from "@/lib/developer/items/access";
 import { decodeCursor, encodeCursor, sortSpecHash } from "@/lib/developer/items/cursor";
 import { ItemsApiError } from "@/lib/developer/items/errors";
 import { checkJoins, parseExpand, parseFields, parseFilter, parseSort, type ExpandNode, type FieldLookup, type ResolvedField } from "@/lib/developer/items/filter";
@@ -36,7 +36,7 @@ export interface ItemsContext {
   /** Admin user recorded on writes (the token's creator). */
   actorAdminUserId: string | null;
   /** Draft reads: allowed at all, and limited to these entries (entry/release preview tokens) or not (null). */
-  drafts: { allowed: boolean; entryIds: readonly string[] | null };
+  drafts: { allowed: boolean; entryIds: readonly string[] | null; issuer?: Principal | null };
   db?: Kysely<DB>;
 }
 
@@ -62,10 +62,15 @@ async function load(ctx: ItemsContext, apiKey: string): Promise<Loaded> {
     frontier = await loadModelRefs(db, workspaceId, wanted);
     for (const model of frontier) models.set(model.apiKey, model);
   }
-  const [accesses, sources] = await Promise.all([
+  const [tokenAccess, issuerAccess, sources] = await Promise.all([
     resolveModelAccesses(ctx.principal, [...models.values()], db),
+    ctx.drafts.issuer ? resolveModelAccesses(ctx.drafts.issuer, [...models.values()], db) : Promise.resolve(null),
     tableSources(workspaceId, [...models.values()].map((model) => model.id), db),
   ]);
+  // With a preview token, the preview's issuer's field rules apply too: the narrower of the two.
+  const accesses = issuerAccess
+    ? new Map([...tokenAccess].map(([key, access]) => [key, intersectAccess(access, issuerAccess.get(key)!)]))
+    : tokenAccess;
   const queryModels = new Map([...models.values()].map((model) => [model.apiKey, { id: model.id, apiKey: model.apiKey, source: sources.get(model.id) ?? null }]));
   return { root, models, queryModels, accesses, lookup: lookupFor(accesses.values()) };
 }
@@ -208,6 +213,7 @@ export async function listItems(ctx: ItemsContext, apiKey: string, params: URLSe
       variant,
       locale,
       entryIds: variant === "draft" ? ctx.drafts.entryIds ?? undefined : undefined,
+      draftScope: variant === "draft" ? ctx.drafts.entryIds : null,
       filter: filter.filter,
       relationModels: loaded.queryModels,
       sort,
@@ -277,10 +283,9 @@ export async function createItem(ctx: ItemsContext, apiKey: string, body: unknow
   const access = writeAccess(loaded, "write");
   const actor = requireActor(ctx);
   const data = sanitise(access, body, "in");
-  const blocked = loaded.root.schema.fields.filter((field) => field.required && !access.writable.has(field.key));
-  if (blocked.length) {
-    const named = blocked.filter((field) => access.readable.has(field.key)).map((field) => field.key);
-    throw new ItemsApiError("REQUIRED_FIELD_NOT_WRITABLE", named.length === blocked.length ? `Required fields you cannot set: ${named.join(", ")}` : "This model requires fields this token cannot set", named.length === blocked.length ? { fields: named } : undefined);
+  // One message whether or not a hidden field is among them, so the answer reveals nothing.
+  if (loaded.root.schema.fields.some((field) => field.required && !access.writable.has(field.key))) {
+    throw new ItemsApiError("REQUIRED_FIELD_NOT_WRITABLE", "This model requires fields this token cannot set");
   }
   const result = await createEntry({ workspaceId: ctx.principal.workspaceId, modelId: loaded.root.id, data, locale: localeOf(locale ?? null), actorAdminUserId: actor, changeSummary: "Created through the items API" });
   if (!result.ok) throw writeError(access, result);
@@ -300,7 +305,7 @@ export async function updateItem(ctx: ItemsContext, apiKey: string, id: string, 
   if (!Object.keys(changes).length) throw new ItemsApiError("VALIDATION_FAILED", "Send at least one field to change");
   if (!UUID.test(id)) throw new ItemsApiError("ITEM_NOT_FOUND", "Item not found");
   const entry = await getEntry(ctx.principal.workspaceId, id);
-  if (!entry || entry.content_model_id !== loaded.root.id) throw new ItemsApiError("ITEM_NOT_FOUND", "Item not found");
+  if (!entry || entry.content_model_id !== loaded.root.id || entry.status === "archived") throw new ItemsApiError("ITEM_NOT_FOUND", "Item not found");
   const pointer = entry.current_draft_version_id ?? entry.published_version_id;
   const current = pointer
     ? await db.selectFrom("content_entry_versions").select(["data_jsonb", "version_number", "locale"]).where("id", "=", pointer).where("entry_id", "=", entry.id).executeTakeFirst()

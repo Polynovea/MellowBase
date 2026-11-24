@@ -123,3 +123,14 @@ describe("items SQL", () => {
     }
   });
 });
+
+describe("relation hops on drafts under an entry-scoped preview", () => {
+  it("a related entry outside the scope is judged on its published row", async () => {
+    const { db, queries } = capturingDb();
+    const filter = parseFilter(JSON.stringify({ author: { name: { eq: "x" } } }), "article", lookup, HARD_LIMITS).filter;
+    await runItemsQuery(db, { workspaceId: WS, model: article, variant: "draft", draftScope: ["3f2504e0-4f89-41d3-9a0c-0305e82c3301"], filter, relationModels, sort: [], limit: 5 });
+    expect(queries[0].sql).toMatch(/"he1"\."id" = any\(cast\(\$\d+ as uuid\[\]\)\) and/);
+    expect(queries[0].sql).toMatch(/or \(not \("he1"\."id" = any/);
+    expect(queries[0].parameters).toContainEqual(["3f2504e0-4f89-41d3-9a0c-0305e82c3301"]);
+  });
+});

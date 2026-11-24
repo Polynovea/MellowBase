@@ -126,3 +126,20 @@ describe("limits per role", () => {
     expect(WS).toBeTruthy();
   });
 });
+
+describe("intersectAccess (a preview token's issuer narrows what the caller sees)", async () => {
+  const { intersectAccess } = await import("@/lib/developer/items/access");
+  it("keeps only fields both may read; system fields stay; a closed side closes everything", () => {
+    const owner = decideModelAccess(tokenPrincipal({ roleIds: [ROLE.owner], roleKeys: ["owner"] }), ARTICLE, RULES);
+    const editor = decideModelAccess(tokenPrincipal(), ARTICLE, RULES);
+    const both = intersectAccess(owner, editor);
+    expect(both.readable.has("secret")).toBe(false);
+    expect(both.fields.has("secret")).toBe(false);
+    expect(both.fields.has("id")).toBe(true);
+    expect(both.writable.has("secret")).toBe(false);
+    expect(both.restricted).toBe(true);
+    const closed = intersectAccess(owner, decideModelAccess(tokenPrincipal({ scopes: new Set() }), ARTICLE, RULES));
+    expect(closed.canRead).toBe(false);
+    expect(closed.fields.size).toBe(0);
+  });
+});

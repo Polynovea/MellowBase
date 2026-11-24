@@ -75,7 +75,10 @@ export interface ItemResponse<TData = Record<string, unknown>> {
   meta: ItemMeta;
 }
 
-/** Writes: POST takes every writable field (required ones required); PATCH any subset. */
+/**
+ * Write bodies: any subset of the writable fields (the generated `{M}Create` schema marks the required
+ * ones; the server refuses a create that misses one). Unknown, hidden or read-only keys are refused.
+ */
 export type ItemCreateBody<TData> = Partial<TData>;
 export type ItemPatchBody<TData> = Partial<TData>;
 

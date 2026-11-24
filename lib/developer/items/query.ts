@@ -60,6 +60,8 @@ export interface ItemsQuery {
   locale?: string;
   /** Only these entries (get by id, expansion, entry-scoped preview tokens). */
   entryIds?: readonly string[];
+  /** Draft reads under an entry/release preview token: the entries whose drafts may be seen at all. */
+  draftScope?: readonly string[] | null;
   filter?: ParsedFilter | null;
   /** Targets of relation hops in the filter, by api key. */
   relationModels?: ReadonlyMap<string, QueryModel>;
@@ -171,6 +173,18 @@ function entryVisible(alias: string, variant: Variant): RawBuilder<unknown> {
     : notArchived;
 }
 
+/**
+ * Which row of a related entry a relation-hop filter may look at. A draft read under an entry or
+ * release preview token sees a related entry's draft only if that entry is in the token's scope;
+ * any other related entry is judged on its published row (as if the read were published).
+ */
+function hopRow(table: RawBuilder<unknown>, t: string, te: string, q: ItemsQuery): RawBuilder<unknown> {
+  if (q.variant !== "draft" || !q.draftScope) return sql`${variantRow(table, t, q.variant)} and ${entryVisible(te, q.variant)}`;
+  const inScope = sql`${ref(te, "id")} = any(cast(${[...q.draftScope]} as uuid[]))`;
+  return sql`((${inScope} and ${variantRow(table, t, "draft")} and ${entryVisible(te, "draft")})
+           or (not (${inScope}) and ${variantRow(table, t, "published")} and ${entryVisible(te, "published")}))`;
+}
+
 function compileFilter(node: ParsedFilter, q: ItemsQuery, path: "table" | "snapshot", hops: { n: number }): RawBuilder<unknown> {
   switch (node.kind) {
     case "and": return sql`(${sql.join(node.items.map((item) => compileFilter(item, q, path, hops)), sql` and `)})`;
@@ -194,7 +208,7 @@ function compileFilter(node: ParsedFilter, q: ItemsQuery, path: "table" | "snaps
           join public.content_entries ${sql.id(te)} on ${ref(te, "id")} = ${ref(t, STORAGE_COLUMNS.entryId)}
            and ${ref(te, "workspace_id")} = ${q.workspaceId} and ${ref(te, "content_model_id")} = ${targetModel.id}
          where ${ref(t, STORAGE_COLUMNS.entryId)} = ${relExpr.sql}
-           and ${variantRow(table, t, q.variant)} and ${entryVisible(te, q.variant)}
+           and ${hopRow(table, t, te, q)}
            and ${condition(targetExpr, node.op, node.value)})`;
     }
   }
