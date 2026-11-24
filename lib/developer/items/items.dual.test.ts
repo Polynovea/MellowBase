@@ -14,6 +14,7 @@ import { indexEntry, searchContent } from "@/lib/content/searchService";
 import { getEntry, listEntryVersions } from "@/lib/content/entryService";
 import { createPreviewToken } from "@/lib/content/previewService";
 import { listDeveloperEntries } from "@/lib/developer/resourceService";
+import { getPublishedContent, listPublishedContent } from "@/lib/developer/publishedContentService";
 import { logDeveloperApiMutation } from "@/lib/developer/developerAudit";
 import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
 import type { FieldDefinition } from "@/lib/schema/fields/types";
@@ -387,6 +388,15 @@ describeWithDatabase("generated items API [postgres]", (backend) => {
     const created = await createItem(editor, fx.article.apiKey, { title: "Made by API", rating: 2 });
     expect(created.item).toMatchObject({ variant: "draft", data: { title: "Made by API", rating: 2 } });
     await deleteItem(editor, fx.article.apiKey, created.item.id);
+    // Taking a LIVE entry off the site (archive is the CMS's only such path): gone from items and the legacy delivery.
+    const liveId = fx.articles[4];
+    expect((await listItems(editor, fx.article.apiKey, P({ limit: "100" }))).items.map((item) => item.id)).toContain(liveId);
+    await deleteItem(editor, fx.article.apiKey, liveId);
+    expect((await listItems(editor, fx.article.apiKey, P({ limit: "100" }))).items.map((item) => item.id)).not.toContain(liveId);
+    expect((await refusal(getItem(editor, fx.article.apiKey, liveId, P({})))).code).toBe("ITEM_NOT_FOUND");
+    const legacy = await listPublishedContent({ workspaceId: fx.workspaceId, modelApiKey: fx.article.apiKey, limit: 100 });
+    expect(legacy.records.map((record) => record.id)).not.toContain(liveId);
+    expect((await getPublishedContent({ workspaceId: fx.workspaceId, modelApiKey: fx.article.apiKey, entryId: liveId })).record).toBeNull();
     const [archived] = await backend.query<{ status: string }>("select status from content_entries where id = $1", [created.item.id]);
     expect(archived.status).toBe("archived");
     expect((await refusal(deleteItem(editor, fx.article.apiKey, created.item.id))).code).toBe("ITEM_NOT_FOUND");
