@@ -18,6 +18,8 @@ export function searchableText(data: Record<string, unknown>) {
 export interface SearchFieldScope {
   restricted: ReadonlyMap<string, ReadonlySet<string>>;
   readableModelIds: readonly string[];
+  /** Readable field keys of every readable model: snippets are rebuilt from these only. */
+  readable: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export interface ContentSearchParams {

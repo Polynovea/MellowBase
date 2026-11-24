@@ -43,13 +43,30 @@ export async function searchContent(params: ContentSearchParams) {
     if (id && !isUuid(id)) return [];
   }
   const scope = params.fieldScope;
-  if (scope && scope.restricted.size) return scopedSearch(params, scope);
-  return unscopedSearch(params);
+  if (!scope) return unscopedSearch(params);
+  const rows = scope.restricted.size ? await scopedSearch(params, scope) : await unscopedSearch(params);
+  return readableSnippets(params.workspaceId, rows, scope);
 }
 
-/** Rows of restricted models never carry their whole-document text. */
-function blankRestricted<T extends { content_model_id: string | null; search_text?: string | null }>(rows: T[], scope: SearchFieldScope): T[] {
-  return rows.map((row) => (row.content_model_id && scope.restricted.has(row.content_model_id) ? { ...row, search_text: "" } : row));
+/**
+ * search_text is built from every string field of the version (and may hold text of fields deleted
+ * since). With a field scope it is never returned as stored: each row's text is rebuilt from its
+ * version's data restricted to the fields the caller can read, or is empty.
+ */
+async function readableSnippets<T extends { content_model_id: string | null; version_id?: string | null; search_text?: string | null }>(workspaceId: string, rows: T[], scope: SearchFieldScope): Promise<T[]> {
+  const versionIds = [...new Set(rows.map((row) => row.version_id).filter((id): id is string => typeof id === "string" && isUuid(id)))];
+  const versions = versionIds.length
+    ? await getDb().selectFrom("content_entry_versions as v").innerJoin("content_entries as e", "e.id", "v.entry_id")
+      .select(["v.id", "v.data_jsonb"]).where("e.workspace_id", "=", workspaceId).where("v.id", "in", versionIds).execute()
+    : [];
+  const dataById = new Map(versions.map((version) => [version.id, version.data_jsonb as unknown]));
+  return rows.map((row) => {
+    const readable = row.content_model_id ? scope.readable.get(row.content_model_id) : undefined;
+    const data = row.version_id ? dataById.get(row.version_id) : undefined;
+    if (!readable || !data || typeof data !== "object" || Array.isArray(data)) return { ...row, search_text: "" };
+    const visible = Object.fromEntries(Object.entries(data as Record<string, unknown>).filter(([key]) => readable.has(key)));
+    return { ...row, search_text: searchableText(visible) };
+  });
 }
 
 /**
@@ -61,7 +78,7 @@ function blankRestricted<T extends { content_model_id: string | null; search_tex
  */
 async function scopedSearch(params: ContentSearchParams, scope: SearchFieldScope) {
   const query = params.query?.trim() || null;
-  if (!query) return blankRestricted(await unscopedSearch(params), scope);
+  if (!query) return unscopedSearch(params);
   const limit = Math.min(200, Math.max(1, params.limit ?? 50));
   const offset = Math.max(0, params.offset ?? 0);
   const models = params.modelId ? [params.modelId] : [...scope.readableModelIds];
@@ -84,7 +101,7 @@ async function scopedSearch(params: ContentSearchParams, scope: SearchFieldScope
   let rows = [...ranked.sort(byRank), ...unranked.sort(byUpdated)];
   if (params.sort === "updated_asc") rows = rows.sort((a, b) => -byUpdated(a, b));
   if (params.sort === "updated_desc") rows = rows.sort(byUpdated);
-  return blankRestricted(rows.slice(offset, offset + limit), scope);
+  return rows.slice(offset, offset + limit);
 }
 
 async function unscopedSearch(params: ContentSearchParams) {

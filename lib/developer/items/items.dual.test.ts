@@ -22,6 +22,7 @@ import { createItem, deleteItem, getItem, listItems, updateItem, withReadTimeout
 import { adminAccesses } from "@/lib/developer/items/sideChannels";
 import { sanitiseLegacyPayload, tokenAccesses } from "@/lib/developer/items/legacy";
 import { scheduledPublishCheck } from "@/lib/developer/items/schedule";
+import { recordPlatformEvent } from "@/lib/platform/audit.postgres";
 
 const SECRET = `TOP-SECRET-${randomUUID().slice(0, 8)}`;
 const SALARY = 987654;
@@ -182,11 +183,17 @@ describeWithDatabase("generated items API [postgres]", (backend) => {
         // Admin search (cross-channel): same rule.
         const accesses = await adminAccesses(getDb(), fx.workspaceId, fx.adminUserId, "admin", [model]);
         const access = accesses!.get(model)!;
-        const restrictedScope = { restricted: new Map([[access.model.id, new Set([...access.readable].filter((key) => key !== field))]]), readableModelIds: [access.model.id] };
+        const readableKeys = new Set([...access.readable].filter((key) => key !== field));
+        const restrictedScope = { restricted: new Map([[access.model.id, readableKeys]]), readableModelIds: [access.model.id], readable: new Map([[access.model.id, readableKeys]]) };
         const docs = await searchContent({ workspaceId: fx.workspaceId, query: "zebraword", fieldScope: restrictedScope });
         expect(docs).toEqual([]);
         const titled = await searchContent({ workspaceId: fx.workspaceId, query: "Alpha", modelId: access.model.id, fieldScope: restrictedScope });
         expect(JSON.stringify(titled)).not.toContain(hidden);
+        // No query (nothing matched or ranked): snippets are still rebuilt from readable fields only.
+        const listed = await searchContent({ workspaceId: fx.workspaceId, modelId: access.model.id, fieldScope: restrictedScope });
+        expect(listed.length).toBeGreaterThan(0);
+        expect(JSON.stringify(listed)).not.toContain(hidden);
+        expect(listed.some((row) => (row.search_text ?? "").includes("Alpha"))).toBe(true);
         results[`${label}:search`] = "pass";
       }
 
@@ -226,6 +233,24 @@ describeWithDatabase("generated items API [postgres]", (backend) => {
     const writer = await ctxFor(fx, fx.roles.writer);
     const updated = await updateItem(writer, fx.article.apiKey, fx.articles[1], { rating: 4 });
     await logDeveloperApiMutation(apiCtx(fx, fx.roles.writer), "developer.entry.updated", "content_entry", updated.item.id, { model: fx.article.apiKey, versionId: null });
+    // A subscription owned by an editor, and an event that (unlike today's content events) carries
+    // field data: the payload passes the owner's access, per subscription.
+    const [editorAdmin] = await backend.query<{ id: string }>("insert into admin_users (username, email) values ($1, $1 || '@example.test') returning id", [`ed-${randomUUID().slice(0, 8)}`]);
+    const [editorMember] = await backend.query<{ id: string }>("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active') returning id", [fx.workspaceId, editorAdmin.id]);
+    await backend.query("insert into member_roles (workspace_member_id, role_id) values ($1, $2)", [editorMember.id, fx.roles.editor]);
+    await backend.query("insert into role_permissions (role_id, permission_key) values ($1, 'content.entry.read') on conflict do nothing", [fx.roles.editor]);
+    await backend.query(
+      "insert into webhook_subscriptions (workspace_id, name, endpoint_url, signing_secret_encrypted, signing_secret_hash, event_filters, created_by) values ($1, 'editor-owned', 'https://hooks.example.test/y', 'enc', $2, '{}', $3)",
+      [fx.workspaceId, randomUUID().replace(/-/g, ""), editorAdmin.id],
+    );
+    await recordPlatformEvent(getDb(), {
+      workspaceId: fx.workspaceId, actorAdminUserId: fx.adminUserId, action: "content.entry.updated", entityType: "content_entry", entityId: fx.articles[1],
+      metadata: { model: fx.article.apiKey, data: { title: "Alpha 1", secret: SECRET }, changedFields: ["title", "secret"] },
+    });
+    const owned = await backend.query<{ payload_json: { metadata: Record<string, unknown> } }>(
+      "select d.payload_json from webhook_deliveries d join webhook_subscriptions s on s.id = d.subscription_id where s.workspace_id = $1 and s.name = 'editor-owned' and d.event_type = 'content.entry.updated'", [fx.workspaceId]);
+    expect(owned.length).toBe(1);
+    expect(owned[0].payload_json.metadata).toMatchObject({ data: { title: "Alpha 1" }, changedFields: ["title"] });
     const deliveries = await backend.query<{ payload_json: unknown }>("select d.payload_json from webhook_deliveries d join webhook_subscriptions s on s.id = d.subscription_id where s.workspace_id = $1", [fx.workspaceId]);
     expect(deliveries.length).toBeGreaterThan(0);
     for (const delivery of deliveries) {
