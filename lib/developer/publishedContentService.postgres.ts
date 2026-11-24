@@ -73,7 +73,9 @@ export async function listPublishedContent(params: { workspaceId: string; modelA
   const db = getDb();
   const entries = await db.selectFrom("content_entries").select(["id", "published_version_id", "updated_at"])
     .where("workspace_id", "=", params.workspaceId).where("content_model_id", "=", model.id)
-    .where("status", "=", "published").where("published_version_id", "is not", null)
+    // Live = has a published version and is not archived. Saving a new draft sets status to 'draft'
+    // but leaves the published version live (phase 4 found the old status = 'published' test hid it).
+    .where("published_version_id", "is not", null).where("status", "<>", "archived").where("archived_at", "is", null)
     .orderBy("updated_at", "desc").orderBy("id", "desc").limit(limit).offset(offset).execute();
   const versionIds = entries.map((entry) => entry.published_version_id).filter((id): id is string => Boolean(id));
   if (!versionIds.length) return { model, records: [] as PublishedContentRecord[] };
@@ -96,7 +98,7 @@ export async function getPublishedContent(params: { workspaceId: string; modelAp
   const db = getDb();
   const entry = maybeOne(await db.selectFrom("content_entries").select(["id", "published_version_id", "updated_at"])
     .where("workspace_id", "=", params.workspaceId).where("content_model_id", "=", model.id)
-    .where("status", "=", "published").where("id", "=", params.entryId).where("published_version_id", "is not", null).execute());
+    .where("status", "<>", "archived").where("archived_at", "is", null).where("id", "=", params.entryId).where("published_version_id", "is not", null).execute());
   if (!entry?.published_version_id) return { model, record: null as PublishedContentRecord | null };
   let versionQuery = versionsInWorkspace(params.workspaceId)
     .where("v.id", "=", entry.published_version_id).where("v.entry_id", "=", entry.id);
