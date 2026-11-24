@@ -14,6 +14,10 @@ locals {
   container_name = "polynovea"
   secret_name    = "polynovea-database-admin"
 
+  # Trusted Launch on x64 with the Ubuntu image or a gallery image (Polynovea's gallery image
+  # definition declares SecurityType=TrustedLaunchSupported); a managed image can't use it.
+  trusted_launch = var.architecture == "x64" && !strcontains(lower(var.custom_image_id), "/providers/microsoft.compute/images/")
+
   # Non-secret values only, with the release package's keys. The release package sets HOSTNAME, PORT,
   # POLYNOVEA_TRUSTED_PROXIES and POLYNOVEA_CONFIG_DIR.
   settings = join("\n", compact([
@@ -450,8 +454,8 @@ resource "azurerm_linux_virtual_machine" "main" {
   allow_extension_operations      = false
   provision_vm_agent              = true
   patch_mode                      = "ImageDefault"
-  secure_boot_enabled             = var.architecture == "x64" && var.custom_image_id == "" # gallery images need TrustedLaunchSupported
-  vtpm_enabled                    = var.architecture == "x64" && var.custom_image_id == ""
+  secure_boot_enabled             = local.trusted_launch
+  vtpm_enabled                    = local.trusted_launch
   source_image_id                 = var.custom_image_id == "" ? null : var.custom_image_id
   tags                            = local.tags
 
