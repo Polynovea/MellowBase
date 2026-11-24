@@ -73,7 +73,12 @@ docker rm -f "$CMS" "$AGENT" "$PREFIX-registry" "$PREFIX-channel" >/dev/null 2>&
 
 step() { printf '\n== %s\n' "$*"; }
 ok() { echo "ok    $*"; }
-fail() { echo "FAIL  $*" >&2; exit 1; }
+diagnose() { # what the CMS and its bundled PostgreSQL said, before cleanup removes them
+  echo "--- CMS log (last 60 lines)" >&2; docker logs "$CMS" 2>&1 | tail -60 >&2 || true
+  echo "--- PostgreSQL and pgBackRest logs (last 40 lines each)" >&2
+  docker run --rm -v "$VMDATA:/d:ro" "$PY_IMAGE" sh -c 'for f in /d/log/postgresql/*.log /d/log/pgbackrest/*.log; do [ -f "$f" ] && { echo "## $f"; tail -40 "$f"; }; done; ls -la /d/postgresql 2>/dev/null | head -40' >&2 || true
+}
+fail() { echo "FAIL  $*" >&2; diagnose; exit 1; }
 field() { node -e "console.log(require(process.argv[1])[process.argv[2]])" "$(winpath "$1")" "$2"; }
 health() { docker exec "$AGENT" python3 -c "import urllib.request,json;print(urllib.request.urlopen('http://127.0.0.1:3000/api/health',timeout=5).read().decode())" 2>/dev/null || echo '{}'; }
 wait_state() { # state [release]
