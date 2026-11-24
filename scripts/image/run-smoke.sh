@@ -86,8 +86,10 @@ docker run --rm --entrypoint node -w /app "$IMAGE" scripts/polynovea-cms.mjs --h
 
 step "Tunnel route: setup over loopback, On this server, owner step"
 docker volume create "$PREFIX-data" >/dev/null
-# The address the owner opens through the tunnel: the wizard's passkey belongs to it (POLYNOVEA_PUBLIC_URL
-# is required for the passkey step; on a server it goes in polynovea.env).
+# The address the owner opens through the tunnel: the wizard's passkey and sign-in belong to it. This
+# plain docker run passes it as docs/self-hosting/container.md says; the compose tunnel profile sets the
+# same default in docker/tunnel.env and the VM's run-cms.sh when there is no domain
+# (scripts/release/compose-tunnel.test.ts checks both).
 docker run -d --name "$PREFIX-tunnel" -e POLYNOVEA_PUBLIC_URL=http://localhost:3000 -v "$PREFIX-data:/var/lib/polynovea" "$IMAGE" >/dev/null
 wait_healthy "$PREFIX-tunnel"
 docker logs "$PREFIX-tunnel" 2>&1 | grep -q "peer\|Setup code" || true

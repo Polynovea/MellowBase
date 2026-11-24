@@ -37,6 +37,10 @@ set --
 set -- "$@" -e HOSTNAME=127.0.0.1 -e PORT=3000
 if [ -n "$domain" ]; then
   set -- "$@" -e "POLYNOVEA_PUBLIC_URL=https://$domain" -e POLYNOVEA_TRUSTED_PROXIES=127.0.0.1
+elif [ -z "$(value POLYNOVEA_PUBLIC_URL "$ENV_FILE")" ]; then
+  # No domain: setup goes through an SSH tunnel, and the owner opens http://localhost:3000. Passkeys and
+  # sign-in need the CMS to know that address. A POLYNOVEA_PUBLIC_URL in polynovea.env wins.
+  set -- "$@" -e POLYNOVEA_PUBLIC_URL=http://localhost:3000
 fi
 # Read-only for the CMS: the release key (it verifies release.json before offering an upgrade) and the
 # upgrade agent's root-owned status folder (the CMS copies its steps into the audit log).
