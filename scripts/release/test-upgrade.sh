@@ -238,12 +238,16 @@ docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_B" /etc/polynovea/polynov
 docker exec "$AGENT" python3 -I -B /opt/polynovea/upgrade-agent.py && ok "the same request is not run twice"
 
 step "The worker's own restore test after setup's first backup"
-# The wizard leaves restore-test-due; the worker starts a restore test by itself. Wait for it to finish.
+# The wizard leaves restore-test-due; the worker starts a restore test by itself. Restarts during the
+# upgrades above cut it off (recorded as skipped, INTERRUPTED) and the worker starts it again. Wait for a
+# first-backup test that finished for a reason other than a restart.
+WORKER_TEST=""
 for _ in $(seq 1 150); do
-  [ "$(psql_cms "select count(*) from public.system_restore_tests where status = 'running'")" = 0 ] && break
+  WORKER_TEST="$(psql_cms "select reason || ' ' || status || ' ' || coalesce(error_code, '') from public.system_restore_tests where reason = 'first_backup' and status <> 'running' and coalesce(error_code, '') <> 'INTERRUPTED' order by started_at desc limit 1")"
+  [ -n "$WORKER_TEST" ] && break
   sleep 4
 done
-WORKER_TEST="$(psql_cms "select reason || ' ' || status || ' ' || coalesce(error_code, '') from public.system_restore_tests where reason = 'first_backup' order by started_at limit 1")"
+echo "first-backup restore tests: $(psql_cms "select string_agg(status || coalesce('/' || error_code, ''), ', ' order by started_at) from public.system_restore_tests where reason = 'first_backup'")"
 echo "worker's restore test: ${WORKER_TEST:-none recorded}"
 case "$WORKER_TEST" in "first_backup passed"*) ok "the worker ran the first-backup restore test by itself, and it passed" ;; *) fail "worker restore test: ${WORKER_TEST:-none}" ;; esac
 

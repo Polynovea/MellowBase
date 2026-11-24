@@ -28,7 +28,7 @@ describeWithDatabase("system operations (migration 0077)", (db) => {
       expect(heartbeat.ok).toBe(true);
     });
 
-    it("the four functions run for polynovea_app only, never PUBLIC, anon, authenticated or service_role", async () => {
+    it("the five functions run for polynovea_app only, never PUBLIC, anon, authenticated or service_role", async () => {
       const rows = await db.query<{ name: string; app: boolean; public_execute: boolean; others: string[] }>(`
         select p.proname as name,
           has_function_privilege('polynovea_app', p.oid, 'execute') as app,
@@ -36,7 +36,7 @@ describeWithDatabase("system operations (migration 0077)", (db) => {
           array(select r.rolname::text from pg_roles r where r.rolname in ('anon', 'authenticated', 'service_role') and has_function_privilege(r.oid, p.oid, 'execute')) as others
         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname like 'polynovea_system_%' order by 1`);
-      expect(rows.map((row) => row.name)).toEqual(["polynovea_system_restore_test_begin", "polynovea_system_restore_test_finish", "polynovea_system_upgrade_record", "polynovea_system_upgrade_request"]);
+      expect(rows.map((row) => row.name)).toEqual(["polynovea_system_restore_test_begin", "polynovea_system_restore_test_finish", "polynovea_system_restore_test_interrupted", "polynovea_system_upgrade_record", "polynovea_system_upgrade_request"]);
       for (const row of rows) expect(row).toMatchObject({ app: true, public_execute: false, others: [] });
     });
   });
@@ -105,6 +105,16 @@ describeWithDatabase("system operations (migration 0077)", (db) => {
       const audit = await db.query("select 1 from platform_audit_events where action = 'system.restore_test.failed' and entity_id = $1", [next]);
       expect(audit.length).toBe(1);
     });
+  });
+
+  it("a test cut off by a restart is closed as skipped (INTERRUPTED) so the next one can start", async () => {
+    await db.query("update public.system_restore_tests set status = 'failed', finished_at = now() where status = 'running'");
+    const id = await beginRestoreTest("first_backup");
+    const [closed] = await db.query<{ n: number }>("select public.polynovea_system_restore_test_interrupted() as n");
+    expect(Number(closed.n)).toBe(1);
+    expect((await listRestoreTests(50)).find((test) => test.id === id)).toMatchObject({ status: "skipped", error_code: "INTERRUPTED" });
+    expect(await beginRestoreTest("first_backup")).not.toBeNull();
+    await db.query("update public.system_restore_tests set status = 'failed', finished_at = now() where status = 'running'");
   });
 
   it("reads the worker heartbeat", async () => {

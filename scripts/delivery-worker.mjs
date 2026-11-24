@@ -525,13 +525,19 @@ async function heartbeat() {
 // right after setup's first backup (the wizard leaves <data root>/restore-test-due). It runs as a
 // separate low-priority process so deliveries keep flowing; its result goes to system_restore_tests.
 let restoreTestChild = null;
+// This worker is the only one that runs restore tests on this server, so one still "running" when it
+// starts was cut off by a restart (its leftovers are removed by the next test).
+if (inServerImage()) {
+  await client.query("select public.polynovea_system_restore_test_interrupted()").catch((error) => console.error("[delivery-worker] interrupted restore tests not closed", error.code ?? error.message));
+}
 async function maybeStartRestoreTest() {
   if (restoreTestChild || !inServerImage()) return;
   try {
     const { rows: [install] } = await client.query("select database_mode from public.installation limit 1");
     if (install?.database_mode !== "local") return;
     const { rows: [state] } = await client.query(
-      "select max(finished_at) filter (where status = 'passed') as last_passed, max(started_at) as last_attempt from public.system_restore_tests",
+      // A test cut off by a restart does not count as today's attempt: it runs again.
+      "select max(finished_at) filter (where status = 'passed') as last_passed, max(started_at) filter (where coalesce(error_code, '') <> 'INTERRUPTED') as last_attempt from public.system_restore_tests",
     );
     const marker = path.join(dataRoot(), "restore-test-due");
     const reason = restoreTestDue({

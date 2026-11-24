@@ -10,7 +10,7 @@
 --   monthly, and once after setup's first backup).
 --
 -- Both are read-only for polynovea_app (the access helper's read_only list). The app changes them only
--- through the four functions below, which check every value; on Supabase, service_role cannot write
+-- through the five functions below, which check every value; on Supabase, service_role cannot write
 -- them or call the functions.
 --
 -- cms_runtime_state gains worker_heartbeat_at, written by the delivery worker on every loop.
@@ -161,10 +161,31 @@ begin
 end;
 $$;
 
+-- Run by the worker when it starts: a restore test still "running" then was cut off by a restart (only
+-- the worker of this server runs them, one at a time). Recorded as skipped, not failed, and the worker runs
+-- the test again; a test stuck for 6 hours with no restart is closed as failed by _begin above.
+create or replace function public.polynovea_system_restore_test_interrupted()
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_count integer;
+begin
+  update public.system_restore_tests
+     set status = 'skipped', error_code = 'INTERRUPTED',
+         error_message = 'The restore test stopped when the server restarted; it runs again.', finished_at = now()
+   where status = 'running';
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
 -- ── App access ───────────────────────────────────────────────────────────────────────────────────
 -- 0076's helper exactly as it is there (copied from payal/p3-content-move-r2 at 8ea8899; re-check
 -- against the merged 0076 on rebase), with two additions only: system_upgrades and
--- system_restore_tests join the read_only list, and the four system functions join
+-- system_restore_tests join the read_only list, and the five system functions join
 -- app_only_functions (EXECUTE for polynovea_app only, never service_role).
 create or replace function public.polynovea_apply_app_access()
 returns void
@@ -188,7 +209,8 @@ declare
     'polynovea_content_sync_entries', 'polynovea_content_verify_model', 'polynovea_content_set_read_source',
     'polynovea_content_entries_sync',
     'polynovea_system_upgrade_request', 'polynovea_system_upgrade_record',
-    'polynovea_system_restore_test_begin', 'polynovea_system_restore_test_finish'];
+    'polynovea_system_restore_test_begin', 'polynovea_system_restore_test_finish',
+    'polynovea_system_restore_test_interrupted'];
 begin
   execute 'grant usage on schema public to polynovea_app';
 
@@ -301,6 +323,7 @@ revoke all on function public.polynovea_system_upgrade_request(uuid, text, text,
 revoke all on function public.polynovea_system_upgrade_record(uuid, text, jsonb, text) from public;
 revoke all on function public.polynovea_system_restore_test_begin(text) from public;
 revoke all on function public.polynovea_system_restore_test_finish(uuid, text, text, jsonb, text, text) from public;
+revoke all on function public.polynovea_system_restore_test_interrupted() from public;
 
 select public.polynovea_apply_app_access();
 
