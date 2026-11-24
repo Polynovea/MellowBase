@@ -8,6 +8,7 @@
 // Every query is scoped by workspace_id; versions are reached only through the workspace's entries.
 import { getDb, maybeOne } from "@/lib/db/index";
 import { orderLikeEntries, type PublishedContentRecord } from "@/lib/developer/publishedContentService";
+import { tableDataByEntry, tableSource } from "@/lib/content/tableStore";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -28,6 +29,18 @@ function versionsInWorkspace(workspaceId: string) {
 }
 
 type VersionRow = { id: string; entry_id: string; version_number: number; data_jsonb: unknown; locale: string; created_at: string };
+
+/**
+ * Phase 3: a model switched to its table serves the published row's data from the table; the version
+ * row still gives the version id, number, locale and date.
+ */
+async function withTableData(workspaceId: string, modelId: string, versions: VersionRow[]): Promise<VersionRow[]> {
+  if (!versions.length) return versions;
+  const source = await tableSource(workspaceId, modelId);
+  if (!source) return versions;
+  const rows = await tableDataByEntry(workspaceId, source, versions.map((version) => version.entry_id), "published");
+  return versions.map((version) => (rows.has(version.entry_id) ? { ...version, data_jsonb: rows.get(version.entry_id)!.data } : version));
+}
 
 function toRecord(model: { api_key: string }, entry: { id: string; updated_at: string }, version: VersionRow, route: { path: string; locale: string } | undefined): PublishedContentRecord {
   return {
@@ -67,7 +80,8 @@ export async function listPublishedContent(params: { workspaceId: string; modelA
   let versionQuery = versionsInWorkspace(params.workspaceId)
     .where("v.id", "in", versionIds);
   if (params.locale) versionQuery = versionQuery.where("v.locale", "=", params.locale);
-  const [versions, routes] = await Promise.all([versionQuery.execute(), canonicalRoutes(params.workspaceId, entries.map((entry) => entry.id))]);
+  const [snapshotVersions, routes] = await Promise.all([versionQuery.execute(), canonicalRoutes(params.workspaceId, entries.map((entry) => entry.id))]);
+  const versions = await withTableData(params.workspaceId, model.id, snapshotVersions as VersionRow[]);
   const entryById = new Map(entries.map((entry) => [entry.id, entry]));
   const records = (versions as VersionRow[])
     .filter((version) => entryById.has(version.entry_id))
@@ -87,8 +101,9 @@ export async function getPublishedContent(params: { workspaceId: string; modelAp
   let versionQuery = versionsInWorkspace(params.workspaceId)
     .where("v.id", "=", entry.published_version_id).where("v.entry_id", "=", entry.id);
   if (params.locale) versionQuery = versionQuery.where("v.locale", "=", params.locale);
-  const version = maybeOne(await versionQuery.execute()) as VersionRow | null;
-  if (!version) return { model, record: null as PublishedContentRecord | null };
+  const snapshotVersion = maybeOne(await versionQuery.execute()) as VersionRow | null;
+  if (!snapshotVersion) return { model, record: null as PublishedContentRecord | null };
+  const [version] = await withTableData(params.workspaceId, model.id, [snapshotVersion]);
   const routes = await canonicalRoutes(params.workspaceId, [entry.id]);
   return { model, record: toRecord(model, entry, version, routes.get(`${entry.id}:${version.locale}`)) };
 }

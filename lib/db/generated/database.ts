@@ -394,6 +394,18 @@ export interface ContentEntryWatchers {
   workspace_id: string;
 }
 
+export interface ContentFieldPermissions {
+  can_read: Generated<boolean>;
+  can_write: Generated<boolean>;
+  content_model_id: string;
+  created_at: Generated<string>;
+  field_key: string;
+  id: Generated<string>;
+  role_id: string;
+  updated_at: Generated<string>;
+  workspace_id: string;
+}
+
 export interface ContentFields {
   configuration_json: Generated<Json>;
   content_model_id: string;
@@ -435,6 +447,23 @@ export interface ContentHealthProfiles {
   workspace_id: string;
 }
 
+export interface ContentModelMoveRuns {
+  backfill: Generated<Json>;
+  content_model_id: string;
+  counts: Json;
+  fields: Json;
+  finished_at: Generated<string>;
+  id: Generated<string>;
+  matched: boolean;
+  mismatches: Generated<Json>;
+  requested_by: string | null;
+  shape_hash: string;
+  started_at: string;
+  sync_failures: Generated<number>;
+  table_name: string;
+  workspace_id: string;
+}
+
 export interface ContentModels {
   api_key: string;
   created_at: Generated<string | null>;
@@ -447,6 +476,34 @@ export interface ContentModels {
   settings_json: Generated<Json>;
   status: Generated<string>;
   updated_at: Generated<string | null>;
+  workspace_id: string;
+}
+
+export interface ContentModelStorage {
+  content_model_id: string;
+  last_run_id: string | null;
+  out_of_sync_at: string | null;
+  out_of_sync_code: string | null;
+  read_source: Generated<string>;
+  switched_at: string | null;
+  switched_by: string | null;
+  sync_failures: Generated<number>;
+  updated_at: Generated<string>;
+  workspace_id: string;
+}
+
+export interface ContentModelTables {
+  applied_shape: Json;
+  applied_shape_hash: string;
+  applied_version_id: string | null;
+  content_model_id: string;
+  created_at: Generated<string>;
+  /**
+   * Per column: the names its field had before, with the schema version each stopped applying at ({"<column>": [{"name", "below"}]}). Written when a schema stage succeeds (trigger on schema_migration_ledger); read by polynovea_content_sync_entries().
+   */
+  field_aliases: Generated<Json>;
+  table_name: string;
+  updated_at: Generated<string>;
   workspace_id: string;
 }
 
@@ -1767,6 +1824,97 @@ export interface Roles {
   workspace_id: string;
 }
 
+export interface SchemaExpandContractTasks {
+  backfill_cursor: Json | null;
+  backfilled_rows: Generated<number>;
+  content_model_id: string | null;
+  contract_after: string | null;
+  contract_min_at: string | null;
+  contracted_at: string | null;
+  created_at: Generated<string>;
+  error_ref: string | null;
+  id: Generated<string>;
+  kind: string;
+  ledger_id: string;
+  new_column: string;
+  old_column: string;
+  phase: Generated<string>;
+  phase_statement: Generated<number>;
+  release_id: string | null;
+  retired_column: string | null;
+  status: string;
+  step_index: number;
+  switched_at: string | null;
+  table_name: string;
+  trigger_name: string;
+  updated_at: Generated<string>;
+  workspace_id: string;
+}
+
+export interface SchemaMigrationConfirmations {
+  confirmed_by: string | null;
+  created_at: Generated<string>;
+  id: Generated<string>;
+  ledger_id: string;
+  typed_api_key: string;
+  workspace_id: string;
+}
+
+export interface SchemaMigrationLedger {
+  attempts: Generated<number>;
+  base_shape_hash: string | null;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  content_model_id: string | null;
+  created_at: Generated<string>;
+  error_ref: string | null;
+  finished_at: string | null;
+  id: Generated<string>;
+  model_api_key: string;
+  plan_hash: string;
+  plan_json: Json;
+  renames: Generated<Json>;
+  requested_by: string | null;
+  stage: string;
+  started_at: string | null;
+  status: string;
+  table_name: string;
+  target_schema_hash: string | null;
+  target_version_id: string | null;
+  workspace_id: string;
+}
+
+export interface SchemaMigrationRuns {
+  content_model_id: string | null;
+  error_ref: string | null;
+  finished_at: string | null;
+  id: Generated<string>;
+  ledger_id: string;
+  lock_retries: Generated<number>;
+  next_statement: Generated<number>;
+  next_step: Generated<number>;
+  stage: string;
+  started_at: Generated<string>;
+  status: string;
+  step_log: Generated<Json>;
+  updated_at: Generated<string>;
+  worker_id: string;
+  workspace_id: string;
+}
+
+export interface SchemaNameReservations {
+  content_model_id: string | null;
+  created_at: Generated<string>;
+  id: Generated<string>;
+  kind: string;
+  name: string;
+  reason: string;
+  reserved_until: string;
+  workspace_id: string;
+}
+
 export interface SocialPosts {
   checkpoint_metrics: Json | null;
   checkpoints: Generated<string[] | null>;
@@ -2173,9 +2321,13 @@ export interface DB {
   content_entry_version_terms: ContentEntryVersionTerms;
   content_entry_versions: ContentEntryVersions;
   content_entry_watchers: ContentEntryWatchers;
+  content_field_permissions: ContentFieldPermissions;
   content_fields: ContentFields;
   content_health_findings: ContentHealthFindings;
   content_health_profiles: ContentHealthProfiles;
+  content_model_move_runs: ContentModelMoveRuns;
+  content_model_storage: ContentModelStorage;
+  content_model_tables: ContentModelTables;
   content_model_versions: ContentModelVersions;
   content_models: ContentModels;
   content_redirect_history: ContentRedirectHistory;
@@ -2265,6 +2417,11 @@ export interface DB {
   releases: Releases;
   role_permissions: RolePermissions;
   roles: Roles;
+  schema_expand_contract_tasks: SchemaExpandContractTasks;
+  schema_migration_confirmations: SchemaMigrationConfirmations;
+  schema_migration_ledger: SchemaMigrationLedger;
+  schema_migration_runs: SchemaMigrationRuns;
+  schema_name_reservations: SchemaNameReservations;
   social_posts: SocialPosts;
   system_doctor_runs: SystemDoctorRuns;
   system_restore_tests: SystemRestoreTests;

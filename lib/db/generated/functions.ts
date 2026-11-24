@@ -252,6 +252,46 @@ export interface SqlFunctions {
     returns: JsonValue | null;
     shape: "scalar";
   };
+  polynovea_cancel_schema_stage: {
+    args: { "p_ledger_id": string | null; "p_cancelled_by": string | null };
+    returns: null;
+    shape: "void";
+  };
+  polynovea_canonical_json: {
+    args: { "value": JsonValue | null };
+    returns: string | null;
+    shape: "scalar";
+  };
+  polynovea_confirm_schema_stage: {
+    args: { "p_ledger_id": string | null; "p_confirmed_by": string | null; "p_typed_api_key": string | null };
+    returns: null;
+    shape: "void";
+  };
+  polynovea_content_field_aliases: {
+    args: { "p_content_model_id": string | null; "p_shape": JsonValue | null };
+    returns: JsonValue | null;
+    shape: "scalar";
+  };
+  polynovea_content_set_read_source: {
+    args: { "p_workspace_id": string | null; "p_content_model_id": string | null; "p_source": string | null; "p_actor"?: string | null };
+    returns: JsonValue | null;
+    shape: "scalar";
+  };
+  polynovea_content_sync_entries: {
+    args: { "p_entry_ids": string[] | null };
+    returns: JsonValue | null;
+    shape: "scalar";
+  };
+  polynovea_content_verify_model: {
+    args: { "p_workspace_id": string | null; "p_content_model_id": string | null; "p_requested_by"?: string | null; "p_batches"?: number | null; "p_entries"?: number | null; "p_failed"?: number | null };
+    returns: JsonValue | null;
+    shape: "scalar";
+  };
+  polynovea_retry_schema_stage: {
+    args: { "p_ledger_id": string | null };
+    returns: null;
+    shape: "void";
+  };
 }
 
 /** Runtime copy of each function's argument names and result shape, used to validate calls. */
@@ -305,4 +345,12 @@ export const SQL_FUNCTIONS: { readonly [K in keyof SqlFunctions]: { readonly arg
   cms_upsert_health_finding: { argNames: ["p_workspace_id","p_entity_type","p_entity_id","p_finding_code","p_severity","p_fingerprint","p_title","p_detail","p_evidence"], shape: "row" },
   cms_upsert_web_quality_policy: { argNames: ["p_workspace_id","p_actor_id","p_site_base_url","p_site_name","p_title_suffix","p_robots_enabled","p_sitemap_enabled","p_require_canonical_route","p_require_social_card","p_require_schema_org","p_ai_crawler_policy","p_media_budget","p_settings"], shape: "scalar" },
   cms_upsert_workflow_definition: { argNames: ["p_workspace_id","p_actor_id","p_definition_id","p_name","p_content_model_id","p_definition","p_active"], shape: "scalar" },
+  polynovea_cancel_schema_stage: { argNames: ["p_ledger_id","p_cancelled_by"], shape: "void" },
+  polynovea_canonical_json: { argNames: ["value"], shape: "scalar" },
+  polynovea_confirm_schema_stage: { argNames: ["p_ledger_id","p_confirmed_by","p_typed_api_key"], shape: "void" },
+  polynovea_content_field_aliases: { argNames: ["p_content_model_id","p_shape"], shape: "scalar" },
+  polynovea_content_set_read_source: { argNames: ["p_workspace_id","p_content_model_id","p_source","p_actor"], shape: "scalar" },
+  polynovea_content_sync_entries: { argNames: ["p_entry_ids"], shape: "scalar" },
+  polynovea_content_verify_model: { argNames: ["p_workspace_id","p_content_model_id","p_requested_by","p_batches","p_entries","p_failed"], shape: "scalar" },
+  polynovea_retry_schema_stage: { argNames: ["p_ledger_id"], shape: "void" },
 };

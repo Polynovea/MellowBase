@@ -8,7 +8,9 @@ import { createOTP } from "@better-auth/utils/otp";
 // Phase 2 acceptance tests 1, 3 and 4 for the wizard's owner step, in a real browser with a virtual
 // passkey authenticator (Chromium's WebAuthn emulation, user verification on). They need a server in
 // setup mode whose database step is done (configured and migrated, no installation row), reached
-// on a localhost address: passkeys refuse IP addresses, so 127.0.0.1 will not do.
+// on a localhost address: passkeys refuse IP addresses, so 127.0.0.1 will not do. The server runs the
+// built-in auth (AUTH_PROVIDER=builtin, built with NEXT_PUBLIC_AUTH_PROVIDER=builtin), so it also needs
+// POLYNOVEA_AUTH_SECRET and POLYNOVEA_TRUSTED_PROXIES. Run with playwright.setup.config.ts.
 //
 //   E2E_SETUP_BASE_URL     e.g. http://localhost:3200; the server's POLYNOVEA_PUBLIC_URL must be the same
 //   E2E_SETUP_CODE         its setup code (POLYNOVEA_SETUP_CODE on that server)
@@ -116,7 +118,8 @@ async function signInAsOwner(page: Page, totpKey: string): Promise<void> {
   await page.goto("/admin");
   await page.getByLabel("Email").fill(owner.email);
   await page.getByLabel("Password").fill(owner.password);
-  await page.getByRole("button", { name: /sign in/i }).click();
+  // Exactly "Sign in": the page also has "Sign in with a passkey".
+  await page.getByRole("button", { name: /^sign in$/i }).click();
   await page.getByLabel("Code from your authenticator app").fill(await totpNow(totpKey));
   await page.getByRole("button", { name: "Verify" }).click();
   await expect(page.getByRole("heading", { name: /CMS WORKSPACE/i })).toBeVisible();

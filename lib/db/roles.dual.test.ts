@@ -35,7 +35,7 @@ function catalogChecks(label: string, url: () => string | undefined) {
       expect(rows.map((row) => row.relname)).toEqual([]);
     });
 
-    it("polynovea_app can read and write every table, and only read the migration ledger", async () => {
+    it("polynovea_app can read and write every table, and only read the migration ledger and the schema engine's own tables", async () => {
       const { rows } = await db.query(`
         select c.relname,
           has_table_privilege('polynovea_app', c.oid, 'select') as can_select,
@@ -44,15 +44,20 @@ function catalogChecks(label: string, url: () => string | undefined) {
         where n.nspname = 'public' and c.relkind in ('r', 'p')`);
       expect(rows.length).toBeGreaterThanOrEqual(140);
       expect(rows.filter((row) => !row.can_select).map((row) => row.relname)).toEqual([]);
-      // Read-only for the app: Phase 3's tables (0073-0076) and 0077's system tables, each only where it
-      // exists, so this holds on a branch with either set of migrations and after both merge.
-      const readOnly = [
+      // Read-only for the app: Phase 3's tables (0073-0076) and 0077's system tables. The app may only read
+      // them (schema_migration_ledger: read, and insert the request columns only; see appAccess.dual.test.ts).
+      expect(rows.filter((row) => !row.can_write).map((row) => row.relname).sort()).toEqual([
         "content_model_move_runs", "content_model_storage", "content_model_tables", "polynovea_migration_ledger",
         "schema_expand_contract_tasks", "schema_migration_confirmations", "schema_migration_ledger", "schema_migration_runs",
         "schema_name_reservations", "system_restore_tests", "system_upgrades",
-      ];
-      const present = new Set(rows.map((row) => row.relname));
-      expect(rows.filter((row) => !row.can_write).map((row) => row.relname).sort()).toEqual(readOnly.filter((name) => present.has(name)));
+      ]);
+      // 0074: model versions are history the migration worker rebuilds plans from: insert-only.
+      const { rows: [versions] } = await db.query(`
+        select has_table_privilege('polynovea_app', 'public.content_model_versions', 'select') as s,
+               has_table_privilege('polynovea_app', 'public.content_model_versions', 'insert') as i,
+               has_table_privilege('polynovea_app', 'public.content_model_versions', 'update') as u,
+               has_table_privilege('polynovea_app', 'public.content_model_versions', 'delete') as d`);
+      expect(versions).toEqual({ s: true, i: true, u: false, d: false });
     });
 
     it("polynovea_app executes every SQL function and PUBLIC executes none", async () => {

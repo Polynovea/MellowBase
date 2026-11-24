@@ -6,7 +6,8 @@ import pg from "pg";
 
 // Phase 2 acceptance tests 5 and 6 for the wizard's database step, against a server in setup mode
 // (a clean install: no config.enc, no installation row). The normal e2e server is an installed app,
-// where /setup is 404, so these run only when the setup-mode server is given:
+// where /setup is 404, so these run only when the setup-mode server is given (run with
+// `npx playwright test -c playwright.setup.config.ts e2e/setup/database.spec.ts`):
 //
 //   E2E_SETUP_BASE_URL   base URL of the setup-mode server (e.g. http://127.0.0.1:3200)
 //   E2E_SETUP_CODE       its setup code (POLYNOVEA_SETUP_CODE on that server)
@@ -51,11 +52,17 @@ async function submitManaged(page: Page, form: { hostname: string; port?: number
 }
 
 test.describe.serial("database step", () => {
-  test.beforeEach(async ({ page }) => startSession(page));
+  // One setup session for the whole file: the setup code works once, so each test cannot enter it again.
+  let page: Page;
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage();
+    await startSession(page);
+  });
+  test.afterAll(async () => page?.close());
 
   // Acceptance test 5.
   for (const hostname of ["169.254.169.254", "127.0.0.1", "localhost", "::ffff:127.0.0.1", "::ffff:169.254.169.254", process.env.E2E_PRIVATE_DNS_NAME ?? "10.0.0.1.nip.io"]) {
-    test(`refuses ${hostname} at the address check and never connects`, async ({ page }) => {
+    test(`refuses ${hostname} at the address check and never connects`, async () => {
       const events = await submitManaged(page, { hostname });
       expect(events).toContainEqual(expect.objectContaining({ type: "check", id: "dns", status: "failed" }));
       expect(events.some((event) => event.type === "check" && event.id === "tcp")).toBe(false);
@@ -63,7 +70,7 @@ test.describe.serial("database step", () => {
     });
   }
 
-  test("a wrong admin password is refused with a plain fix", async ({ page }) => {
+  test("a wrong admin password is refused with a plain fix", async () => {
     test.skip(!process.env.E2E_MANAGED_DB_HOST, "Set E2E_MANAGED_DB_HOST to reach a managed database");
     const events = await submitManaged(page, {
       hostname: process.env.E2E_MANAGED_DB_HOST!,
