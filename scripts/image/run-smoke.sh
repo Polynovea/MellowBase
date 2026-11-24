@@ -90,7 +90,16 @@ docker run -d --name "$PREFIX-tunnel" -v "$PREFIX-data:/var/lib/polynovea" "$IMA
 wait_healthy "$PREFIX-tunnel"
 docker logs "$PREFIX-tunnel" 2>&1 | grep -q "peer\|Setup code" || true
 CODE="$(setup_code "$PREFIX-tunnel")"
-smoke "$PREFIX-tunnel" -e SETUP_CODE="$CODE" -e EXPECT_RELEASE="$RELEASE_ID" -e STEPS=health,forged,code,local,owner-step
+smoke "$PREFIX-tunnel" -e SETUP_CODE="$CODE" -e EXPECT_RELEASE="$RELEASE_ID" -e STEPS=health,forged,code,local,owner-step,schema-roundtrip | tee "/tmp/$PREFIX-roundtrip.log"
+SMOKE_MODEL="$(grep -o "SCHEMA_ROUNDTRIP_MODEL=[a-z0-9_]*" "/tmp/$PREFIX-roundtrip.log" | cut -d= -f2)"
+rm -f "/tmp/$PREFIX-roundtrip.log"
+[ -n "$SMOKE_MODEL" ] || { echo "FAIL  schema round trip did not finish"; exit 1; }
+docker exec -e SMOKE_MODEL="$SMOKE_MODEL" "$PREFIX-tunnel" sh -ec '
+  states="$(psql -h /var/run/postgresql -U postgres -d polynovea -Atc "select string_agg(l.status, \$\$,\$\$ order by l.created_at) from schema_migration_ledger l join content_models m on m.id = l.content_model_id where m.api_key = \$\$$SMOKE_MODEL\$\$ and l.status <> \$\$superseded\$\$")"
+  case "$states" in *pending*|*running*|*failed*|"") echo "FAIL  ledger for the smoke model: [$states]"; exit 1;; *) echo "ok    every schema change of the smoke model succeeded ($states)";; esac
+  reads="$(psql -h /var/run/postgresql -U postgres -d polynovea -Atc "select s.read_source from content_model_storage s join content_models m on m.id = s.content_model_id where m.api_key = \$\$$SMOKE_MODEL\$\$")"
+  [ "$reads" = "table" ] && echo "ok    the smoke model reads from its table" || { echo "FAIL  smoke model read source [$reads]"; exit 1; }
+'
 
 step "Bundled database: 127.0.0.1 and socket only, no password sign-in, no remote roles"
 docker exec "$PREFIX-tunnel" sh -ec '
