@@ -72,6 +72,10 @@ checkov_scan() { # checkov_scan FRAMEWORK -f FILE | -d DIR
     echo "checkov printed no $framework scan results: the file was not scanned" >&2
     return 1
   fi
+  if printf '%s\n' "$out" | grep -Eq "Parsing errors: [1-9]|Passed checks: 0, Failed checks: 0"; then
+    echo "checkov could not read the $framework file (parsing errors, or no checks ran)" >&2
+    return 1
+  fi
   return "$rc"
 }
 
@@ -119,12 +123,12 @@ for s in "${STEPS[@]}"; do
         -S warning scripts/vm-bootstrap.sh scripts/validate.sh scripts/build-azure.sh
       ;;
     checkov)
-      # One scan per framework. The Azure template is scanned from its Bicep source: with
-      # user-defined functions it compiles to ARM language version 2.0, which checkov's ARM scanner
-      # skips without a word. Each scan must print its "<framework> scan results" line, so a skipped
-      # file fails instead of passing silently.
+      # One scan per framework. Each must print its "<framework> scan results" line with at least
+      # one check and no parsing errors, so a file the scanner can't read fails instead of passing
+      # silently (checkov skips ARM language version 2.0 and can't parse this Bicep; main.bicep
+      # therefore avoids user-defined functions, and the compiled ARM is what's scanned).
       step "checkov (CloudFormation)" checkov_scan cloudformation -f /deploy/aws/polynovea.yaml
-      step "checkov (Azure Bicep)" checkov_scan bicep -f /deploy/azure/main.bicep
+      step "checkov (Azure ARM)" checkov_scan arm -f /deploy/azure/azuredeploy.json
       step "checkov (OpenTofu)" checkov_scan terraform -d /deploy/opentofu
       ;;
     *) echo "unknown step: $s" >&2; FAILED+=("$s") ;;

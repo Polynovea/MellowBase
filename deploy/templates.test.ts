@@ -287,6 +287,11 @@ describe.runIf(existsSync(armPath))("policy: Azure (compiled ARM JSON behind the
     expect(String(arm.metadata?.description ?? "")).toMatch(/US\$56[\s\S]*US\$39[\s\S]*East US[\s\S]*November 2026/);
   });
 
+  it("compiles to classic ARM (not language version 2.0), so policy scanners can read it", () => {
+    expect((arm as { languageVersion?: string }).languageVersion).toBeUndefined();
+    expect(Array.isArray(arm.resources)).toBe(true);
+  });
+
   it("was compiled from the current first-boot script (run deploy/scripts/build-azure.sh if not)", () => {
     // Bicep stores loadTextContent() as a template variable ("$fxv#0"), the script's exact text.
     const json = JSON.stringify(arm);
@@ -498,8 +503,10 @@ describe("review item 1: a link can't swap in someone else's images", () => {
   it("Bicep checks the images before creating anything, and has no free image parameter", () => {
     expect(bicep).toContain("param containerImage string = loadJsonContent('../release-images.json').cmsImage");
     expect(bicep).toContain("param caddyImage string = loadJsonContent('../release-images.json').caddyImage");
-    expect(bicep).toContain("containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || isPolynoveaImage(containerImage)");
-    expect(bicep).toContain("caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || isDigestRef(caddyImage, ['caddy', 'docker.io/library/caddy'])");
+    expect(bicep).toContain("containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || containerImageOk");
+    expect(bicep).toContain("caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || caddyImageOk");
+    expect(bicep).toContain("var containerImageOk = length(cmsParts) == 2 && startsWith(cmsName, 'ghcr.io/polynovea/')");
+    expect(bicep).toContain("contains(['caddy', 'docker.io/library/caddy'], first(caddyParts)) && length(caddyDigest) == 64");
     // Each rule in inputRules has a parameter in the nested check template that accepts only true.
     const ruleBlock = bicep.slice(bicep.indexOf("var inputRules = {"), bicep.indexOf("\n}\n", bicep.indexOf("var inputRules = {")));
     const ruleNames = [...ruleBlock.matchAll(/^  (\w+): /gm)].map((m) => m[1]);
@@ -636,16 +643,20 @@ describe("review item 6: Azure checks its inputs like CloudFormation does", () =
   it("has a rule for each free-text input, and refuses a deploy with no way in", () => {
     const rules = bicep.slice(bicep.indexOf("var inputRules = {"), bicep.indexOf("}", bicep.indexOf("var inputRules = {")));
     for (const rule of [
-      "adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32: empty(adminCidr) || isIpv4Cidr(adminCidr)",
-      "domainMustBeBlankOrALowercaseDomainNameSuchAsCmsExampleCom: empty(domain) || isDomain(domain)",
-      "acmeEmailMustBeBlankOrAnEmailAddress: empty(acmeEmail) || isEmail(acmeEmail)",
-      "budgetEmailMustBeAnEmailAddress: isEmail(budgetEmail)",
+      "adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32: empty(adminCidr) || adminCidrOk",
+      "domainMustBeBlankOrALowercaseDomainNameSuchAsCmsExampleCom: empty(domain) || domainOk",
+      "acmeEmailMustBeBlankOrAnEmailAddress: empty(acmeEmail) || acmeEmailOk",
+      "budgetEmailMustBeAnEmailAddress: budgetEmailOk",
       "setADomainOrAnAdminCidrOtherwiseNobodyCanReachTheSetupWizard: !empty(domain) || !empty(adminCidr)",
     ]) expect(rules).toContain(rule);
     // Values written into the VM's settings file can't carry a line break.
-    const isEmail = bicep.slice(bicep.indexOf("func isEmail"), bicep.indexOf("var inputRules"));
-    for (const ch of ["n", "r", "t"]) expect(isEmail).toContain(`!contains(text, '${String.fromCharCode(92)}${ch}')`);
-    expect(bicep).toMatch(/func isDomain[\s\S]+allIn\(text, 'abcdefghijklmnopqrstuvwxyz0123456789\.-'\)/);
+    for (const email of ["acmeEmail", "budgetEmail"]) {
+      const rule = bicep.slice(bicep.indexOf(`var ${email}Ok = `), bicep.indexOf("\n", bicep.indexOf(`var ${email}Ok = `)));
+      for (const ch of ["n", "r", "t"]) expect(rule).toContain(`!contains(${email}, '${String.fromCharCode(92)}${ch}')`);
+    }
+    expect(bicep).toContain("!contains('abcdefghijklmnopqrstuvwxyz0123456789.-', substring(domain, i, 1))");
+    // No user-defined functions: they'd compile to ARM language version 2.0, which checkov can't scan.
+    expect(bicep).not.toMatch(/^func /m);
     // The same rules exist in CloudFormation.
     expect(cfn).toMatch(/SomeWayIn:/);
     for (const param of ["Domain", "AcmeEmail", "AdminCidr", "BudgetEmail"]) expect(cfnResource(param)).toMatch(/AllowedPattern: /);
