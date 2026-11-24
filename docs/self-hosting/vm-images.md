@@ -118,7 +118,9 @@ The default build is for the building account only. To offer the images to other
 - A managed image can only be used inside its own subscription. Publish through an Azure Compute Gallery instead. Create it once, with community sharing and the publisher details the portal shows to users:
   - `az sig create --gallery-name <gallery> --resource-group <rg> --permissions community --publisher-uri <url> --publisher-email <email> --eula <url> --public-name-prefix polynovea`
   - then `az sig share enable-community --gallery-name <gallery> --resource-group <rg>`.
-- Create one image definition per architecture (`az sig image-definition create … --os-type Linux --hyper-v-generation V2 --architecture x64|Arm64`).
+- Create one image definition per architecture, marked Trusted Launch-capable (without `--features SecurityType=TrustedLaunchSupported`, VMs from the gallery image cannot use Trusted Launch, so the template would have to turn it off):
+  `az sig image-definition create --gallery-name <gallery> --resource-group <rg> --gallery-image-definition polynovea-cms[-arm64] --publisher Polynovea --offer polynovea-cms --sku <x64|arm64> --os-type Linux --os-state Generalized --hyper-v-generation V2 --architecture x64|Arm64 --features SecurityType=TrustedLaunchSupported`.
+  Packer does not create the definition; it only adds image versions to it (Ubuntu 24.04's Gen2 image is Trusted Launch-capable).
 - Build with:
   - `azure_gallery_name`, `azure_gallery_resource_group`, `azure_gallery_image_name` and `azure_gallery_image_version` (major.minor.patch, e.g. `0.4.0`);
   - `azure_gallery_regions` for replication.
