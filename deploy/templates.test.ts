@@ -626,3 +626,23 @@ describe("review item 5: the Key Vault name is per install", () => {
     expect(parseSecretRef("https://pnv-abcdefghij012.vault.azure.net/secrets/polynovea-database-admin")).toMatchObject({ kind: "azure" });
   });
 });
+
+describe("review item 6: Azure checks its inputs like CloudFormation does", () => {
+  it("has a rule for each free-text input, and refuses a deploy with no way in", () => {
+    const rules = bicep.slice(bicep.indexOf("var inputRules = {"), bicep.indexOf("}", bicep.indexOf("var inputRules = {")));
+    for (const rule of [
+      "adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32: empty(adminCidr) || isIpv4Cidr(adminCidr)",
+      "domainMustBeBlankOrALowercaseDomainNameSuchAsCmsExampleCom: empty(domain) || isDomain(domain)",
+      "acmeEmailMustBeBlankOrAnEmailAddress: empty(acmeEmail) || isEmail(acmeEmail)",
+      "budgetEmailMustBeAnEmailAddress: isEmail(budgetEmail)",
+      "setADomainOrAnAdminCidrOtherwiseNobodyCanReachTheSetupWizard: !empty(domain) || !empty(adminCidr)",
+    ]) expect(rules).toContain(rule);
+    // Values written into the VM's settings file can't carry a line break.
+    const isEmail = bicep.slice(bicep.indexOf("func isEmail"), bicep.indexOf("var inputRules"));
+    for (const ch of ["n", "r", "t"]) expect(isEmail).toContain(`!contains(text, '${String.fromCharCode(92)}${ch}')`);
+    expect(bicep).toMatch(/func isDomain[\s\S]+allIn\(text, 'abcdefghijklmnopqrstuvwxyz0123456789\.-'\)/);
+    // The same rules exist in CloudFormation.
+    expect(cfn).toMatch(/SomeWayIn:/);
+    for (const param of ["Domain", "AcmeEmail", "AdminCidr", "BudgetEmail"]) expect(cfnResource(param)).toMatch(/AllowedPattern: /);
+  });
+});

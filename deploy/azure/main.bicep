@@ -126,9 +126,32 @@ func isDigestRef(ref string, names string[]) bool =>
 func isPolynoveaImage(ref string) bool =>
   length(split(ref, '@sha256:')) == 2 && startsWith(ref, 'ghcr.io/polynovea/') && length(first(split(ref, '@sha256:'))) > 18 && allIn(first(split(ref, '@sha256:')), 'abcdefghijklmnopqrstuvwxyz0123456789._/-') && length(last(split(ref, '@sha256:'))) == 64 && allIn(last(split(ref, '@sha256:')), '0123456789abcdef')
 
+// An IPv4 range such as 203.0.113.7/32. Octets and prefix are compared as strings of equal length
+// ('249' <= '255'), so nothing is converted and a bad value can't stop the check from running.
+func isOctet(o string) bool =>
+  !empty(o) && length(o) <= 3 && allIn(o, '0123456789') && (length(o) < 3 || o <= '255')
+
+func isIpv4Cidr(text string) bool =>
+  length(split(text, '/')) == 2 && length(split(first(split(text, '/')), '.')) == 4 && empty(filter(split(first(split(text, '/')), '.'), o => !isOctet(o))) && !empty(last(split(text, '/'))) && length(last(split(text, '/'))) <= 2 && allIn(last(split(text, '/')), '0123456789') && (length(last(split(text, '/'))) < 2 || last(split(text, '/')) <= '32')
+
+// A lowercase domain name: letters, digits, dots and hyphens, at least one dot, no empty label, no
+// label starting or ending with a hyphen.
+func isDomain(text string) bool =>
+  length(text) <= 253 && allIn(text, 'abcdefghijklmnopqrstuvwxyz0123456789.-') && contains(text, '.') && empty(filter(split(text, '.'), label => empty(label) || startsWith(label, '-') || endsWith(label, '-')))
+
+// An email address with no spaces or line breaks (these values are written into the VM's settings
+// file, so a line break could add a setting).
+func isEmail(text string) bool =>
+  length(split(text, '@')) == 2 && !empty(first(split(text, '@'))) && contains(last(split(text, '@')), '.') && !contains(text, ' ') && !contains(text, '\n') && !contains(text, '\r') && !contains(text, '\t')
+
 var inputRules = {
   containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || isPolynoveaImage(containerImage)
   caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || isDigestRef(caddyImage, ['caddy', 'docker.io/library/caddy'])
+  adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32: empty(adminCidr) || isIpv4Cidr(adminCidr)
+  domainMustBeBlankOrALowercaseDomainNameSuchAsCmsExampleCom: empty(domain) || isDomain(domain)
+  acmeEmailMustBeBlankOrAnEmailAddress: empty(acmeEmail) || isEmail(acmeEmail)
+  budgetEmailMustBeAnEmailAddress: isEmail(budgetEmail)
+  setADomainOrAnAdminCidrOtherwiseNobodyCanReachTheSetupWizard: !empty(domain) || !empty(adminCidr)
 }
 
 resource inputChecks 'Microsoft.Resources/deployments@2022-09-01' = {
