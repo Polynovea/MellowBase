@@ -440,7 +440,8 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     publicNetworkAccess: 'Enabled'
     networkAcls: {
       defaultAction: 'Deny'
-      bypass: 'AzureServices'
+      // Nothing needs it: the VM comes in through its subnet, the container is made through Azure Resource Manager.
+      bypass: 'None'
       virtualNetworkRules: [{ id: vmSubnet.id, action: 'Allow' }]
     }
     encryption: {

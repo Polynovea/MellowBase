@@ -183,6 +183,7 @@ ephemeral "random_password" "database_admin" {
   special = false
 }
 
+# nosemgrep: aws-secretsmanager-secret-unencrypted -- encrypted with the AWS-managed key (aws/secretsmanager); a customer-managed key costs about US$1/month and adds key-policy work to a one-click install ("Paid hardening upgrades", deploy/README.md)
 resource "aws_secretsmanager_secret" "database" {
   count                   = local.managed ? 1 : 0
   name                    = "polynovea/${var.name}/database-admin"
@@ -197,6 +198,16 @@ resource "aws_db_subnet_group" "database" {
   description = "Polynovea database subnets (no internet route)"
   subnet_ids  = aws_subnet.database[*].id
   tags        = local.tags
+}
+
+# The database's own log (errors, slow autovacuum, checkpoints) goes to CloudWatch, kept 14 days, so
+# it survives the instance and support can read it. Made here, before RDS would make it with no expiry.
+# nosemgrep: aws-cloudwatch-log-group-unencrypted -- encrypted with CloudWatch's own key; a customer-managed key is a paid upgrade ("Paid hardening upgrades", deploy/README.md)
+resource "aws_cloudwatch_log_group" "database" {
+  count             = local.managed ? 1 : 0
+  name              = "/aws/rds/instance/${var.name}-database/postgresql"
+  retention_in_days = 14
+  tags              = local.tags
 }
 
 resource "aws_db_instance" "database" {
@@ -225,6 +236,10 @@ resource "aws_db_instance" "database" {
   final_snapshot_identifier  = "${var.name}-database-final"
   copy_tags_to_snapshot      = true
   tags                       = merge(local.tags, { Name = "${var.name}-database" })
+
+  enabled_cloudwatch_logs_exports = ["postgresql"]
+
+  depends_on = [aws_cloudwatch_log_group.database]
 
   # Automatic minor upgrades move the instance past postgres_version; don't "downgrade" it back.
   lifecycle {
@@ -394,6 +409,7 @@ resource "aws_iam_instance_profile" "server" {
 
 # ------------------------------------------------------------------ server
 
+# nosemgrep: aws-ebs-volume-encrypted-with-cmk -- encrypted with the AWS-managed EBS key; a customer-managed key is a paid upgrade ("Paid hardening upgrades", deploy/README.md)
 resource "aws_ebs_volume" "data" {
   availability_zone = aws_subnet.server.availability_zone
   size              = var.data_volume_gb

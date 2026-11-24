@@ -200,6 +200,17 @@ describe("policy: AWS CloudFormation", () => {
     expect(cfnResource("ServerToDatabaseEgress")).toContain("DestinationSecurityGroupId: !Ref DatabaseSecurityGroup");
   });
 
+  it("sends the database's log to CloudWatch, into a 14-day log group it makes first under the database's own name", () => {
+    const db = cfnResource("Database");
+    expect(db).toContain("EnableCloudwatchLogsExports: [postgresql]");
+    expect(db).toContain("DependsOn: DatabaseLogGroup");
+    expect(db).toContain('DBInstanceIdentifier: !Join ["", ["polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]');
+    const logs = cfnResource("DatabaseLogGroup");
+    expect(logs).toContain("RetentionInDays: 14");
+    // RDS's own log group name: /aws/rds/instance/<identifier>/postgresql.
+    expect(logs).toContain('LogGroupName: !Join ["", ["/aws/rds/instance/polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]], "/postgresql"]]');
+  });
+
   it("encrypts every disk and the bucket, and keeps the bucket private and HTTPS-only", () => {
     expect(cfnResource("ServerLaunchTemplate")).toContain("Encrypted: true");
     expect(cfnResource("DataVolume")).toContain("Encrypted: true");
@@ -258,6 +269,10 @@ describe.runIf(existsSync(armPath))("policy: Azure (compiled ARM JSON behind the
     const vault = one("Microsoft.KeyVault/vaults").properties;
     expect(vault).toMatchObject({ enableRbacAuthorization: true, enablePurgeProtection: true, enableSoftDelete: true });
     expect(vault.networkAcls.defaultAction).toBe("Deny");
+  });
+
+  it("lets nothing past the storage firewall but the VM's subnet (no trusted-services bypass)", () => {
+    expect(one("Microsoft.Storage/storageAccounts").properties.networkAcls).toMatchObject({ defaultAction: "Deny", bypass: "None" });
   });
 
   it("gives the VM's identity exactly two roles: read one secret, use one container", () => {
@@ -326,6 +341,17 @@ describe("policy: OpenTofu", () => {
     for (const re of [/publicly_accessible\s+= false/, /storage_encrypted\s+= true/, /deletion_protection\s+= true/, /backup_retention_period\s+= 7/]) expect(db).toMatch(re);
     expect(tfResource(tofuAzure, "azurerm_postgresql_flexible_server", "main")).toMatch(/public_network_access_enabled\s+= false/);
     expect(tfResource(tofuAzure, "azurerm_storage_account", "main")).toMatch(/shared_access_key_enabled\s+= false/);
+    expect(tfResource(tofuAzure, "azurerm_storage_account", "main")).toMatch(/bypass\s+= \["None"\]/);
+  });
+
+  it("sends the AWS database's log to a 14-day log group made first, as CloudFormation does", () => {
+    const db = tfResource(tofuAws, "aws_db_instance", "database");
+    expect(db).toContain('enabled_cloudwatch_logs_exports = ["postgresql"]');
+    expect(db).toContain("depends_on = [aws_cloudwatch_log_group.database]");
+    expect(db).toMatch(/identifier\s+= "\$\{var\.name\}-database"/);
+    const logs = tfResource(tofuAws, "aws_cloudwatch_log_group", "database");
+    expect(logs).toContain('"/aws/rds/instance/${var.name}-database/postgresql"');
+    expect(logs).toMatch(/retention_in_days = 14/);
   });
 });
 

@@ -388,6 +388,7 @@ resource "azurerm_role_assignment" "operator_writes_secret" {
 }
 
 # The shape the setup wizard reads (lib/setup/database/createdForYou.ts).
+# nosemgrep: keyvault-ensure-secret-expires -- no rotation is designed in: the wizard reads it once, and an expired secret can't be read, which would break re-running setup or a recovery
 resource "azurerm_key_vault_secret" "database" {
   count            = local.managed ? 1 : 0
   name             = local.secret_name
@@ -408,6 +409,7 @@ resource "azurerm_key_vault_secret" "database" {
 
 # ------------------------------------------------------------------ storage: one container
 
+# nosemgrep: storage-queue-services-logging, storage-allow-microsoft-service-bypass -- the account has no queues (one blob container only); and no Azure service needs the trusted-services bypass (the VM comes in through its subnet, the container is made through Azure Resource Manager), so the firewall admits only the VM subnet and the operator's IPs
 resource "azurerm_storage_account" "main" {
   name                              = "${var.name}${local.suffix}"
   location                          = var.location
@@ -428,7 +430,7 @@ resource "azurerm_storage_account" "main" {
 
   network_rules {
     default_action             = "Deny"
-    bypass                     = ["AzureServices"]
+    bypass                     = ["None"] # nothing needs it: the VM comes in through its subnet, the container is made through Azure Resource Manager
     virtual_network_subnet_ids = [azurerm_subnet.vm.id]
     ip_rules                   = var.operator_ip_ranges
   }

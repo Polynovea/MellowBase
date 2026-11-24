@@ -379,12 +379,26 @@ Resources:
       DBSubnetGroupDescription: Polynovea database subnets (no internet route)
       SubnetIds: [!Ref DatabaseSubnetA, !Ref DatabaseSubnetB]
 
+  # The database's own log (errors, slow autovacuum, checkpoints) goes to CloudWatch, kept 14 days, so
+  # it survives the instance and support can read it. Made here, before RDS would make it with no
+  # expiry, so the database has a fixed lowercase name: polynovea-<this stack's ID>.
+  # That name is fixed when the stack is created and must never change in a later template version:
+  # a new name makes CloudFormation replace the database, which deletion protection then blocks.
+  DatabaseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ManagedDb
+    Properties:
+      LogGroupName: !Join ["", ["/aws/rds/instance/polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]], "/postgresql"]]
+      RetentionInDays: 14
+
   Database:
     Type: AWS::RDS::DBInstance
     Condition: ManagedDb
+    DependsOn: DatabaseLogGroup
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
+      DBInstanceIdentifier: !Join ["", ["polynovea-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]
       Engine: postgres
       EngineVersion: !Ref PostgresVersion
       AutoMinorVersionUpgrade: true
@@ -404,6 +418,7 @@ Resources:
       PreferredBackupWindow: "03:00-04:00"
       DeletionProtection: true
       CopyTagsToSnapshot: true
+      EnableCloudwatchLogsExports: [postgresql]
       Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-database" }]
 
   DatabaseSecretAttachment:
