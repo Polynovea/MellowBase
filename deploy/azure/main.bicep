@@ -57,15 +57,15 @@ param databaseSku string = 'Standard_B1ms'
 @allowed([32, 64, 128, 256])
 param databaseStorageGb int = 32
 
-// Images come only from the release (deploy/release.json). The checks below refuse anything else, so a
+// Images come only from the release (deploy/release-images.json). The checks below refuse anything else, so a
 // "Deploy to Azure" link can't swap in someone else's image: the CMS only from ghcr.io/polynovea/,
 // the proxy only Caddy's official image, both pinned by digest. The server checks the CMS image's
 // signature again before every start.
 @description('Set by the release: the Polynovea CMS image, ghcr.io/polynovea/<name>@sha256:<digest>. Leave as it is.')
-param containerImage string = loadJsonContent('../release.json').cmsImage
+param containerImage string = loadJsonContent('../release-images.json').cmsImage
 
 @description('Set by the release: Caddy\'s official image, caddy@sha256:<digest>. Leave as it is.')
-param caddyImage string = loadJsonContent('../release.json').caddyImage
+param caddyImage string = loadJsonContent('../release-images.json').caddyImage
 
 @description('Location for all resources.')
 param location string = resourceGroup().location
@@ -97,7 +97,7 @@ var managed = databaseMode == 'managed'
 var hasAdminCidr = !empty(adminCidr)
 var hasDomain = !empty(domain)
 // The release's published Polynovea gallery image for this processor; blank = Ubuntu 24.04 LTS.
-var galleryImage = loadJsonContent('../release.json').azure.galleryImages[architecture]
+var galleryImage = loadJsonContent('../release-images.json').azure.galleryImages[architecture]
 var suffix = uniqueString(resourceGroup().id) // 13 characters, for names only (never for secrets)
 var prefix = 'polynovea'
 var vnetCidr = '10.30.0.0/16'

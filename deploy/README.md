@@ -52,7 +52,7 @@ First boot **fails closed**. Images are pulled only by digest (`name@sha256:...`
 
 Plain Ubuntu plus a pinned container image is the default, because it works from a one-click link in every region. A Polynovea server image can be used only once it's published (see "Publishing" in `docs/self-hosting/vm-images.md`; a decision for the project lead):
 
-- **AWS:** a public AMI in each region, built with `aws_publishable = true` (an unencrypted root snapshot with no secrets on it). The template still encrypts every volume at launch. The release script writes each region's AMI ID into the template's `ReleaseAmis` map (from `deploy/release.json`); no link or parameter can name another AMI.
+- **AWS:** a public AMI in each region, built with `aws_publishable = true` (an unencrypted root snapshot with no secrets on it). The template still encrypts every volume at launch. The release script writes each region's AMI ID into the template's `ReleaseAmis` map (from `deploy/release-images.json`); no link or parameter can name another AMI.
 - **Azure:** an image version in an Azure Compute Gallery shared with the community. Pass `/CommunityGalleries/<public name>/Images/<definition>/Versions/<version>` as `customImageId`. A managed image only works inside its own subscription. The VM uses Trusted Launch (secure boot and a virtual TPM) on x64 with the Ubuntu image or a gallery image, so **the gallery image definition must be created with `--features SecurityType=TrustedLaunchSupported`** (as in `vm-images.md`). Otherwise the deployment fails. A managed image can't use Trusted Launch, so it runs without it.
 
 ## Paid hardening upgrades
@@ -75,8 +75,8 @@ The templates are built for one small server at the lowest sensible cost, with s
 The templates in the repository are a **development build**: they carry no image digests and no release key, so a server made from them stops before starting the CMS (fail closed). To publish:
 
 1. Put the release's public key at `release/packer/files/polynovea-release.pub`, then run `node deploy/scripts/sync-vm-bootstrap.mjs`.
-2. Fill in `deploy/release.json`: `"release": true`, the CMS and Caddy image digests, and any published AMIs and Azure gallery images. Then run `node deploy/scripts/release-templates.mjs` and `bash deploy/scripts/build-azure.sh`.
-3. Run `POLYNOVEA_RELEASE=1 bash deploy/scripts/validate.sh`. Its **release gate** fails until the first-boot script embeds the key and every template defaults to the release's images. Without `POLYNOVEA_RELEASE=1` the gate runs with `--not-a-release`: it lists what's missing and passes, so development and tests keep working.
+2. Fill in `deploy/release-images.json` from the signed release manifest (`dist/release/<id>/release.json`; don't hand-edit it during development): `"release": true`, the CMS and Caddy image digests, and any published AMIs and Azure gallery images. Then run `node deploy/scripts/release-templates.mjs` and `bash deploy/scripts/build-azure.sh`.
+3. Run `POLYNOVEA_RELEASE=1 POLYNOVEA_SIGNED_RELEASE=dist/release/<id>/release.json bash deploy/scripts/validate.sh`. With the signed manifest given, the gate also checks that the CMS image is the signed release's and that the embedded key is the one the release was signed with (`publicKeySha256`). Its **release gate** fails until the first-boot script embeds the key and every template defaults to the release's images. Without `POLYNOVEA_RELEASE=1` the gate runs with `--not-a-release`: it lists what's missing and passes, so development and tests keep working.
 4. Upload the release's `aws/polynovea.yaml` and `azure/azuredeploy.json` to public, versioned addresses for the quick-create link and the "Deploy to Azure" button.
 
 ## Validating the templates (no cloud account)

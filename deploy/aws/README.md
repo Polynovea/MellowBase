@@ -47,7 +47,7 @@ https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/crea
 
 (one line, no spaces). Anyone can make a link like this, and the person who opens it can edit every value, so the template itself decides what is safe, not the link:
 
-- The CMS image must come from `ghcr.io/polynovea/` and Caddy must be Caddy's official image, both pinned by digest. A link naming any other image is refused when the stack is created. The release's own digests are the defaults (`deploy/release.json`, baked in by `deploy/scripts/release-templates.mjs`), and the server checks the CMS image's signature again before every start.
+- The CMS image must come from `ghcr.io/polynovea/` and Caddy must be Caddy's official image, both pinned by digest. A link naming any other image is refused when the stack is created. The release's own digests are the defaults (`deploy/release-images.json`, baked in by `deploy/scripts/release-templates.mjs`), and the server checks the CMS image's signature again before every start.
 - No parameter names the server's disk image (AMI). The server boots the release's published Polynovea AMI for its region (the template's `ReleaseAmis` map), or else Ubuntu 24.04 from Canonical's fixed public parameter.
 - No password or key ever goes in the link.
 
