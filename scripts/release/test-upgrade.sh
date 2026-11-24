@@ -230,8 +230,31 @@ case "$WORKER_TEST" in "first_backup passed"*) ok "the worker ran the first-back
 step "Forced failure: upgrade A -> B' (health never reports 0.4.2; no compatible rollback)"
 point_channel 0.4.2+ccccccc 0.4.2
 request 0.4.2+ccccccc
+# A change committed before the upgrade must survive the switch-back; one attempted during B''s trial
+# must be refused (the app's login is read-only until the new release passes its health check).
+psql_cms "insert into public.workspaces (name, slug) values ('Before upgrade', 'e2e-before-upgrade')" >/dev/null
+app_write() { # container slug -> COMMITTED | REFUSED <sqlstate> | ERROR <code>
+  docker exec -w /app "$1" node --input-type=module -e "
+    const { installDatabase } = await import('/app/lib/system/serverHost.mjs');
+    const pg = (await import('pg')).default;
+    const client = new pg.Client(installDatabase().connection('app'));
+    await client.connect();
+    try { await client.query(\"insert into public.workspaces (name, slug) values ('During upgrade', '\$1')\".replace('\$1', process.argv[1])); console.log('COMMITTED'); }
+    catch (error) { console.log((error.code === '25006' ? 'REFUSED ' : 'ERROR ') + error.code); }
+    finally { await client.end(); }" "$2" 2>/dev/null || echo "ERROR unreachable"
+}
 start=$(date +%s)
-if docker exec "$AGENT" python3 -I -B /opt/polynovea/upgrade-agent.py; then fail "the upgrade to B' reported success"; fi
+docker exec -d "$AGENT" sh -c 'python3 -I -B /opt/polynovea/upgrade-agent.py > /var/lib/polynovea-upgrade/agent.log 2>&1; echo $? > /var/lib/polynovea-upgrade/agent.exit'
+DURING=""
+for _ in $(seq 1 150); do
+  if health | grep -q '"release":"0.4.2+broken"'; then DURING="$(app_write "$CMS" e2e-during-upgrade)"; break; fi
+  sleep 1
+done
+echo "write during B' trial: ${DURING:-not attempted}"
+case "$DURING" in "REFUSED 25006") ok "a write during the new release's trial is refused (read-only login, SQLSTATE 25006)" ;; *) fail "write during the trial: ${DURING:-the new release never came up}" ;; esac
+for _ in $(seq 1 300); do docker exec "$AGENT" test -f /var/lib/polynovea-upgrade/agent.exit && break; sleep 1; done
+docker exec "$AGENT" cat /var/lib/polynovea-upgrade/agent.log | grep -E "upgrade-agent: (maintenance|backup|checkpoint|migrate|start|health|rollback|restore)" || true
+[ "$(docker exec "$AGENT" cat /var/lib/polynovea-upgrade/agent.exit)" != 0 ] || fail "the upgrade to B' reported success"
 echo "agent run: $(( $(date +%s) - start ))s"
 status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);console.log('status',v.status,'rollback',v.rollback);for(const x of v.steps)console.log('  ',x.at,x.step,x.outcome,x.detail||'')})"
 [ "$(status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).status))")" = rolled_back ] || fail "status is not rolled_back"
@@ -242,6 +265,10 @@ ok "B' declared unhealthy ${DETECT}s after it was started (deadline 120 s); A he
 status_json | grep -q '"step": "restore"' && ok "the pre-upgrade pgBackRest backup was restored before A started (no compatible rollback)"
 wait_state running "$RELEASE_A" && ok "A is serving again"
 docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_A" /etc/polynovea/polynovea.env && ok "the pin is back on A's digest"
+[ "$(psql_cms "select count(*) from public.workspaces where slug = 'e2e-before-upgrade'")" = 1 ] && ok "the change committed before the upgrade survived the switch-back" || fail "a committed change was lost"
+[ "$(psql_cms "select count(*) from public.workspaces where slug = 'e2e-during-upgrade'")" = 0 ] && ok "nothing attempted during the trial was committed" || fail "a write during the trial was committed"
+status_json | grep -q '"step": "maintenance"' && status_json | grep -q '"step": "checkpoint"' && ok "the CMS stopped taking changes before the backup; the restore point was recorded" || fail "restore-mode order not followed"
+[ "$(app_write "$CMS" e2e-after-rollback)" = COMMITTED ] && ok "A takes changes again after the switch-back (read-only undone by the restore)" || fail "A is still read-only after the switch-back"
 
 step "Upgrade A -> B (0.4.1, compatible)"
 point_channel 0.4.1+bbbbbbb 0.4.1
