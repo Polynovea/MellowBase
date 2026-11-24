@@ -654,3 +654,26 @@ describe("review nit 7: the database secret outlives the stack", () => {
     expect(secret).toContain("UpdateReplacePolicy: Retain");
   });
 });
+
+describe("review nit 8: Azure egress like AWS, and OpenTofu emails checked", () => {
+  it("lets the Azure VM out to the internet on 443 and 80 only (plus Azure's platform address)", () => {
+    for (const rule of ["allow-azure-platform", "allow-https-out", "allow-http-out", "deny-other-internet-outbound", "deny-other-vnet-outbound"]) {
+      expect(bicep).toContain(`name: '${rule}'`);
+      expect(tofuAzure).toContain(`name                       = "${rule}"`);
+    }
+    expect(bicep).toMatch(/name: 'deny-other-internet-outbound'\n\s+properties: \{ priority: 4010, direction: 'Outbound', access: 'Deny', protocol: '\*', sourceAddressPrefix: '\*', sourcePortRange: '\*', destinationAddressPrefix: 'Internet'/);
+    expect(bicep).toMatch(/name: 'allow-https-out'\n\s+properties: \{ priority: 200, direction: 'Outbound', access: 'Allow', protocol: 'Tcp'[^}]+destinationAddressPrefix: 'Internet', destinationPortRange: '443'/);
+  });
+
+  it("refuses an OpenTofu email with a line break or a second address", () => {
+    for (const cloud of ["aws", "azure"]) {
+      const text = read(`opentofu/modules/${cloud}/variables.tf`);
+      const marker = 'var.acme_email == "" || can(regex("';
+      const start = text.indexOf(marker) + marker.length;
+      const pattern = new RegExp(text.slice(start, text.indexOf('", var.acme_email))', start)).replaceAll("\\\\", "\\"));
+      expect(pattern.test("owner@example.com")).toBe(true);
+      for (const bad of ["owner@example.com\nPOLYNOVEA_DOMAIN=evil.example", "a@b.c d@e.f", "no-at-sign.example", "a@b@c.d"]) expect(pattern.test(bad), `${cloud}: ${bad}`).toBe(false);
+    }
+    expect(read("opentofu/modules/azure/variables.tf")).toMatch(/variable "budget_email" \{\n  type = string\n\n  validation \{/);
+  });
+});

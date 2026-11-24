@@ -220,6 +220,22 @@ resource vmNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
         : [],
       [
         {
+          name: 'allow-azure-platform'
+          properties: { priority: 150, direction: 'Outbound', access: 'Allow', protocol: '*', sourceAddressPrefix: '*', sourcePortRange: '*', destinationAddressPrefix: '168.63.129.16', destinationPortRange: '*', description: 'Azure platform address: DNS and the VM agent' }
+        }
+        {
+          name: 'allow-https-out'
+          properties: { priority: 200, direction: 'Outbound', access: 'Allow', protocol: 'Tcp', sourceAddressPrefix: '*', sourcePortRange: '*', destinationAddressPrefix: 'Internet', destinationPortRange: '443', description: 'HTTPS: Azure APIs, image registry, updates' }
+        }
+        {
+          name: 'allow-http-out'
+          properties: { priority: 210, direction: 'Outbound', access: 'Allow', protocol: 'Tcp', sourceAddressPrefix: '*', sourcePortRange: '*', destinationAddressPrefix: 'Internet', destinationPortRange: '80', description: 'Ubuntu package mirrors' }
+        }
+        {
+          name: 'deny-other-internet-outbound'
+          properties: { priority: 4010, direction: 'Outbound', access: 'Deny', protocol: '*', sourceAddressPrefix: '*', sourcePortRange: '*', destinationAddressPrefix: 'Internet', destinationPortRange: '*', description: 'Out to the internet only on 443 and 80, as on AWS' }
+        }
+        {
           name: 'deny-other-vnet-outbound'
           properties: { priority: 4000, direction: 'Outbound', access: 'Deny', protocol: '*', sourceAddressPrefix: '*', sourcePortRange: '*', destinationAddressPrefix: 'VirtualNetwork', destinationPortRange: '*', description: 'Inside the virtual network, the VM reaches the database and nothing else' }
         }
