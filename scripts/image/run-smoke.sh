@@ -10,7 +10,8 @@
 #    wizard reaches the owner step. Checks the bundled database listens on 127.0.0.1 only and refuses
 #    password-less and remote sign-ins. Restarts the container: PostgreSQL comes back by itself.
 # 3. Published-port route: HOSTNAME=0.0.0.0 with -p: setup over plain HTTP is refused (by design).
-# 4. Proxy route: the same image behind Caddy in its network namespace, setup over HTTPS.
+# 4. Proxy route: the same image joined to Caddy's network namespace (as in compose), setup over
+#    HTTPS, then a CMS restart: HTTPS must keep working.
 # Cleans up its containers, volumes and network unless --keep.
 set -euo pipefail
 
@@ -122,15 +123,26 @@ docker run -d --name "$PREFIX-public" -e HOSTNAME=0.0.0.0 -p 127.0.0.1:38080:300
 wait_healthy "$PREFIX-public"
 smoke "$PREFIX-public" -e STEPS=health,refused
 
-step "Proxy route: HTTPS through Caddy in the CMS's network namespace"
+step "Proxy route: HTTPS through Caddy; the CMS joins Caddy's network namespace (as in compose)"
 docker volume create "$PREFIX-data3" >/dev/null
-docker run -d --name "$PREFIX-proxy" -e POLYNOVEA_TRUSTED_PROXIES=127.0.0.1 -e POLYNOVEA_PUBLIC_URL=https://localhost -v "$PREFIX-data3:/var/lib/polynovea" "$IMAGE" >/dev/null
 CADDY_IMAGE="$(sed -n 's/^ *image: \(caddy:.*\)$/\1/p' docker/compose.yaml)"
-docker run -d --name "$PREFIX-caddy" --network "container:$PREFIX-proxy" -e POLYNOVEA_DOMAIN=localhost \
+docker run -d --name "$PREFIX-caddy" -e POLYNOVEA_DOMAIN=localhost \
   -v "$HOST_ROOT/docker/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" >/dev/null
+docker run -d --name "$PREFIX-proxy" --network "container:$PREFIX-caddy" -e POLYNOVEA_TRUSTED_PROXIES=127.0.0.1 -e POLYNOVEA_PUBLIC_URL=https://localhost -v "$PREFIX-data3:/var/lib/polynovea" "$IMAGE" >/dev/null
 wait_healthy "$PREFIX-proxy"
 CODE3="$(setup_code "$PREFIX-proxy")"
 sleep 3
 smoke "$PREFIX-proxy" -e SETUP_CODE="$CODE3" -e BASE_URL=https://localhost -e INSECURE_TLS=1 -e STEPS=health,code
+
+step "Proxy route: restarting the CMS keeps HTTPS working"
+docker restart -t 90 "$PREFIX-proxy" >/dev/null
+wait_healthy "$PREFIX-proxy"
+sleep 2
+smoke "$PREFIX-proxy" -e BASE_URL=https://localhost -e INSECURE_TLS=1 -e STEPS=health
+if docker exec "$PREFIX-caddy" wget -q --no-check-certificate -O - https://localhost/api/health | grep -q '"state":"setup"'; then
+  echo "ok    Caddy still serves the CMS over HTTPS after the CMS restarted"
+else
+  echo "FAIL  HTTPS through Caddy is down after the CMS restarted"; exit 1
+fi
 
 step "All image checks passed"

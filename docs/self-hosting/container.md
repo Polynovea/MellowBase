@@ -70,7 +70,7 @@ POLYNOVEA_IMAGE=registry.example/polynovea-cms@sha256:<digest> POLYNOVEA_DOMAIN=
   docker compose -f docker/compose.yaml --profile proxy up -d
 ```
 
-Caddy (its own container, pinned by digest) gets a certificate from Let's Encrypt and forwards to the CMS. Caddy shares the CMS container's network, so the CMS sees it at `127.0.0.1`. The profile sets:
+Caddy (its own container, pinned by digest) gets a certificate from Let's Encrypt and forwards to the CMS. The CMS joins Caddy's network namespace, so it sees Caddy at `127.0.0.1`; Caddy owns the namespace, so restarting or upgrading the CMS does not take HTTPS down. The profile sets:
 
 - `POLYNOVEA_TRUSTED_PROXIES=127.0.0.1`, so the CMS believes Caddy's "this was HTTPS" and visitor-address headers, and nobody else's;
 - `POLYNOVEA_PUBLIC_URL=https://<your domain>`, so the wizard accepts requests from that address only.

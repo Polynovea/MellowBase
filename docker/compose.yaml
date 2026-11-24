@@ -5,8 +5,9 @@
 #           http://localhost:3000/setup. Linux hosts only (Docker Desktop has no real host networking).
 #
 #   proxy   Caddy serves HTTPS for POLYNOVEA_DOMAIN with a Let's Encrypt certificate and forwards to
-#           the CMS over 127.0.0.1 (Caddy shares the CMS container's network), so the CMS trusts it
-#           as its proxy. Ports 80 and 443 must reach this machine, and the domain must point here.
+#           the CMS over 127.0.0.1: the CMS joins Caddy's network namespace, so the CMS trusts it as
+#           its proxy. Caddy owns the namespace, so restarting or upgrading the CMS never takes HTTPS
+#           down with it. Ports 80 and 443 must reach this machine, and the domain must point here.
 #
 #   POLYNOVEA_IMAGE=polynovea-cms@sha256:... docker compose --profile tunnel up -d
 #   POLYNOVEA_IMAGE=polynovea-cms@sha256:... POLYNOVEA_DOMAIN=cms.example.com [POLYNOVEA_ACME_EMAIL=you@example.com] \
@@ -46,22 +47,26 @@ services:
   cms:
     <<: *cms
     profiles: ["proxy"]
+    # The CMS joins Caddy's network namespace and still listens on 127.0.0.1:3000 only. If Caddy is
+    # recreated, Compose restarts the CMS so it joins the new namespace.
+    network_mode: "service:caddy"
+    depends_on:
+      caddy:
+        condition: service_started
+        restart: true
     environment:
       POLYNOVEA_TRUSTED_PROXIES: "127.0.0.1"
       POLYNOVEA_PUBLIC_URL: "https://${POLYNOVEA_DOMAIN:?Set POLYNOVEA_DOMAIN for the proxy profile}"
-    # Caddy runs inside this container's network namespace, so these ports are Caddy's.
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
 
   caddy:
     profiles: ["proxy"]
     image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     restart: unless-stopped
-    network_mode: "service:cms"
-    depends_on:
-      - cms
+    # Caddy owns the network namespace (and the published ports); the CMS joins it.
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
     security_opt:
       - no-new-privileges:true
     cap_drop:
