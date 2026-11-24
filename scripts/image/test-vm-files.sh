@@ -168,7 +168,8 @@ printf '%s\n' '[setup] Setup code: $(reboot)  (works once' 'x [setup] Setup code
 [ ! -s /tmp/console ] && echo "ok    malformed or embedded code lines are ignored"
 
 UNIT=/src/release/packer/files/polynovea-console-code.service
-grep -q "journalctl .*_SYSTEMD_UNIT=docker.service CONTAINER_NAME=polynovea " "$UNIT" && ! grep -q SYSLOG_IDENTIFIER "$UNIT" \
+EXEC="$(grep '^ExecStart=' "$UNIT")"
+printf '%s' "$EXEC" | grep -q "journalctl .*_SYSTEMD_UNIT=docker.service CONTAINER_NAME=polynovea " && ! printf '%s' "$EXEC" | grep -q SYSLOG_IDENTIFIER \
   || { echo "FAIL: the console service must read only dockerd's entries for the polynovea container"; exit 1; }
 echo "ok    the console service reads only journald-attested dockerd entries for the polynovea container"
 for setting in NoNewPrivileges=yes ProtectSystem=strict ProtectHome=yes PrivateTmp=yes; do
