@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import AdminLayout from "@/components/admin/AdminLayout";
 import { getAuthHeaders } from "@/lib/admin/authCheck";
@@ -30,6 +30,7 @@ type Tab = (typeof TABS)[number];
 export default function ModelEditorPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [model, setModel] = useState<Model | null>(null);
   const [versions, setVersions] = useState<Version[]>([]);
   const [schema, setSchema] = useState<CanonicalSchema | null>(null);
@@ -69,6 +70,27 @@ export default function ModelEditorPage() {
     finally { setLoading(false); }
   }, [id]);
   useEffect(() => { void load(); }, [load]);
+  // Arriving from "Create model": say so, then drop the flag so a reload doesn't repeat it.
+  useEffect(() => {
+    if (searchParams.get("created") !== "1" || !model) return;
+    setNotice(`${model.name} is created. Add or change fields any time: each change is saved as a new version.`);
+    router.replace(`/admin/models/${id}`);
+  }, [searchParams, model, router, id]);
+  // While the schema worker applies a change, refresh its status quietly (the form keeps its edits).
+  const applyingChange = (model?.schemaChanges ?? []).some((change) => change.status === "pending" || change.status === "running");
+  useEffect(() => {
+    if (!applyingChange) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch(`/api/models/${id}`);
+        const body = await response.json();
+        if (response.ok && body.data) setModel(body.data);
+      } catch { /* the next tick tries again */ }
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [applyingChange, id]);
+  /** Keys of the fields in the saved schema: they name stored data, so they can't be edited. */
+  const savedKeys = new Set((versions[0]?.schema_json.fields ?? []).map((field) => field.key));
 
   function updateField(index: number, patch: Partial<FieldDefinition>) {
     setSchema((current) => current ? { ...current, fields: current.fields.map((field, i) => i === index ? { ...field, ...patch } : field) } : current);
@@ -96,7 +118,7 @@ export default function ModelEditorPage() {
 
   async function validate(event: FormEvent) {
     event.preventDefault(); if (!schema) return;
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setNotice("");
     try {
       if(environmentId){const response=await authenticatedFetch("/api/infrastructure",{method:"POST",body:JSON.stringify({operation:"schema_plan",environmentId,modelId:id,schema})});const body=await response.json();if(!response.ok)throw new Error(body.error||"Validation failed");setDeploymentPlan(body.data);setDiff(body.data.diff);setTab("migration");}
       else{const response = await fetch(`/api/models/${id}/validate-change`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ schema }) });const body = await response.json(); if (!response.ok) throw new Error(body.error || "Validation failed"); setDiff(body.data.diff); setTab("migration");}
@@ -108,7 +130,7 @@ export default function ModelEditorPage() {
     if (!schema) return; setBusy(true); setError("");
     try {
       if(environmentId){const response=await authenticatedFetch("/api/infrastructure",{method:"POST",body:JSON.stringify({operation:"schema_apply",environmentId,modelId:id,schema,changeSummary:summary,acknowledgeUnsafe})});const body=await response.json();if(!response.ok)throw new Error(body.error||"Change was not applied");setNotice(`Schema promoted to ${environments.find(e=>e.id===environmentId)?.name||"environment"}.`);setDiff(null);setDeploymentPlan(null);setSummary("");await load();}
-      else{const response = await fetch(`/api/models/${id}/apply-change`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ schema, changeSummary: summary, acknowledgeUnsafe }) });const body = await response.json();if (!response.ok) { if (response.status === 409 && body.data?.diff) setDiff(body.data.diff); throw new Error(body.error || "Change was not applied"); }const restored: Array<{ field: string; values: number }> = body.data?.schemaChange?.restored ?? [];if (restored.length) setNotice(restored.map((r) => `Restored "${r.field}" with ${r.values.toLocaleString("en-US")} saved value${r.values === 1 ? "" : "s"}; its waiting deletion is cancelled.`).join(" "));setDiff(null); setSummary(""); await load();}
+      else{const response = await fetch(`/api/models/${id}/apply-change`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ schema, changeSummary: summary, acknowledgeUnsafe }) });const body = await response.json();if (!response.ok) { if (response.status === 409 && body.data?.diff) setDiff(body.data.diff); throw new Error(body.error || "Change was not applied"); }const restored: Array<{ field: string; values: number }> = body.data?.schemaChange?.restored ?? [];const versionNumber: number | undefined = body.data?.version?.version_number;const saved = versionNumber ? `Saved as version ${versionNumber}.` : "Saved.";setNotice(restored.length ? `${saved} ${restored.map((r) => `Restored "${r.field}" with ${r.values.toLocaleString("en-US")} saved value${r.values === 1 ? "" : "s"}; its waiting deletion is cancelled.`).join(" ")}` : body.data?.noChanges ? "Nothing changed, so nothing was saved." : `${saved} The database is updated in the background; this page shows when it's done.`);setTab("visual");setDiff(null); setSummary(""); await load();}
     } catch (err) { setError(err instanceof Error ? err.message : "Change was not applied"); }
     finally { setBusy(false); }
   }
@@ -119,7 +141,10 @@ export default function ModelEditorPage() {
   if (!model || !schema) return <AdminLayout><div className="rounded-xl border border-danger bg-danger-muted p-5 text-danger">{error || "Model schema unavailable"}</div></AdminLayout>;
 
   const unsafe = diff && diff.overallClassification !== "SAFE";
-  const noChanges = diff?.entries.length === 0;
+  // Labels, help text, defaults and order are not in the diff (it lists what matters to stored data),
+  // but they are still a change worth saving as a new version.
+  const presentationChanged = Boolean(versions[0]) && JSON.stringify(schema) !== JSON.stringify(versions[0].schema_json);
+  const noChanges = diff?.entries.length === 0 && !presentationChanged;
   // Self-relations (e.g. Category -> parent Category) are valid — the schema/validation layer
   // already supports a relation field targeting the model it lives on, so the current model
   // belongs in its own target list, not just every OTHER model.
@@ -130,10 +155,10 @@ export default function ModelEditorPage() {
     <AdminLayout>
       <form onSubmit={validate} className="flex flex-col gap-6">
         <header className="flex flex-wrap items-end justify-between gap-4 border-b border-subtle pb-5">
-          <div className="flex items-center gap-4"><Link href="/admin/models" className="rounded-lg border border-subtle p-2 text-fg-muted hover:text-fg-primary"><ArrowLeft size={17} /></Link><div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-action">Schema studio / {model.api_key}</p><h1 className="mt-1 text-3xl font-extrabold">{schema.name}</h1></div></div>
+          <div className="flex items-center gap-4"><Link href="/admin/models" aria-label="Back to data models" className="rounded-lg border border-subtle p-2 text-fg-muted hover:text-fg-primary"><ArrowLeft size={17} aria-hidden /></Link><div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-action">Schema studio / {model.api_key}</p><h1 className="mt-1 text-3xl font-extrabold">{schema.name}</h1></div></div>
           <div className="flex items-center gap-2"><span className="rounded-full border border-success bg-success-muted px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-success">v{model.current_schema_version} active</span><button disabled={busy} className="inline-flex items-center gap-2 rounded-lg ui-btn ui-btn-primary disabled:opacity-50"><Save size={14} /> Review changes</button></div>
         </header>
-        <SchemaChangeStatus modelId={model.id} apiKey={model.api_key} changes={model.schemaChanges ?? []} onChanged={() => { void load(); }} />{error && <div className="rounded-xl border border-danger bg-danger-muted px-4 py-3 text-sm text-danger">{error}</div>}{notice&&<div className="rounded-xl border border-success bg-success-muted px-4 py-3 text-sm text-success">{notice}</div>}
+        <SchemaChangeStatus modelId={model.id} apiKey={model.api_key} changes={model.schemaChanges ?? []} onChanged={() => { void load(); }} onConfirmed={() => setNotice("Deletion confirmed. The fields listed and their saved values are deleted from the database now.")} />{error && <div role="alert" className="rounded-xl border border-danger bg-danger-muted px-4 py-3 text-sm text-danger">{error}</div>}{notice&&<div role="status" className="rounded-xl border border-success bg-success-muted px-4 py-3 text-sm text-success">{notice}</div>}
 
         <nav className="flex gap-1 border-b border-subtle">
           {TABS.map((t) => (
@@ -160,7 +185,7 @@ export default function ModelEditorPage() {
                 <div className="space-y-3">
                   {schema.fields.map((field, index) => (
                     <FieldEditor
-                      key={`${field.key}-${index}`}
+                      key={index}
                       field={field}
                       index={index}
                       total={schema.fields.length}
@@ -169,6 +194,7 @@ export default function ModelEditorPage() {
                       onMove={(direction) => moveField(index, direction)}
                       relationTargets={relationTargets}
                       otherFieldKeys={schema.fields.filter((f) => f.key !== field.key).map((f) => f.key)}
+                      keyLocked={savedKeys.has(field.key)}
                     />
                   ))}
                 </div>
@@ -205,7 +231,7 @@ export default function ModelEditorPage() {
                   <div className="flex gap-3">{unsafe ? <AlertTriangle className="text-warning" size={20} /> : <Check className="text-success" size={20} />}<div><h2 className="font-bold">{diff.overallClassification.replaceAll("_", " ")}</h2><p className="mt-1 text-xs text-fg-muted">Server-validated migration preview. Nothing has been applied yet.</p></div></div>
                   <div className="flex flex-wrap gap-2">{unsafe&&environments.find(e=>e.id===environmentId)?.kind==="production"&&<button type="button" disabled={busy} onClick={()=>void requestSchemaApproval()} className="rounded-lg border border-warning px-3 py-2.5 text-xs font-bold uppercase tracking-wider text-warning">Request approval</button>}<button type="button" disabled={busy || noChanges} onClick={() => void apply(Boolean(unsafe))} className={`rounded-lg px-4 py-2.5 text-xs font-bold uppercase tracking-wider disabled:cursor-not-allowed disabled:opacity-50 ${unsafe ? "bg-warning-muted text-warning" : "bg-success-muted text-success"}`}>{noChanges ? "No changes to apply" : unsafe ? "Acknowledge & apply" : "Apply safe change"}</button></div>
                 </div>
-                {deploymentPlan?.rollbackGuidance&&<p className="mt-3 rounded-lg border border-subtle bg-field p-3 text-xs text-fg-muted"><strong className="text-fg-secondary">Rollback guidance:</strong> {deploymentPlan.rollbackGuidance}</p>}<div className="mt-4 space-y-2">{diff.entries.length === 0 ? <p className="text-sm text-fg-muted">No schema changes detected.</p> : diff.entries.map((entry, index) => <div key={`${entry.fieldKey}-${index}`} className="flex items-center justify-between gap-4 rounded-lg border border-subtle bg-field px-3 py-2 text-xs"><span className="font-mono text-fg-secondary">{entry.fieldKey}</span><span className="text-right text-fg-muted">{entry.reason || entry.summary}</span></div>)}</div>
+                {deploymentPlan?.rollbackGuidance&&<p className="mt-3 rounded-lg border border-subtle bg-field p-3 text-xs text-fg-muted"><strong className="text-fg-secondary">Rollback guidance:</strong> {deploymentPlan.rollbackGuidance}</p>}<div className="mt-4 space-y-2">{diff.entries.length === 0 ? <p className="text-sm text-fg-muted">{presentationChanged ? "Only names, help text, defaults or order changed. Applying saves a new version; the database does not change." : "No schema changes detected."}</p> : diff.entries.map((entry, index) => <div key={`${entry.fieldKey}-${index}`} className="flex items-center justify-between gap-4 rounded-lg border border-subtle bg-field px-3 py-2 text-xs"><span className="font-mono text-fg-secondary">{entry.fieldKey}</span><span className="text-right text-fg-muted">{entry.reason || entry.summary}</span></div>)}</div>
               </div>
             )}
           </section>

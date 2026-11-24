@@ -24,7 +24,7 @@ function deletesLine(values: number | null): string {
  * the admin to type the model's API key. Confirming calls the confirm route (permission, step-up,
  * audit and the key check happen on the server).
  */
-export default function SchemaChangeStatus({ modelId, apiKey, changes, onChanged }: { modelId: string; apiKey: string; changes: SchemaChangeView[]; onChanged: () => void }) {
+export default function SchemaChangeStatus({ modelId, apiKey, changes, onChanged, onConfirmed }: { modelId: string; apiKey: string; changes: SchemaChangeView[]; onChanged: () => void; onConfirmed?: () => void }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -48,6 +48,7 @@ export default function SchemaChangeStatus({ modelId, apiKey, changes, onChanged
       if (!response.ok) throw new Error(body.error || "The deletion could not be confirmed.");
       setOpen(null);
       setTyped("");
+      onConfirmed?.();
       onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The deletion could not be confirmed.");

@@ -178,6 +178,26 @@ describe("applyChange", () => {
     expect(applySchemaVersion).toHaveBeenCalledWith(expect.objectContaining({ model: expect.objectContaining({ id: "model-1" }) }));
   });
 
+  it("saves a label-only change as a new version (it is not a data change, but it is a change)", async () => {
+    getVersion.mockResolvedValue(versionRow);
+    applySchemaVersion.mockResolvedValue({ ok: true, version: { ...versionRow, version_number: 2 } } as never);
+
+    const result = await applyChange({
+      model: modelRow,
+      proposedSchema: { ...validSchema, fields: [{ key: "title", label: "Headline", type: "text", required: true }] },
+      acknowledgeUnsafe: false,
+      actorAdminUserId: "admin-1",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.diff.entries).toEqual([]);
+      expect(result.data.applied).toBe(true);
+      expect(result.data.version?.version_number).toBe(2);
+    }
+    expect(applySchemaVersion).toHaveBeenCalled();
+  });
+
   it("rejects a change that alters apiKey", async () => {
     getVersion.mockResolvedValue({ ...versionRow });
 
