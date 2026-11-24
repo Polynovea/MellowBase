@@ -497,6 +497,9 @@ export interface ContentModelTables {
   applied_version_id: string | null;
   content_model_id: string;
   created_at: Generated<string>;
+  /**
+   * Per column: the names its field had before, with the schema version each stopped applying at ({"<column>": [{"name", "below"}]}). Written when a schema stage succeeds (trigger on schema_migration_ledger); read by polynovea_content_sync_entries().
+   */
   field_aliases: Generated<Json>;
   table_name: string;
   updated_at: Generated<string>;
