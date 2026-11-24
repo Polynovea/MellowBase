@@ -55,6 +55,10 @@ and a draft "Welcome to Polynovea" article right after setup. It runs separately
 account is not affected. It retries a few times; if it still fails, the server log says so and an
 administrator can run `npm run seed:starter` later. Running it again never makes duplicates.
 
+With the built-in sign-in, the command signs in as the owner and asks for the one-time code from
+the authenticator app (or one recovery code):
+`npm run seed:starter -- --email=you@example.com --password=... --code=123456`.
+
 ## If two people finish at the same time
 
 Only one owner can ever be created. Setup can be open in one browser at a time, and the final save
