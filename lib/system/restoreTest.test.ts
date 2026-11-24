@@ -38,7 +38,7 @@ function fakeHost(overrides: Partial<RestoreHost> & { freeBytes?: number; restor
   return { host, calls, removed };
 }
 
-const RESTORE_COMMAND = 'pgbackrest --config="/var/lib/polynovea/etc/pgbackrest.conf" --stanza=polynovea archive-get %f "%p"';
+const RESTORE_COMMAND = (pg1: string) => `pgbackrest --config="/var/lib/polynovea/etc/pgbackrest.conf" --pg1-path="${pg1}" --stanza=polynovea archive-get %f "%p"`;
 const run = (host: RestoreHost) =>
   runRestoreTest({ host, id: ID, dataRoot: "/var/lib/polynovea", liveWalDir: "/var/lib/polynovea/postgresql/pg_wal", restoreCommand: RESTORE_COMMAND });
 
@@ -52,7 +52,8 @@ describe("restore test", () => {
     expect(restore).toContain("--set=20261124-020000F");
     expect(restore).toContain("--archive-mode=off");
     expect(restore).toContain(`--spool-path=/var/lib/polynovea/restore-test/${ID}/spool`);
-    expect(restore).toContain(`--recovery-option=restore_command=${RESTORE_COMMAND}`);
+    // The temporary cluster's own folder, or archive-get refuses to fetch WAL for it.
+    expect(restore).toContain(`--recovery-option=restore_command=${RESTORE_COMMAND(`/var/lib/polynovea/restore-test/${ID}/pgdata`)}`);
     expect(restore).toContain(`--pg1-path=/var/lib/polynovea/restore-test/${ID}/pgdata`);
     expect(calls).toContain(`pg_ctl stop -D /var/lib/polynovea/restore-test/${ID}/pgdata`);
     expect(removed).toEqual([`/var/lib/polynovea/restore-test/${ID}`]);

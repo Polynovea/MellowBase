@@ -119,7 +119,7 @@ export async function restoreTestCommand(args) {
         id: begun.id,
         dataRoot: root,
         liveWalDir: path.posix.join(root, "postgresql", "pg_wal"),
-        restoreCommand: restoreCommand(),
+        restoreCommand: (pg1Path) => restoreCommand(pg1Path),
       });
       const result =
         interrupted && outcome.status === "failed"

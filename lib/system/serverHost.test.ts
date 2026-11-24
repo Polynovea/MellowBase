@@ -14,6 +14,9 @@ describe("serverHost", () => {
       .replace('"$PGBACKREST_CONFIG"', '"/var/lib/polynovea/etc/pgbackrest.conf"')
       .replace('"$LOG_DIR/pgbackrest"', '"/var/lib/polynovea/log/pgbackrest"');
     expect(restoreCommand()).toBe(archive.replace('archive-push "%p"', 'archive-get %f "%p"'));
+    expect(restoreCommand("/var/lib/polynovea/restore-test/x/pgdata")).toBe(
+      archive.replace("--stanza=", '--pg1-path="/var/lib/polynovea/restore-test/x/pgdata" --stanza=').replace('archive-push "%p"', 'archive-get %f "%p"'),
+    );
   });
 
   it("scrubs connection strings and passwords from program output", () => {
