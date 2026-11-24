@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { listModels, getVersion } from "@/lib/schema/modelService";
 import type { CanonicalSchema, FieldDefinition } from "@/lib/schema/fields/types";
+import { buildItemsOpenApi, type OpenApiModelInput } from "@/lib/developer/items/openapi";
 
 function fieldSchema(field: FieldDefinition): Record<string, unknown> {
   const base: Record<string, unknown> = {};
@@ -36,8 +38,15 @@ function modelDataSchema(schema: CanonicalSchema) {
   return { type: "object", properties, ...(required.length ? { required } : {}), additionalProperties: false };
 }
 
-export async function buildWorkspaceOpenApi(workspaceId: string, baseUrl: string) {
-  const models = (await listModels(workspaceId)).filter((model) => model.status === "active");
+/**
+ * `items`: the caller's view for the generated items API (one entry per model the caller can read,
+ * with its readable and writable fields). When given, the document is per caller: only those models
+ * appear, the legacy content paths list only readable fields, and the items paths are added. Without
+ * it (the admin-side route) the document describes every active model, as before.
+ */
+export async function buildWorkspaceOpenApi(workspaceId: string, baseUrl: string, options: { items?: OpenApiModelInput[] } = {}) {
+  const visible = options.items ? new Map(options.items.map((item) => [item.apiKey, item])) : null;
+  const models = (await listModels(workspaceId)).filter((model) => model.status === "active" && (!visible || visible.has(model.api_key)));
   const paths: Record<string, unknown> = {};
   const schemas: Record<string, unknown> = {
     ErrorEnvelope: {
@@ -54,7 +63,8 @@ export async function buildWorkspaceOpenApi(workspaceId: string, baseUrl: string
     const version = await getVersion(model.id, model.current_schema_version);
     if (!version) continue;
     const componentName = model.api_key.replace(/[^A-Za-z0-9_]/g, "_");
-    schemas[`${componentName}Data`] = modelDataSchema(version.schema_json);
+    const readable = visible?.get(model.api_key)?.readable;
+    schemas[`${componentName}Data`] = modelDataSchema(readable ? { ...version.schema_json, fields: version.schema_json.fields.filter((field) => readable.has(field.key)) } : version.schema_json);
     schemas[`${componentName}Published`] = {
       type: "object",
       properties: {
@@ -64,8 +74,8 @@ export async function buildWorkspaceOpenApi(workspaceId: string, baseUrl: string
     };
     const collectionPath = `/api/v1/content/${model.api_key}`;
     const itemPath = `${collectionPath}/{id}`;
-    paths[collectionPath] = { get: { summary: `List published ${model.name}`, operationId: `list_${componentName}`, security: [{ bearerAuth: [] }], parameters: [{ name: "locale", in: "query", schema: { type: "string" } }, { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 25 } }, { name: "offset", in: "query", schema: { type: "integer", minimum: 0, default: 0 } }], responses: { "200": { description: "Published content", content: { "application/json": { schema: { type: "object", properties: { data: { type: "array", items: { $ref: `#/components/schemas/${componentName}Published` } }, meta: { type: "object" } }, required: ["data", "meta"] } } } }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "429": { $ref: "#/components/responses/RateLimited" } } } };
-    paths[itemPath] = { get: { summary: `Get published ${model.name}`, operationId: `get_${componentName}`, security: [{ bearerAuth: [] }], parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }, { name: "locale", in: "query", schema: { type: "string" } }], responses: { "200": { description: "Published content entry", content: { "application/json": { schema: { type: "object", properties: { data: { $ref: `#/components/schemas/${componentName}Published` }, meta: { type: "object" } }, required: ["data", "meta"] } } } }, "404": { description: "Not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } } } } };
+    paths[collectionPath] = { get: { summary: `List published ${model.name}`, ...(visible ? { deprecated: true, description: `Use ${collectionPath.replace("/content/", "/models/")}/items` } : {}), operationId: visible ? `list_published_${componentName}` : `list_${componentName}`, security: [{ bearerAuth: [] }], parameters: [{ name: "locale", in: "query", schema: { type: "string" } }, { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 25 } }, { name: "offset", in: "query", schema: { type: "integer", minimum: 0, default: 0 } }], responses: { "200": { description: "Published content", content: { "application/json": { schema: { type: "object", properties: { data: { type: "array", items: { $ref: `#/components/schemas/${componentName}Published` } }, meta: { type: "object" } }, required: ["data", "meta"] } } } }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "429": { $ref: "#/components/responses/RateLimited" } } } };
+    paths[itemPath] = { get: { summary: `Get published ${model.name}`, ...(visible ? { deprecated: true } : {}), operationId: visible ? `get_published_${componentName}` : `get_${componentName}`, security: [{ bearerAuth: [] }], parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }, { name: "locale", in: "query", schema: { type: "string" } }], responses: { "200": { description: "Published content entry", content: { "application/json": { schema: { type: "object", properties: { data: { $ref: `#/components/schemas/${componentName}Published` }, meta: { type: "object" } }, required: ["data", "meta"] } } } }, "404": { description: "Not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } } } } };
   }
 
   const secured=(summary:string,scopes:string[],extra:Record<string,unknown>={})=>({summary,security:[{bearerAuth:[]}],"x-polynovea-scopes":scopes,...extra,responses:{"200":{description:"Success"},"400":{description:"Invalid request"},"401":{$ref:"#/components/responses/Unauthorized"},"403":{$ref:"#/components/responses/Forbidden"},"429":{$ref:"#/components/responses/RateLimited"}}});
@@ -93,15 +103,26 @@ export async function buildWorkspaceOpenApi(workspaceId: string, baseUrl: string
   paths["/api/v1/connections/{id}/credentials"]={post:secured("Rotate or rebind one connection credential without reading plaintext",["connection.write"])};
   paths["/api/v1/infrastructure"]={get:secured("Inspect environment operability, provisioning, backups, components and approvals",["infrastructure.read"]),post:secured("Run governed infrastructure operations such as Doctor, provisioning, backup, portability, website bootstrap or schema environment promotion",["infrastructure.write"])};
 
+  const items = options.items ? buildItemsOpenApi(options.items) : null;
+  if (items) {
+    Object.assign(paths, items.paths);
+    Object.assign(schemas, items.schemas);
+  }
+
   return {
     openapi: "3.1.0",
-    info: { title: "Polynovea CMS Developer API", version: "1.0.0", description: "Workspace-scoped stable REST API generated from canonical CMS models." },
+    info: {
+      title: "Polynovea CMS Developer API", version: "1.0.0", description: "Workspace-scoped stable REST API generated from canonical CMS models.",
+      ...(options.items ? { "x-polynovea-schema-hash": createHash("sha256").update(options.items.map((item) => `${item.apiKey}:${item.schemaHash}`).sort().join("|")).digest("hex") } : {}),
+    },
     servers: [{ url: baseUrl }],
     paths,
     components: {
       securitySchemes: { bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "Polynovea API Token" } },
       schemas,
+      ...(items ? { parameters: items.parameters } : {}),
       responses: {
+        ...(items?.responses ?? {}),
         Unauthorized: { description: "Invalid, expired or revoked API token", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
         Forbidden: { description: "Token lacks scope or model access", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
         RateLimited: { description: "Rate limit exceeded", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
