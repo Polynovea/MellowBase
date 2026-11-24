@@ -19,6 +19,8 @@
 
 Prices are estimates from Azure's pay-as-you-go list prices, before tax, with light traffic. Other regions and heavy traffic cost more; your Azure bill is what counts. They are printed in the template's description too.
 
+Not in the monthly figures: the data disk and storage account are kept (behind delete locks) until you remove them, with their backups. Flexible Server storage grows automatically in steps (32 GB, then 64 GB and so on) when the database fills it, and each step costs more. Backup storage beyond the database's own size is billed too.
+
 ### Security
 
 - **One identity, two permissions.** The VM's managed identity gets **Key Vault Secrets User** on the one database secret (not the vault) and **Storage Blob Data Contributor** on the one container (not the account). Nothing else.

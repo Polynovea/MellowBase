@@ -24,6 +24,8 @@ tofu apply polynovea.plan
 
 Set the example's variables in a `terraform.tfvars` file that you don't commit. On Azure, also set `operator_ip_ranges` to your own public address: OpenTofu writes the database secret through Key Vault's data plane, and Key Vault's firewall admits only the VM's subnet and the addresses you list.
 
+**After the first apply on Azure, take your own access away again.** The module gave the account running OpenTofu **Key Vault Secrets Officer** on the vault (`operator_writes_secret`), and your address is in the vault's and the storage account's firewalls. Neither is needed once the secret is written. Set `operator_ip_ranges = []`, then plan and apply. Remove the role assignment in the portal (**Key vault → Access control (IAM) → Role assignments →** your account, **Key Vault Secrets Officer → Remove**), or with `az role assignment delete --assignee <your object ID> --role "Key Vault Secrets Officer" --scope <vault ID>`. A later apply that changes the secret needs both again, briefly.
+
 ## Protection against deletion
 
 The database, the bucket or storage account and the data disk have `prevent_destroy = true`, so `tofu destroy` stops before touching them. The AWS database also has deletion protection, and the Azure database, storage account and data disk have delete locks (`polynovea-keep-database`, `polynovea-keep-storage`, `polynovea-keep-data-disk`). To remove an install deliberately: export your content, remove the `prevent_destroy` lines, turn off deletion protection or remove the locks, then plan and apply.

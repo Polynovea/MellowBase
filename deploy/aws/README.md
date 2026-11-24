@@ -19,6 +19,8 @@
 
 Prices are estimates from AWS's on-demand list prices, before tax, with light traffic. Other regions and heavy traffic cost more; your AWS bill is what counts. They are printed in the template's description too. On-this-server sites with real traffic should use `t4g.medium` (about US$12 more).
 
+Not in the monthly figures, because they outlive the server: final snapshots of the database and data disk when the stack is deleted (about US$0.095 per GB-month for RDS snapshots beyond the free backup allowance, US$0.05 for EBS), the retained bucket and its backups, and the retained database secret (US$0.40 a month). RDS storage grows automatically up to 200 GB, at the gp3 price per GB, when the database fills it.
+
 ### Security
 
 - **One role.** The server's instance role can call `secretsmanager:GetSecretValue` on the one database secret, and list, read, write and delete objects in the one bucket. Nothing else: no managed policies, no wildcards.
