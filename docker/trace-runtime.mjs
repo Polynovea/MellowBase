@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Adds the delivery worker and the operator commands to the Next.js standalone output, so the server
+ * Adds the delivery worker (its bundle, dist/delivery-worker.mjs) and the operator commands to the
+ * Next.js standalone output, so the server
  * image carries one pruned node_modules for everything.
  *
  *   node docker/trace-runtime.mjs <repo root> <standalone dir>
@@ -22,7 +23,9 @@ const root = path.resolve(rootArg);
 const dest = path.resolve(destArg);
 
 const ENTRY_POINTS = [
-  "scripts/delivery-worker.mjs",
+  // The bundle from scripts/build-delivery-worker.mjs: the worker and the TypeScript it imports, as
+  // plain JavaScript. Its npm packages are traced from here; no lib/**/*.ts or loader ships for it.
+  "dist/delivery-worker.mjs",
   "scripts/run-migrations.mjs",
   "scripts/polynovea-cms.mjs",
 ];

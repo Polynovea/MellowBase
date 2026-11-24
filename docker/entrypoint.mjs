@@ -27,7 +27,8 @@ const APP_DIR = process.env.POLYNOVEA_APP_DIR || "/app";
 // Fixed, like lib/setup/database/localServerImage.ts and local-db.sh: no override.
 const DATA_ROOT = "/var/lib/polynovea";
 const LOCAL_DB = "/opt/polynovea/bin/local-db.sh";
-const WORKER = path.join(APP_DIR, "scripts", "delivery-worker.mjs");
+// The bundled worker (scripts/build-delivery-worker.mjs): plain JavaScript, no TypeScript loader.
+const WORKER = path.join(APP_DIR, "dist", "delivery-worker.mjs");
 const NOT_CONFIGURED_EXIT = 3;
 const workerEnabled = process.env.POLYNOVEA_WORKER !== "0";
 

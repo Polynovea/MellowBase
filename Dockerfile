@@ -19,7 +19,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund --loglevel=error
 COPY . .
+# The delivery worker runs as one bundled JavaScript file (no TypeScript loader in the image).
 RUN POLYNOVEA_STANDALONE=1 npm run build \
+ && node scripts/build-delivery-worker.mjs \
  && node docker/trace-runtime.mjs /src /src/.next/standalone \
  && rm -rf /src/.next/standalone/node_modules/sharp /src/.next/standalone/node_modules/@img
 

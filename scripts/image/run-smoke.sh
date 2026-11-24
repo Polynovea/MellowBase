@@ -118,6 +118,20 @@ docker exec "$PREFIX-tunnel" sh -ec '/opt/polynovea/bin/local-db.sh status && ec
 docker exec "$PREFIX-tunnel" node -e "fetch('http://127.0.0.1:3000/api/setup/status').then(r=>r.json()).then(s=>{console.log('after restart:',JSON.stringify(s));process.exit(s.databaseReady?0:1)})"
 docker logs "$PREFIX-tunnel" 2>&1 | grep -E "^\[entrypoint\]|\[local-db\]|delivery-worker" | tail -8 || true
 
+step "Delivery worker: the bundle (no TypeScript loader) is running and has recorded a heartbeat"
+docker exec "$PREFIX-tunnel" sh -ec '
+  procs="$(for p in /proc/[0-9]*; do tr "\0" " " < "$p/cmdline" 2>/dev/null; echo; done)"
+  if echo "$procs" | grep -q "dist/delivery-worker.mjs"; then echo "ok    worker process runs dist/delivery-worker.mjs"; else echo "FAIL  no worker process running the bundle"; echo "$procs" | grep -i worker; exit 1; fi
+  if echo "$procs" | grep -q -- "--loader"; then echo "FAIL  a process runs with a TypeScript loader"; exit 1; else echo "ok    no process uses --loader"; fi
+  if [ -e /app/scripts/phase12_75-node-loader.mjs ] || [ -e /app/lib/developer/items/schedule.ts ]; then echo "FAIL  the loader or the worker TypeScript ships in the image"; exit 1; else echo "ok    no loader and no worker TypeScript in the image"; fi
+  for i in $(seq 1 30); do
+    beat="$(psql -h /var/run/postgresql -U postgres -d polynovea -Atc "select coalesce(extract(epoch from now() - worker_heartbeat_at)::int, -1) from cms_runtime_state where singleton")"
+    if [ -n "$beat" ] && [ "$beat" -ge 0 ] && [ "$beat" -lt 120 ]; then echo "ok    worker heartbeat ${beat}s ago"; exit 0; fi
+    sleep 2
+  done
+  echo "FAIL  no recent worker heartbeat (got [$beat])"; exit 1
+'
+
 step "Published port + 0.0.0.0: plain-HTTP setup refused"
 docker volume create "$PREFIX-data2" >/dev/null
 docker run -d --name "$PREFIX-public" -e HOSTNAME=0.0.0.0 -p 127.0.0.1:38080:3000 -v "$PREFIX-data2:/var/lib/polynovea" "$IMAGE" >/dev/null
