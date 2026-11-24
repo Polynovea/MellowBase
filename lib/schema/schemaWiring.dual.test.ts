@@ -90,8 +90,9 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
     if (!changed.ok || !changed.data.applied) throw new Error("change not applied");
     expect(changed.data.schemaChange?.destructiveLedgerId).toBeTruthy();
     await runWorker(modelId);
+    // The version's expand row (no steps: it records the version on the table) ran; the deletion waits.
     const rows = await ledger(backend, modelId);
-    expect(rows.at(-1)).toEqual({ stage: "destructive", status: "awaiting_confirmation" });
+    expect(rows.slice(-2)).toEqual([{ stage: "destructive", status: "awaiting_confirmation" }, { stage: "expand", status: "succeeded" }]);
     expect(await columns(backend, modelId)).toEqual(expect.arrayContaining(["title", "body"]));
 
     // The model response's view: the deletion in plain words, with the values it would delete.
@@ -173,7 +174,7 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
     };
     const removed = await save([f("title")]);
     await runWorker(modelId);
-    expect((await ledger(backend, modelId)).at(-1)).toEqual({ stage: "destructive", status: "awaiting_confirmation" });
+    expect((await ledger(backend, modelId)).slice(-2)).toEqual([{ stage: "destructive", status: "awaiting_confirmation" }, { stage: "expand", status: "succeeded" }]);
 
     const restored = await save([f("title"), f("secret")]);
     expect(restored.schemaChange?.restored).toEqual([{ field: "secret", values: 2 }]);
@@ -190,6 +191,8 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
   });
 
   it("a save that changes no column keeps the model on its table (the worker records the new version)", async () => {
+    // Before, such a save queued nothing: the table stayed on the old version and reads fell back to the
+    // snapshots for good.
     const { workspaceId, adminUserId } = await workspace(backend);
     const apiKey = uniqueKey("page");
     const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Page", apiKey, fields: [f("title")] } });
@@ -197,7 +200,8 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
     const modelId = created.data.model.id;
     expect(await runWorker(modelId)).toEqual(["succeeded"]);
     expect(await tableSource(workspaceId, modelId)).not.toBeNull();
-    const changed = await applyChange({ model: (await getModel(workspaceId, modelId))!, proposedSchema: { name: "Page", apiKey, fields: [f("title", "text", { label: "Headline" })] }, acknowledgeUnsafe: false, actorAdminUserId: adminUserId });
+    // A validation change is a new version but changes no column.
+    const changed = await applyChange({ model: (await getModel(workspaceId, modelId))!, proposedSchema: { name: "Page", apiKey, fields: [f("title", "text", { validation: { maxLength: 50 } })] }, acknowledgeUnsafe: true, actorAdminUserId: adminUserId });
     if (!changed.ok || !changed.data.applied) throw new Error(`change not applied: ${changed.ok ? changed.data.blockedReason : changed.error}`);
     expect(changed.data.schemaChange).toMatchObject({ expandLedgerId: expect.any(String), destructiveLedgerId: null });
     expect(await runWorker(modelId)).toEqual(["succeeded"]);

@@ -127,7 +127,7 @@ if (STEPS.has("schema-roundtrip")) {
     // password) are generated or read per run and stay in memory: never printed, never written.
     const { randomBytes } = await import("node:crypto");
     const { readdirSync, readFileSync } = await import("node:fs");
-    const { createHmac } = await import("node:crypto");
+    const { createHash, createHmac, generateKeyPairSync } = await import("node:crypto");
     // RFC 6238 authenticator codes (HMAC-SHA1, 30-second steps, 6 digits) with node:crypto only: the
     // image traces only what the CMS imports, so the smoke never loads a package file of its own.
     const base32Decode = (text) => {
@@ -151,6 +151,35 @@ if (STEPS.has("schema-roundtrip")) {
       const offset = hmac[hmac.length - 1] & 0x0f;
       return String((hmac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).padStart(6, "0");
     };
+    // A software passkey for the wizard's passkey step (WebAuthn registration, "none" attestation, a
+    // P-256 key that lives in memory for this run only): the same response a browser authenticator
+    // sends, verified by the CMS as usual. Minimal CBOR: unsigned/negative ints, byte and text strings, maps.
+    const cbor = (value) => {
+      const head = (major, n) => n < 24 ? Buffer.from([(major << 5) | n])
+        : n < 256 ? Buffer.from([(major << 5) | 24, n])
+        : Buffer.from([(major << 5) | 25, n >> 8, n & 0xff]);
+      if (typeof value === "number") return value >= 0 ? head(0, value) : head(1, -1 - value);
+      if (typeof value === "string") { const text = Buffer.from(value, "utf8"); return Buffer.concat([head(3, text.length), text]); }
+      if (Buffer.isBuffer(value)) return Buffer.concat([head(2, value.length), value]);
+      const entries = value instanceof Map ? [...value] : Object.entries(value);
+      return Buffer.concat([head(5, entries.length), ...entries.flatMap(([key, item]) => [cbor(key), cbor(item)])]);
+    };
+    const softPasskey = (options, origin) => {
+      const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+      void privateKey; // registration needs only the public key; nothing is signed with "none" attestation
+      const jwk = publicKey.export({ format: "jwk" });
+      const coseKey = cbor(new Map([[1, 2], [3, -7], [-1, 1], [-2, Buffer.from(jwk.x, "base64url")], [-3, Buffer.from(jwk.y, "base64url")]]));
+      const credentialId = randomBytes(16);
+      const length = Buffer.from([credentialId.length >> 8, credentialId.length & 0xff]);
+      // rpIdHash, flags (user present + user verified + attested credential data), sign count 0, AAGUID 0.
+      const authData = Buffer.concat([createHash("sha256").update(options.rp.id).digest(), Buffer.from([0x45]), Buffer.alloc(4), Buffer.alloc(16), length, credentialId, coseKey]);
+      const clientData = Buffer.from(JSON.stringify({ type: "webauthn.create", challenge: options.challenge, origin, crossOrigin: false }));
+      const id = credentialId.toString("base64url");
+      return {
+        id, rawId: id, type: "public-key", authenticatorAttachment: "platform", clientExtensionResults: {},
+        response: { clientDataJSON: clientData.toString("base64url"), attestationObject: cbor({ fmt: "none", attStmt: {}, authData }).toString("base64url"), transports: ["internal"] },
+      };
+    };
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const must = async (response, what) => {
       if (response.ok) return response.status === 204 ? null : response.json();
@@ -166,6 +195,8 @@ if (STEPS.has("schema-roundtrip")) {
     const totpSecret = new URL(totpStart.data?.totpURI ?? totpStart.totpURI).searchParams.get("secret");
     const totp = async () => totpCode(base32Decode(totpSecret));
     await must(await post("/api/setup/owner/totp-confirm", { code: await totp() }), "totp confirm");
+    const passkeyOptions = await must(await post("/api/setup/owner/passkey-options", {}), "passkey options");
+    await must(await post("/api/setup/owner/passkey", { response: softPasskey((passkeyOptions.data ?? passkeyOptions).options, new URL(BASE).origin) }), "passkey");
     const recovery = await must(await post("/api/setup/owner/recovery-codes", {}), "recovery codes");
     const { codes, confirmNumber } = recovery.data ?? recovery;
     await must(await post("/api/setup/owner/recovery-confirm", { code: codes[confirmNumber - 1] }), "recovery confirm");
@@ -174,7 +205,7 @@ if (STEPS.has("schema-roundtrip")) {
     const { masterKey, backupRepoPassword } = keys.data ?? keys;
     await must(await post("/api/setup/owner/keys-confirm", { masterKeyTail: masterKey?.slice(-6), backupTail: backupRepoPassword?.slice(-6) }), "keys confirm");
     await must(await post("/api/setup/owner/finish", {}), "finish");
-    ok("owner created through the wizard (password, authenticator, recovery codes, keys confirmed)");
+    ok("owner created through the wizard (password, authenticator, passkey, recovery codes, keys confirmed)");
 
     step = "sign-in";
     // 2. Sign in like the admin UI: password, then the authenticator code; CSRF token for the session.

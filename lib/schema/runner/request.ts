@@ -23,8 +23,8 @@ export interface PlanStageRequest {
 
 /**
  * Plans a change from trusted state (the model's table, the target version, the renames; read-only
- * access is enough) and queues it: an expand row if the plan has expand steps or no steps at all
- * (pending at once), a
+ * access is enough) and queues it: an expand row if the plan has expand steps or is for a saved version
+ * of a model whose table exists (pending at once), a
  * destructive row if it has destructive steps (awaiting_confirmation until confirmPlanStage). Each
  * row's plan_hash is computeStageHash of the full plan for its stage; the worker rebuilds that stage
  * and runs it only if it hashes the same.
@@ -37,11 +37,12 @@ export async function requestSchemaChange(
     contentModelId: input.contentModelId, targetVersionId: input.targetVersionId, renames: input.renames ?? [], stage: "expand", limits: input.limits,
   });
   const base = { plan, requestedBy: input.requestedBy, targetVersionId: input.targetVersionId };
-  // A saved version that changes no column still gets an expand row with no steps (verify.ts allows
-  // exactly this): the worker records the version on the table, so reads stay on it, and the row
-  // supersedes the model's older waiting requests (a field added back undoes its waiting deletion).
-  const versionOnly = plan.steps.length === 0 && input.targetVersionId !== null && plan.baseShape !== null;
-  const hasStage = (stage: PlanStage) => plan.steps.some((step) => step.stage === stage) || (stage === "expand" && versionOnly);
+  // Every saved version of a model whose table exists gets an expand row, with no steps if the version
+  // changes no column (verify.ts allows exactly this). The worker then records the version on the
+  // table, so reads stay on it (also while a deletion waits for confirmation), the planner knows which
+  // fields are waiting to be deleted (a restore), and the row supersedes older waiting requests.
+  const recordsVersion = input.targetVersionId !== null && plan.baseShape !== null;
+  const hasStage = (stage: PlanStage) => plan.steps.some((step) => step.stage === stage) || (stage === "expand" && recordsVersion);
   // One transaction: the request's rows share created_at, so the supersede trigger replaces the model's
   // older requests and never this request's own other row.
   const queue = async (trx: DbExecutor) => {

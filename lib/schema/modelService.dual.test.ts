@@ -23,6 +23,8 @@ import { POST as validateHandler } from "@/app/api/models/[id]/validate-change/r
 const actor = vi.hoisted(() => ({ workspaceId: "", adminUserId: "" }));
 vi.mock("@/lib/platform/permissions", () => ({
   requirePlatformAccess: vi.fn(async () => ({ data: { actor: { ...actor }, adminUser: { id: actor.adminUserId } } })),
+  // The model route counts a waiting deletion's values only for those who may confirm it.
+  hasPermission: vi.fn(() => true),
 }));
 
 const MODEL_KEYS = ["api_key", "created_at", "created_by", "current_schema_version", "description", "icon", "id", "name", "settings_json", "status", "updated_at", "workspace_id"];

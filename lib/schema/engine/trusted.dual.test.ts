@@ -89,15 +89,17 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     const deletion = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: v2, stage: "expand" });
     const destructiveHash = computeStageHash(deletion, "destructive");
     await applyExpandStage(owner, { plan: await workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "expand", requestedPlanHash: computeStageHash(deletion, "expand") }), requestedBy: null, limits: TEST_LIMITS });
-    const ledger = () => backend.query<{ target_version_id: string; stage: string; status: string }>(
-      "select target_version_id, stage, status from schema_migration_ledger where content_model_id = $1 and target_version_id = $2 order by stage", [m.modelId, v2]);
-    expect((await ledger()).find((row) => row.stage === "destructive")?.status).toBe("awaiting_confirmation");
+    // The model's waiting deletions (the reference executor queued its own rows, superseding the save's).
+    const waitingDeletions = () => backend.query("select id from schema_migration_ledger where content_model_id = $1 and stage = 'destructive' and status = 'awaiting_confirmation'", [m.modelId]);
+    const [waiting] = await waitingDeletions();
+    expect(waiting).toBeTruthy();
 
     // Saved back as the same kind of field: a new version whose only request is a step-less expand row.
     const v3 = await save([field("title"), field("secret")]);
     expect(v3.schemaChange).toMatchObject({ expandLedgerId: expect.any(String), destructiveLedgerId: null, restored: [{ field: "secret", values: 0 }] });
     // The waiting deletion is superseded (it can no longer be confirmed), and the worker refuses it.
-    expect((await ledger()).find((row) => row.stage === "destructive")?.status).toBe("superseded");
+    expect(await waitingDeletions()).toEqual([]);
+    expect(await backend.query("select status from schema_migration_ledger where id = $1", [(waiting as { id: string }).id])).toEqual([{ status: "superseded" }]);
     expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "destructive", requestedPlanHash: destructiveHash }))).not.toBeNull();
 
     // The worker's step-less expand stage records the new version on the table; no column changes.
