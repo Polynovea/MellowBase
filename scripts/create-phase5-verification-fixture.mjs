@@ -3,8 +3,10 @@
  * certification. It deliberately does not touch Blog models or entries.
  *
  * Usage: node scripts/create-phase5-verification-fixture.mjs
+ *
+ * A development fixture that stays in place (for repeated browser certification); never run it
+ * against a customer install. Field types are real ones and the schema hash is the app's.
  */
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
@@ -21,11 +23,13 @@ const schema = {
   apiKey: "phase5_verification",
   description: "Isolated, reusable fixture for editorial collaboration and calendar certification.",
   capability: "content_enabled",
-  fields: [{ key: "title", label: "Title", type: "short_text", required: true, localized: false, unique: false }],
+  fields: [{ key: "title", label: "Title", type: "text", required: true, localized: false, unique: false }],
 };
-const schemaHash = createHash("sha256").update(JSON.stringify(schema, Object.keys(schema).sort())).digest("hex");
 const client = new pg.Client(postgresConnectionConfig(connectionString));
 await client.connect();
+// The app's schema hash (hashModelSchema), computed in SQL by migration 0075's canonical JSON.
+const { rows: [{ hash: schemaHash }] } = await client.query(
+  "select encode(sha256(convert_to(public.polynovea_canonical_json($1::jsonb), 'UTF8')), 'hex') as hash", [JSON.stringify(schema)]);
 try {
   await client.query("BEGIN");
   const { rows: members } = await client.query(`
@@ -47,7 +51,7 @@ try {
     await client.query(`insert into content_model_versions (content_model_id, version_number, schema_json, schema_hash, change_summary, created_by)
       values ($1, 1, $2::jsonb, $3, 'Phase 5 browser verification fixture', $4)`, [modelId, JSON.stringify(schema), schemaHash, actorId]);
     await client.query(`insert into content_fields (content_model_id, field_key, label, field_type, position, configuration_json)
-      values ($1, 'title', 'Title', 'short_text', 0, $2::jsonb)`, [modelId, JSON.stringify({ required: true, localized: false, unique: false })]);
+      values ($1, 'title', 'Title', 'text', 0, $2::jsonb)`, [modelId, JSON.stringify({ required: true, localized: false, unique: false })]);
   }
 
   const fixtureTitle = "Phase 5 editorial verification fixture";
