@@ -73,12 +73,15 @@ services:
       - ALL
     cap_add:
       - NET_BIND_SERVICE
+    # caddy-start.sh checks POLYNOVEA_DOMAIN and POLYNOVEA_ACME_EMAIL before Caddy reads them.
+    entrypoint: ["/bin/sh", "/etc/caddy/caddy-start.sh"]
     environment:
       POLYNOVEA_DOMAIN: "${POLYNOVEA_DOMAIN:?Set POLYNOVEA_DOMAIN for the proxy profile}"
-      # Optional POLYNOVEA_ACME_EMAIL: Let's Encrypt's expiry warnings go there. Unset: no email option.
-      POLYNOVEA_CADDY_EMAIL_OPTION: "${POLYNOVEA_ACME_EMAIL:+email ${POLYNOVEA_ACME_EMAIL}}"
+      # Optional: Let's Encrypt's expiry warnings go there. Unset: no email option.
+      POLYNOVEA_ACME_EMAIL: "${POLYNOVEA_ACME_EMAIL:-}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-start.sh:/etc/caddy/caddy-start.sh:ro
       - caddy-data:/data
       - caddy-config:/config
 

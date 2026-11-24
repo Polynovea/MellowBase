@@ -186,4 +186,20 @@ printf '%s' "$without" | grep -q '"host":\["cms.example.com"\]' && ! printf '%s'
 printf '%s' "$with" | grep -q '"email":"ops@example.com"' && echo "ok    with email: the ACME account email is set"
 printf '%s' "$with" | grep -q '"dial":"127.0.0.1:3000"' && echo "ok    forwards to the CMS on 127.0.0.1:3000"
 
+# docker/caddy-start.sh (compose): validates both inputs before Caddy sees them.
+start() { docker run --rm --entrypoint /bin/sh -e "POLYNOVEA_DOMAIN=$1" -e "POLYNOVEA_ACME_EMAIL=$2" \
+  -v "$SRC/docker/Caddyfile:/etc/caddy/Caddyfile:ro" -v "$SRC/docker/caddy-start.sh:/etc/caddy/caddy-start.sh:ro" \
+  "$CADDY" /etc/caddy/caddy-start.sh adapt 2>/dev/null; }
+start cms.example.com "" | grep -q '"host":\["cms.example.com"\]' && echo "ok    compose: a valid domain starts, with no email"
+start cms.example.com ops@example.com | grep -q '"email":"ops@example.com"' && echo "ok    compose: a valid email is passed to Caddy"
+for bad in "cms.example.com {" "x" "CMS.example.com" "cms.example.com
+admin :2019"; do
+  if start "$bad" "" >/dev/null; then echo "FAIL: compose accepted the domain [$bad]"; exit 1; fi
+done
+echo "ok    compose: invalid domains are refused before Caddy starts"
+for bad in "ops" "ops@example.com }" "a@b"; do
+  if start cms.example.com "$bad" >/dev/null; then echo "FAIL: compose accepted the email [$bad]"; exit 1; fi
+done
+echo "ok    compose: invalid emails are refused before Caddy starts"
+
 echo "== VM file checks passed"
