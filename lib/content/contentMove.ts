@@ -19,6 +19,7 @@ import type { DB } from "@/lib/db/generated/database";
 import type { DbExecutor } from "@/lib/db/index";
 import { planStageStatus, requestSchemaChange } from "@/lib/schema/runner/request";
 import type { SchemaLimits } from "@/lib/schema/engine/limits";
+import { validateCanonicalSchema } from "@/lib/schema/canonicalSchema";
 
 export const MOVE_BATCH_SIZE = 1000;
 
@@ -389,4 +390,44 @@ export async function resyncChangedModels(db: Kysely<DB>, options: { modelId?: s
     }
   }
   return done;
+}
+
+/**
+ * Problems with the model's saved current schema (empty when it is valid). A model saved around the
+ * CMS (raw SQL, an old certification script) can hold a schema the engine cannot build a table for;
+ * content:move reports that in plain words instead of failing inside the engine. Field keys and types
+ * only: never values.
+ */
+export async function modelSchemaProblems(db: DbExecutor, input: { workspaceId: string; modelId: string }): Promise<string[]> {
+  const row = await db.selectFrom("content_models as m")
+    .leftJoin("content_model_versions as v", (join) => join.onRef("v.content_model_id", "=", "m.id").onRef("v.version_number", "=", "m.current_schema_version"))
+    .select(["v.schema_json"]).where("m.id", "=", input.modelId).where("m.workspace_id", "=", input.workspaceId)
+    .executeTakeFirst();
+  if (!row?.schema_json) return ["The model has no saved schema version."];
+  return schemaProblems(row.schema_json);
+}
+
+/** Pure: validateCanonicalSchema's problems, at most 10. */
+export function schemaProblems(schema: unknown): string[] {
+  const result = validateCanonicalSchema(schema);
+  return result.valid ? [] : result.errors.slice(0, 10);
+}
+
+export function describeSchemaProblems(problems: readonly string[]): string {
+  return `This model's saved schema is not valid (${problems.slice(0, 3).join("; ")}). Fix the model in the CMS, then run content:move again.`;
+}
+
+/**
+ * The log fields for a failure, so a line never says just "error". A SQLSTATE (with the SQL
+ * function's own code word) as before; a schema engine refusal as `schema:<code>` with its message
+ * (engine messages are plain words, safe to show); anything else as "error" with its type and a hint.
+ */
+export function moveErrorFields(error: unknown): { code: string; message?: string; errorType?: string; hint?: string } {
+  const e = error as { code?: unknown; message?: unknown; name?: unknown; constructor?: { name?: string } } | null;
+  const message = typeof e?.message === "string" ? e.message : "";
+  if (typeof e?.code === "string" && /^[0-9A-Z]{5}$/.test(e.code)) {
+    return { code: e.code + (/^[a-z0-9_]{1,64}$/.test(message) ? `:${message}` : "") };
+  }
+  if (e?.name === "SchemaEngineError" && typeof e.code === "string") return { code: `schema:${e.code}`, message: message.slice(0, 300) };
+  return { code: "error", errorType: e?.constructor?.name ?? typeof error, hint: "Run again with POLYNOVEA_DEBUG=1 to print the error message." };
 }

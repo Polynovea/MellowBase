@@ -77,3 +77,35 @@ describe("a model's table part-way through a schema change", () => {
     expect(isTableShapeError(new Error("x"))).toBe(false);
   });
 });
+
+describe("content:move says why a model failed", async () => {
+  const { describeSchemaProblems, moveErrorFields, schemaProblems } = await import("@/lib/content/contentMove");
+  const { SchemaEngineError } = await import("@/lib/schema/engine/errors");
+  const { columnForField } = await import("@/lib/schema/engine/columns");
+  const certSchema = { name: "Phase 5 Collaboration Record", apiKey: "phase5_collab_cert", capability: "content_enabled", fields: [
+    { key: "title", label: "Title", type: "short_text", required: true, localized: false, unique: false },
+    { key: "notes", label: "Notes", type: "long_text", required: false, localized: false, unique: false },
+  ] };
+
+  it("a saved schema with an unknown field type is reported in plain words before anything is attempted", () => {
+    const problems = schemaProblems(certSchema);
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.join(" ")).toMatch(/fields\.0\.type/);
+    expect(describeSchemaProblems(problems)).toMatch(/^This model's saved schema is not valid \(.*\)\. Fix the model in the CMS/);
+    expect(schemaProblems({ ...certSchema, fields: certSchema.fields.map((f) => ({ ...f, type: f.type === "short_text" ? "text" : f.type })) })).toEqual([]);
+  });
+
+  it("the schema engine refuses such a field with a coded, plain-words error (not a bare Error)", () => {
+    let caught: unknown;
+    try { columnForField(certSchema.fields[0] as never, "title"); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(SchemaEngineError);
+    expect(moveErrorFields(caught)).toEqual({ code: "schema:invalid_plan", message: expect.stringMatching(/Field "title" has type "short_text"/) });
+  });
+
+  it("never a bare 'error': SQLSTATEs keep their code word, anything else carries its type and a hint", () => {
+    expect(moveErrorFields(Object.assign(new Error("content_model_has_no_table"), { code: "P0002" }))).toEqual({ code: "P0002:content_model_has_no_table" });
+    expect(moveErrorFields(Object.assign(new Error("relation x does not exist with value 'secret'"), { code: "42P01" }))).toEqual({ code: "42P01" });
+    expect(moveErrorFields(new TypeError("boom"))).toEqual({ code: "error", errorType: "TypeError", hint: expect.stringMatching(/POLYNOVEA_DEBUG=1/) });
+    expect(moveErrorFields("weird")).toMatchObject({ code: "error", errorType: "String" });
+  });
+});

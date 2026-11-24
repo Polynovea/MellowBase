@@ -7,11 +7,20 @@
  * - Phase 6: Canonical schema eligibility, Landing Page creation, immutable versions,
  *            audit events, 409 conflict non-destructive merge base, preview tokens,
  *            deep repeater validation, and protocol-relative URL rejection.
+ *
+ * Runs in its own disposable workspace (cert-harness createDisposableWorkspace) and tears it down
+ * in a finally, so nothing is left behind. Model schemas use real field types and the app's schema
+ * hash (0075's canonical JSON, computed in SQL).
+ *
+ * Note: older versions of certify-phase5-and-phase6 left two test models (phase5_collab_cert and
+ * the landing page model) in the oldest member's workspace; archive them if you ran it against a
+ * real workspace.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs";
 import { loadLocalEnv } from "./lib/loadLocalEnv.mjs";
+import { createDisposableWorkspace, teardownCertification } from "./cert-harness.mjs";
 
 loadLocalEnv();
 
@@ -26,6 +35,19 @@ const client = new pg.Client(postgresConnectionConfig(connectionString));
 
 await client.connect();
 
+let workspaceId = null;
+const adminUserIds = [];
+
+/** The app's schema hash (lib/schema/engine/hash.ts hashModelSchema), computed in SQL by 0075's canonical JSON. */
+async function schemaHashOf(schema) {
+  const { rows: [row] } = await client.query(
+    "select encode(sha256(convert_to(public.polynovea_canonical_json($1::jsonb), 'UTF8')), 'hex') as hash",
+    [JSON.stringify(schema)],
+  );
+  if (!row?.hash) throw new Error("Could not compute the schema hash (is migration 0075 applied?)");
+  return row.hash;
+}
+
 const results = {
   timestamp: new Date().toISOString(),
   phase5: {},
@@ -34,20 +56,21 @@ const results = {
 };
 
 try {
-  // ── 0. Get Workspace & Actor ──────────────────────────────────────────────
-  const { rows: members } = await client.query(`
-    select wm.workspace_id, wm.admin_user_id, au.email, au.display_name
-    from workspace_members wm
-    join admin_users au on au.id = wm.admin_user_id
-    where wm.status = 'active'
-    order by wm.created_at asc
-    limit 2
-  `);
-
-  if (!members[0]) throw new Error("No active workspace members found");
-  const primaryActor = members[0];
-  const secondaryActor = members[1] || members[0];
-  const workspaceId = primaryActor.workspace_id;
+  // ── 0. Disposable workspace and two actors (never a real workspace) ──────────
+  const ws = await createDisposableWorkspace(client, "p5p6");
+  workspaceId = ws.id;
+  const makeActor = async (label) => {
+    const email = `p5p6-${label}-${randomUUID().slice(0, 8)}@polynovea.local`;
+    const { rows: [admin] } = await client.query(
+      "insert into admin_users (username, email, display_name, role, is_active) values ($1, $1, $2, 'editor', true) returning id",
+      [email, `Cert ${label}`],
+    );
+    adminUserIds.push(admin.id);
+    await client.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, admin.id]);
+    return { workspace_id: workspaceId, admin_user_id: admin.id, email, display_name: `Cert ${label}` };
+  };
+  const primaryActor = await makeActor("primary");
+  const secondaryActor = await makeActor("secondary");
 
   console.log(`[CERTIFICATION] Workspace: ${workspaceId}, Actor: ${primaryActor.email}`);
 
@@ -63,7 +86,7 @@ try {
     description: "Certification record for assignments, reviews, comments, and calendar",
     capability: "content_enabled",
     fields: [
-      { key: "title", label: "Title", type: "short_text", required: true, localized: false, unique: false },
+      { key: "title", label: "Title", type: "text", required: true, localized: false, unique: false },
       { key: "notes", label: "Notes", type: "long_text", required: false, localized: false, unique: false },
     ],
   };
@@ -75,9 +98,7 @@ try {
   let p5ModelId = p5Models[0]?.id;
 
   if (!p5ModelId) {
-    const schemaHash = createHash("sha256")
-      .update(JSON.stringify(phase5ModelSchema, Object.keys(phase5ModelSchema).sort()))
-      .digest("hex");
+    const schemaHash = await schemaHashOf(phase5ModelSchema);
 
     const { rows: newModels } = await client.query(
       `insert into content_models (workspace_id, name, api_key, description, status, current_schema_version, settings_json, created_by)
@@ -226,7 +247,7 @@ try {
     description: "Publishable modular pages composed with developer-approved blocks in Visual Experience Studio.",
     capability: "publishable",
     fields: [
-      { key: "title", label: "Page Title", type: "short_text", required: true, localized: false, unique: false },
+      { key: "title", label: "Page Title", type: "text", required: true, localized: false, unique: false },
       { key: "slug", label: "URL Slug", type: "slug", required: true, unique: true, localized: false },
       { key: "seo_description", label: "SEO Meta Description", type: "long_text", required: false, localized: false, unique: false },
       { key: "experience", label: "Visual Page Experience", type: "component", required: false, localized: false, unique: false },
@@ -240,9 +261,7 @@ try {
   let lpModelId = lpModels[0]?.id;
 
   if (!lpModelId) {
-    const schemaHash = createHash("sha256")
-      .update(JSON.stringify(landingPageSchema, Object.keys(landingPageSchema).sort()))
-      .digest("hex");
+    const schemaHash = await schemaHashOf(landingPageSchema);
 
     const { rows: newModels } = await client.query(
       `insert into content_models (workspace_id, name, api_key, description, status, current_schema_version, settings_json, created_by)
@@ -472,6 +491,14 @@ try {
 } catch (err) {
   console.error("CERTIFICATION ERROR:", err);
   results.error = err.message;
+  process.exitCode = 1;
 } finally {
-  await client.end();
+  try {
+    if (workspaceId) await teardownCertification({ client, workspaceId, adminUserIds });
+  } catch (err) {
+    console.error(err.message);
+    process.exitCode = 1;
+  } finally {
+    await client.end();
+  }
 }
