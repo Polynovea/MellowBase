@@ -275,8 +275,9 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     const refusal = (source: "table" | "snapshot" = "table") => errorOf(setReadSource(db, { workspaceId, modelId, source }));
     expect(await refusal()).toEqual({ code: "P0002", message: "content_model_has_no_table" });
 
-    // Table, but no run yet.
+    // Table, but no run yet. (The worker adopts an empty new model; this test starts from snapshots.)
     const up = await bringModelTableUp({ workspaceId, modelId, actor: adminUserId });
+    await setReadSource(db, { workspaceId, modelId, source: "snapshot" });
     await backend.query("delete from content_model_move_runs where content_model_id = $1", [modelId]);
     expect(await refusal()).toEqual({ code: "55000", message: "content_read_switch_no_matching_run" });
     expect(up.verify.matched).toBe(true);
@@ -390,6 +391,8 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     if (!created.ok) throw new Error(created.error);
     const modelId = created.data.model.id;
     expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId })).verify.matched).toBe(true);
+    // The worker adopted the empty new model; this test is about a model still reading snapshots.
+    await setReadSource(getDb(), { workspaceId, modelId, source: "snapshot" });
     const ids = Array.from({ length: 1_000 }, () => randomUUID()).sort();
     const badIndex = 613;
     await insertEntries(backend, workspaceId, modelId, ids.map((id, n) => ({

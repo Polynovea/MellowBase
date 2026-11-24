@@ -34,6 +34,10 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
     const apiKey = uniqueKey("post");
     const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Post", apiKey, fields } });
     if (!created.ok) throw new Error(created.error);
+    // Since Phase 4 a save queues its change itself; these tests queue their own, so cancel that one.
+    for (const id of [created.data.schemaChange.expandLedgerId, created.data.schemaChange.destructiveLedgerId]) {
+      if (id) await cancelPlanStage(kyselyOn(app), { ledgerId: id, cancelledBy: adminUserId });
+    }
     return { workspaceId, adminUserId, apiKey, modelId: created.data.model.id, v1: created.data.version.id };
   }
   /** What the CMS does: plan the change from trusted state as the app role and queue its stages. */
@@ -141,9 +145,15 @@ describeWithDatabase("the worker runs only plans rebuilt from trusted state", (b
       const dropSecret = await request(m, v2);
       expect(dropSecret.destructiveLedgerId).not.toBeNull();
       await next([field("title"), field("other")]);
+      // Since Phase 4 saving the newer version queues its own change, which supersedes the waiting
+      // deletion at once: it can no longer be confirmed.
+      expect(await statusOf(dropSecret.destructiveLedgerId)).toBe("superseded");
+      await expect(confirmPlanStage(kyselyOn(app), { ledgerId: dropSecret.destructiveLedgerId!, confirmedBy: m.adminUserId, typedApiKey: m.apiKey }))
+        .rejects.toMatchObject({ code: "55000" });
+      // And the database's own version check still refuses it even if the row were left waiting.
+      await backend.query("update schema_migration_ledger set status = 'awaiting_confirmation' where id = $1", [dropSecret.destructiveLedgerId]);
       await expect(confirmPlanStage(kyselyOn(app), { ledgerId: dropSecret.destructiveLedgerId!, confirmedBy: m.adminUserId, typedApiKey: m.apiKey }))
         .rejects.toMatchObject({ code: "55000", message: "schema_stage_superseded" });
-      expect(await statusOf(dropSecret.destructiveLedgerId)).toBe("awaiting_confirmation");
     });
 
     it("a new request supersedes the model's older requests that have not started", async () => {

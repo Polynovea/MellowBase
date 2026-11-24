@@ -360,6 +360,9 @@ async function scheduledPublishCheckFor(client, workspaceId, actorId, releaseId)
   try {
     scheduleModule ??= await Promise.all([import("kysely"), import("../lib/developer/items/schedule.ts")]);
   } catch {
+    // Fail closed, and loudly: started without the loader and without the bundle (use
+    // `npm run worker:delivery`, or the image's dist/delivery-worker.mjs).
+    console.error("[delivery-worker] scheduled releases are NOT being published: the permission check could not be loaded. Start the worker with `npm run worker:delivery` (development) or the bundled dist/delivery-worker.mjs.");
     return { ok: false, reason: "permission_check_unavailable" };
   }
   const [{ Kysely, PostgresDialect }, { scheduledPublishCheck }] = scheduleModule;

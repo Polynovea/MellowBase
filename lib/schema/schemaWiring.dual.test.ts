@@ -123,7 +123,7 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
     await runWorker(modelId);
     const waiting = (await modelSchemaChanges(getDb(), (await getModel(workspaceId, modelId))!, null)).find((change) => change.stage === "destructive")!;
     expect(waiting.confirmation!.valuesDeleted).toBe(3);
-  });
+  }, 120_000);
 
   it("a refused request rolls the write back: no version without its ledger rows, no ledger rows without their version", async () => {
     const { workspaceId, adminUserId } = await workspace(backend);

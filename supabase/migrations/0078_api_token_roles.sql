@@ -4,7 +4,8 @@
 -- and model policies apply to a token. Null keeps the behaviour from before phase 4: the token acts
 -- with its creator's member roles. The role must belong to the token's workspace (composite foreign
 -- key), and a role in use by a token cannot be deleted: dropping it would silently widen the token
--- back to its creator's roles.
+-- back to its creator's roles. NO ACTION (checked at the end of the statement), not RESTRICT: deleting
+-- a whole workspace cascades to its tokens and roles in one statement and must not fail on the order.
 --
 -- roles.api_limits: per-role overrides of the items API limits (page size, filter depth, joins,
 -- statement timeout...). The app clamps them to the hard caps: an override can only lower a limit.
@@ -36,7 +37,7 @@ begin
   if not exists (select 1 from pg_catalog.pg_constraint where conname = 'developer_api_tokens_role_fk' and conrelid = 'public.developer_api_tokens'::regclass) then
     alter table public.developer_api_tokens
       add constraint developer_api_tokens_role_fk foreign key (workspace_id, role_id)
-      references public.roles (workspace_id, id) on delete restrict;
+      references public.roles (workspace_id, id) on delete no action;
   end if;
 end;
 $$;

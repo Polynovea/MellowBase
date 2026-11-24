@@ -138,5 +138,14 @@ describeWithDatabase("security review: leak paths through the one permission fun
     const other = await backend.createWorkspace();
     const [foreign] = await backend.query<{ id: string }>("insert into roles (workspace_id, key, name) values ($1, 'z', 'z') returning id", [other.workspaceId]);
     await expect(createDeveloperApiToken({ workspaceId: fx.workspaceId, actorId: fx.adminUserId, name: `x-${randomUUID()}`, scopes: ["content.read"], roleId: foreign.id })).rejects.toThrow();
+
+    // A role in use cannot be deleted on its own, but deleting the whole workspace (tokens and roles in
+    // one cascade) is not blocked by the order PostgreSQL deletes them in (FK is NO ACTION).
+    const bound = await backend.createWorkspace();
+    const [role] = await backend.query<{ id: string }>("insert into roles (workspace_id, key, name) values ($1, 'editor', 'Editor') returning id", [bound.workspaceId]);
+    await backend.query("insert into developer_api_tokens (workspace_id, name, token_prefix, token_hash, role_id) values ($1, 't', 'pnv_x', $2, $3)", [bound.workspaceId, randomUUID(), role.id]);
+    await expect(backend.query("delete from roles where id = $1", [role.id])).rejects.toThrow();
+    await backend.query("delete from workspaces where id = $1", [bound.workspaceId]);
+    expect(await backend.query("select 1 from roles where id = $1", [role.id])).toEqual([]);
   });
 });

@@ -3,7 +3,8 @@ import { describeWithDatabase } from "@/lib/db/testing/database";
 import { ISO_TIMESTAMP } from "@/lib/db/testing/http";
 import { requireDeveloperApi } from "@/lib/developer/apiAuth";
 import { createDeveloperApiToken, listDeveloperApiTokens, resolveDeveloperApiToken, revokeDeveloperApiToken } from "@/lib/developer/apiTokenService";
-const TOKEN_KEYS = ["allowed_models", "created_at", "expires_at", "id", "name", "rate_limit_per_minute", "scopes", "token_prefix"];
+// role_id (migration 0078): the admin token list shows which role a token acts as.
+const TOKEN_KEYS = ["allowed_models", "created_at", "expires_at", "id", "name", "rate_limit_per_minute", "role_id", "scopes", "token_prefix"];
 
 const call = (secret: string | null, path = "/api/v1/entries", method = "GET") =>
   new Request(`http://cms.test${path}`, { method, headers: secret ? { authorization: `Bearer ${secret}`, "x-request-id": "req-1" } : {} });

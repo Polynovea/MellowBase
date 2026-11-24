@@ -82,7 +82,7 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     await applyExpandStage(owner, { plan: first, requestedBy: null, limits: TEST_LIMITS });
     const save = async (fields: ReturnType<typeof field>[]) => {
       const changed = await applyChange({ model: (await getModel(m.workspaceId, m.modelId))!, proposedSchema: { name: "Post", apiKey: m.apiKey, fields }, acknowledgeUnsafe: true, actorAdminUserId: m.adminUserId });
-      if (!changed.ok || !changed.data.version) throw new Error("version not created");
+      if (!changed.ok || !changed.data.version) throw new Error(`version not created: ${changed.ok ? changed.data.blockedReason : changed.error}`);
       return changed.data.version.id;
     };
     const v2 = await save([field("title")]);

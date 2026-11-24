@@ -13,7 +13,9 @@ const assert=(c,m)=>{if(!c)throw new Error(m)};
 if(!process.env.CMS_MASTER_KEY&&!loadKeyRing())process.env.CMS_MASTER_KEY=`p10:${randomBytes(32).toString('base64')}`;
 // The publication and webhook receivers listen on 127.0.0.1, which the worker's SSRF guard refuses
 // unless the worker is started for local use with --allow-private-destinations.
-function runWorker(){return new Promise((resolve,reject)=>{const child=spawn(process.execPath,['scripts/delivery-worker.mjs','--once','--no-maintenance','--queues=p10-cert','--allow-private-destinations'],{cwd:process.cwd(),env:process.env,stdio:['ignore','pipe','pipe']});let out='',err='';child.stdout.on('data',d=>out+=d);child.stderr.on('data',d=>err+=d);child.on('error',reject);child.on('close',code=>code===0?resolve({out,err}):reject(new Error(`worker exited ${code}\n${out}\n${err}`)))});}
+// The worker is started as `npm run worker:delivery` starts it (with the loader): its scheduled-release
+// permission check is TypeScript. Without it, scheduled releases are refused (fail closed).
+function runWorker(){return new Promise((resolve,reject)=>{const child=spawn(process.execPath,['--no-warnings','--loader','./scripts/phase12_75-node-loader.mjs','scripts/delivery-worker.mjs','--once','--no-maintenance','--queues=p10-cert','--allow-private-destinations'],{cwd:process.cwd(),env:process.env,stdio:['ignore','pipe','pipe']});let out='',err='';child.stdout.on('data',d=>out+=d);child.stderr.on('data',d=>err+=d);child.on('error',reject);child.on('close',code=>code===0?resolve({out,err}):reject(new Error(`worker exited ${code}\n${out}\n${err}`)))});}
 async function enqueue(actorId,kind,key,payload={},priority=100){const {rows:[r]}=await client.query(`select cms_enqueue_delivery_job($1,$2,$3,$4,$5::jsonb,'{}'::jsonb,now(),$6,3,'p10-cert',null) job`,[workspaceId,actorId,kind,key,JSON.stringify(payload),priority]);return r.job;}
 try{
  console.log('=== PHASE 10 FULL DELIVERY OPERATIONS CERTIFICATION ===');

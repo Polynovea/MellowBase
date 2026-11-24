@@ -450,6 +450,12 @@ export async function adoptEmptyModels(db: Kysely<DB>, options: { modelId?: stri
      where (s.content_model_id is null or (s.read_source = 'snapshot' and s.last_run_id is null))
        and not exists (select 1 from public.content_entries e where e.content_model_id = t.content_model_id)
        and not exists (select 1 from public.schema_migration_ledger l where l.content_model_id = t.content_model_id and l.status in ('pending', 'running'))
+       -- A model whose latest change failed is left alone (content:move reports it); no retry every poll.
+       and not exists (
+         select 1 from public.schema_migration_ledger f
+          where f.content_model_id = t.content_model_id and f.status = 'failed'
+            and not exists (select 1 from public.schema_migration_ledger ok where ok.content_model_id = f.content_model_id
+                              and ok.stage = 'expand' and ok.status = 'succeeded' and ok.created_at > f.created_at))
        ${options.modelId ? sql`and t.content_model_id = ${options.modelId}::uuid` : sql``}
      order by t.content_model_id
      limit ${Math.min(50, Math.max(1, options.limit ?? 20))}`.execute(db);
@@ -458,7 +464,8 @@ export async function adoptEmptyModels(db: Kysely<DB>, options: { modelId?: stri
     try {
       const moved = await moveModel(db, { workspaceId: row.workspace_id, modelId: row.content_model_id, switchReads: true });
       if (moved.switched) adopted += 1;
-      log(moved.switched ? "content_adopted" : "content_adopt_skipped", { modelId: row.content_model_id, ...(moved.switched ? {} : { status: moved.table.status }) });
+      // Logged only when something happened: a skipped model is not news on every poll.
+      if (moved.switched) log("content_adopted", { modelId: row.content_model_id });
     } catch (error) {
       log("content_adopt_failed", { modelId: row.content_model_id, ...moveErrorFields(error) });
     }

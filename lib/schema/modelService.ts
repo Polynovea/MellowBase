@@ -98,9 +98,12 @@ export interface QueuedSchemaChange {
   destructiveLedgerId: string | null;
 }
 
+// No parameter properties: scripts load this file with Node's type stripping.
 class RollbackWith extends Error {
-  constructor(readonly outcome: { ok: false; error: string; status: number }) {
+  readonly outcome: { ok: false; error: string; status: number };
+  constructor(outcome: { ok: false; error: string; status: number }) {
     super("rollback");
+    this.outcome = outcome;
   }
 }
 
