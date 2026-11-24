@@ -15,6 +15,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +39,14 @@ FAKE_DOCKER = r"""#!/bin/sh
 echo "$(basename "$0") $*" >> "$FAKE_ROOT/calls.log"
 control() { sed -n "s/^$1=//p" "$FAKE_ROOT/control" | tail -1; }
 case "$*" in
+  "image inspect"*)
+    label="$(control label)"; [ -z "$label" ] && label="0.4.0+aaaaaaa"
+    [ "$label" = none ] && exit 1
+    echo "$label"; exit 0 ;;
+  *"system mode"*) [ "$(control mode)" = managed ] && echo '{"local":false}' || echo '{"local":true}'; exit 0 ;;
+  *"system checkpoint"*) echo '{"lsn":"0/3000060"}'; exit 0 ;;
+  *"system read-only"*) exit 0 ;;
+  "run -d --name "*|"rm -f "*|*"local-db.sh status"*|*"local-db.sh stop"*) exit 0 ;;
   *verify-blob*) [ "$(control blob)" = ok ] && exit 0 || exit 1 ;;
   *" verify "*) [ "$(control image)" = ok ] && exit 0 || exit 1 ;;
   *"system backup"*)
@@ -50,6 +59,7 @@ case "$*" in
   restart*|"compose "*)
     # The CMS restarts with whatever image the ref file now pins.
     ref="$(sed -n "s/^POLYNOVEA_IMAGE_REF=//p" "$FAKE_ROOT/etc/polynovea.env" | tail -1)"
+    [ -f "$FAKE_ROOT/compose/.env" ] && ref="$(sed -n "s/^POLYNOVEA_IMAGE=//p" "$FAKE_ROOT/compose/.env" | tail -1)"
     case "$ref" in
       *bbbbbbbb*) [ "$(control b)" = broken ] && echo '{"state":"unavailable","release":null}' > "$FAKE_ROOT/health.json" \
                   || echo '{"state":"running","release":"0.4.1+bbbbbbb"}' > "$FAKE_ROOT/health.json" ;;
@@ -128,6 +138,7 @@ class AgentTest(unittest.TestCase):
             "POLYNOVEA_UPGRADE_HEALTH_DEADLINE_S": "3",
             "POLYNOVEA_UPGRADE_RESTORE_TEST_DIR": os.path.join(self.root, "restore-test"),
             "POLYNOVEA_UPGRADE_RESTORE_WAIT_S": "2",
+            "POLYNOVEA_UPGRADE_WORK_DIR": os.path.join(self.root, "work"),
             "POLYNOVEA_UPGRADE_DOCKER": os.path.join(self.root, "bin", "docker"),
             "POLYNOVEA_UPGRADE_SYSTEMCTL": os.path.join(self.root, "bin", "systemctl"),
             "FAKE_ROOT": self.root,
@@ -287,7 +298,7 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(status["fromRelease"], RELEASE_A)
         self.assertEqual(status["digest"], DIGEST_B)
         steps = [(s["step"], s["outcome"]) for s in status["steps"]]
-        self.assertEqual(steps, [("verify", "started"), ("verify", "ok"), ("backup", "started"), ("backup", "ok"), ("pull", "started"), ("pull", "ok"),
+        self.assertEqual(steps, [("verify", "started"), ("verify", "ok"), ("pull", "started"), ("pull", "ok"), ("backup", "started"), ("backup", "ok"),
                                  ("migrate", "started"), ("migrate", "ok"), ("start", "started"), ("start", "ok"), ("health", "ok"), ("switch", "ok")])
         self.assertEqual(self.ref(), REF_B)
         calls = self.calls()
@@ -320,9 +331,33 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(status["rollback"], "restore")
         self.assertEqual(status["status"], "rolled_back")
         calls = self.calls()
-        self.assertIn(f"--entrypoint node -w /app {REF_A} scripts/polynovea-cms.mjs system restore-backup --set 20261124-010101F_20261124-020202I", calls)
-        self.assertLess(calls.index("stop polynovea"), calls.index("restore-backup"))
+        # Restored to the WAL position recorded right before the migrations, not only to the backup's end.
+        self.assertIn(f"--entrypoint node -w /app {REF_A} scripts/polynovea-cms.mjs system restore-backup --set 20261124-010101F_20261124-020202I --lsn 0/3000060", calls)
         self.assertEqual(self.ref(), REF_A)
+
+    def test_restore_mode_stops_taking_changes_before_the_backup(self):
+        # (1) The previous release must not commit anything after the pre-upgrade backup: pull first (no
+        # downtime), stop the CMS, back up from a database-only container, record the WAL position, make
+        # the app login read-only for the new release's trial, then migrate.
+        self.publish(rollback=None)
+        self.control(blob="ok", image="ok", backup="pgbackrest", migrate="ok", b="ok")
+        self.request()
+        self.assertEqual(self.run_agent(), 0)
+        calls = self.calls().splitlines()
+        def at(text):
+            return next(i for i, line in enumerate(calls) if text in line)
+        self.assertLess(at(f"pull -q {REF_B}"), at("systemctl stop polynovea"))
+        self.assertLess(at("systemctl stop polynovea"), at("run -d --name polynovea-upgrade-db"))
+        self.assertLess(at("run -d --name polynovea-upgrade-db"), at("system backup"))
+        self.assertIn("exec -w /app polynovea-upgrade-db", calls[at("system backup")])
+        self.assertLess(at("system backup"), at("system checkpoint"))
+        self.assertLess(at("system checkpoint"), at("system read-only on"))
+        self.assertLess(at("system read-only on"), at("system migrate"))
+        self.assertLess(at("system migrate"), at("local-db.sh stop"))
+        self.assertLess(at("local-db.sh stop"), at("systemctl restart polynovea"))
+        # Changes resume only after the new release passed its health check.
+        self.assertLess(at("systemctl restart polynovea"), at("system read-only off"))
+        self.assertEqual(self.status_json()["status"], "succeeded")
 
     def test_managed_database_without_compatible_migrations_needs_a_manual_restore(self):
         self.publish(rollback="restore")
@@ -405,6 +440,156 @@ class AgentTest(unittest.TestCase):
         self.request()
         self.assertEqual(self.run_agent(), 0)
         self.assertIn(("wait", "skipped"), [(s["step"], s["outcome"]) for s in self.status_json()["steps"]])
+
+    # ── (3) the downgrade floor comes from root-side sources only ───────────────────────────────
+    def test_a_forged_health_response_cannot_lower_the_floor(self):
+        self.write("health.json", json.dumps({"state": "running", "release": "0.0.1+forged"}))
+        self.publish(rollback="compatible", release_id="0.3.9+ccccccc", version="0.3.9")
+        self.request('{"releaseId":"0.3.9+ccccccc"}')
+        self.assertEqual(self.run_agent(), 1)
+        self.assertIn("not newer than the running release 0.4.0+aaaaaaa", json.dumps(self.status_json()))
+        self.assertNotIn("pull", self.calls())
+
+    def test_an_unknown_running_release_is_refused(self):
+        self.control(blob="ok", image="ok", backup="pgbackrest", migrate="ok", b="ok", label="none")
+        self.request()
+        self.assertEqual(self.run_agent(), 1)
+        self.assertIn("cannot be established", json.dumps(self.status_json()))
+        self.assertNotIn("pull", self.calls())
+
+    def test_the_floor_falls_back_to_image_env(self):
+        self.control(blob="ok", image="ok", backup="pgbackrest", migrate="ok", b="ok", label="none")
+        self.write("etc/image.env", "POLYNOVEA_RELEASE_ID=0.4.0+aaaaaaa\n")
+        self.request()
+        self.assertEqual(self.run_agent(), 0)
+        self.assertEqual(self.status_json()["fromRelease"], RELEASE_A)
+
+    # ── (7) semantic-version pre-release order ───────────────────────────────────────────────────
+    def test_pre_releases_compare_by_semver_rules(self):
+        key = agent.version_key
+        self.assertGreater(key("1.0.0-rc.10"), key("1.0.0-rc.9"))
+        self.assertGreater(key("1.0.0"), key("1.0.0-rc.10"))
+        self.assertGreater(key("1.0.0-rc.1"), key("1.0.0-beta.11"))
+        self.assertGreater(key("1.0.0-alpha.beta"), key("1.0.0-alpha.1"))
+        self.assertGreater(key("1.0.0-alpha.1"), key("1.0.0-alpha"))
+
+    # ── (8) repeat failures need an operator ─────────────────────────────────────────────────────
+    def test_a_release_that_failed_three_times_needs_a_reset(self):
+        self.control(blob="ok", image="ok", backup="pgbackrest", migrate="fail", b="ok")
+        for attempt in range(3):
+            self.request(json.dumps({"releaseId": RELEASE_B, "n": attempt}))
+            self.assertEqual(self.run_agent(), 1)
+        self.request(json.dumps({"releaseId": RELEASE_B, "n": 9}))
+        self.assertEqual(self.run_agent(), 1)
+        self.assertIn("failed 3 times", json.dumps(self.status_json()))
+        self.assertEqual(agent.main(["--reset-failures"]), 0)
+        self.control(blob="ok", image="ok", backup="pgbackrest", migrate="ok", b="ok")
+        self.request(json.dumps({"releaseId": RELEASE_B, "n": 10}))
+        self.assertEqual(self.run_agent(), 0)
+
+    def test_an_old_restore_test_folder_does_not_delay_an_upgrade(self):
+        folder = os.path.join(self.root, "restore-test", "0f0e0d0c-0b0a-4909-8807-060504030201")
+        os.makedirs(folder)
+        old = time.time() - 3 * 3600
+        os.utime(folder, (old, old))
+        self.request()
+        self.assertEqual(self.run_agent(), 0)
+        self.assertNotIn("wait", [s["step"] for s in self.status_json()["steps"]])
+
+    # ── (2) every failure ends in a final status ─────────────────────────────────────────────────
+    def test_an_unexpected_error_after_the_switch_still_switches_back(self):
+        real = agent.wait_for_release
+        calls = {"n": 0}
+
+        def flaky(config, release_id, deadline):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return real(config, release_id, deadline)
+
+        agent.wait_for_release = flaky
+        try:
+            self.request()
+            self.assertEqual(self.run_agent(), 1)
+        finally:
+            agent.wait_for_release = real
+        status = self.status_json()
+        self.assertEqual(status["status"], "rolled_back")
+        self.assertIn(("agent", "failed"), [(s["step"], s["outcome"]) for s in status["steps"]])
+        self.assertEqual(self.ref(), REF_A)
+        self.assertNotIn("inFlight", json.loads(read(os.path.join(self.status, "state.json"))))
+
+    def test_an_unexpected_error_before_any_change_fails_cleanly(self):
+        real = agent.fetch_and_verify_release
+
+        def broken(*args):
+            raise KeyError("x")
+
+        agent.fetch_and_verify_release = broken
+        try:
+            self.request()
+            self.assertEqual(self.run_agent(), 1)
+        finally:
+            agent.fetch_and_verify_release = real
+        self.assertEqual(self.status_json()["status"], "failed")
+        self.assertEqual(self.ref(), REF_A)
+        self.assertNotIn("restart", self.calls())
+
+    def _interrupted(self, pin, inflight):
+        os.makedirs(self.status, exist_ok=True)
+        os.chmod(self.status, 0o755)
+        self.write("etc/polynovea.env", f"POLYNOVEA_IMAGE_REF={pin}\n")
+        self.write("status/status.json", json.dumps({"schema": 1, "releaseId": RELEASE_B, "fromRelease": RELEASE_A, "status": "running",
+                                                     "startedAt": "2026-11-24T00:00:00Z", "steps": [{"step": "start", "outcome": "started", "at": "t"}]}))
+        self.write("status/state.json", json.dumps({"inFlight": inflight}))
+
+    def test_a_reboot_mid_switch_puts_the_previous_release_back(self):
+        # The agent was killed after pinning B and before B passed its health check (a reboot).
+        self._interrupted(REF_B, {"release": RELEASE_B, "previousRef": REF_A, "newRef": REF_B, "fromRelease": RELEASE_A,
+                                  "rollback": "compatible", "phase": "started"})
+        self.assertEqual(agent.main(["--recover"]), 0)  # at boot, before polynovea.service
+        status = self.status_json()
+        self.assertEqual(status["status"], "rolled_back")
+        self.assertIn(("resume", "started"), [(s["step"], s["outcome"]) for s in status["steps"]])
+        self.assertEqual(self.ref(), REF_A)
+        self.assertNotIn("restart", self.calls())  # polynovea.service starts it after this unit
+        state = json.loads(read(os.path.join(self.status, "state.json")))
+        self.assertNotIn("inFlight", state)
+        self.assertEqual(state["failures"][RELEASE_B], 1)
+
+    def test_a_reboot_after_migrations_in_restore_mode_restores_the_database(self):
+        self._interrupted(REF_A, {"release": RELEASE_B, "previousRef": REF_A, "newRef": REF_B, "fromRelease": RELEASE_A,
+                                  "rollback": "restore", "phase": "migrated", "backupKind": "pgbackrest",
+                                  "backupLabel": "20261124-010101F", "lsn": "0/3000060"})
+        self.request()  # a new request arrives; the interrupted upgrade is finished first
+        self.run_agent()
+        self.assertIn("system restore-backup --set 20261124-010101F --lsn 0/3000060", self.calls())
+
+    def test_nothing_to_recover_is_a_no_op(self):
+        self.assertEqual(agent.main(["--recover"]), 0)
+        self.assertEqual(self.calls(), "")
+
+    # ── (5) compose runtime ──────────────────────────────────────────────────────────────────────
+    def test_compose_runtime_picks_up_a_request_and_reports_status(self):
+        compose = os.path.join(self.root, "compose")
+        os.makedirs(compose)
+        self.write("compose/.env", f"POLYNOVEA_DOMAIN=cms.example.com\nPOLYNOVEA_IMAGE={REF_A}\n")
+        extra = {"POLYNOVEA_UPGRADE_RUNTIME": "compose", "POLYNOVEA_UPGRADE_COMPOSE_DIR": compose,
+                 "POLYNOVEA_UPGRADE_CONTAINER": "polynovea-cms-1", "POLYNOVEA_UPGRADE_SERVICE": "cms",
+                 "POLYNOVEA_UPGRADE_COMPOSE_PROFILE": "proxy"}
+        os.environ.update(extra)
+        try:
+            self.request()
+            self.assertEqual(self.run_agent(), 0)
+        finally:
+            for key in extra:
+                os.environ.pop(key, None)
+        self.assertEqual(self.status_json()["status"], "succeeded")
+        self.assertIn(f"POLYNOVEA_IMAGE={REF_B}", read(os.path.join(compose, ".env")))
+        self.assertIn("POLYNOVEA_DOMAIN=cms.example.com", read(os.path.join(compose, ".env")))
+        calls = self.calls()
+        self.assertIn(f"compose --project-directory {compose} -p polynovea --profile proxy up -d --no-deps --force-recreate cms", calls)
+        self.assertIn("--volumes-from polynovea-cms-1", calls)
 
     def test_https_only_channel(self):
         self.assertFalse(agent._channel_url_ok("http://releases.example.com/x", False))

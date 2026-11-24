@@ -8,8 +8,12 @@
 //                                           {"kind":"pg_dump","file":...}
 //   system migrate                          pending migrations as polynovea_owner (same runner and lock as
 //                                           the wizard) → {"applied":n}
-//   system restore-backup --set <label>     bundled DB, while the CMS is stopped: restore that backup over
-//                                           the data folder (delta) → {"restored":label}
+//   system restore-backup --set <label> [--lsn <lsn>]
+//                                           bundled DB, while the CMS is stopped: restore that backup over
+//                                           the data folder (delta), to the WAL position when given
+//   system mode                             {"local":true|false}: bundled database or not
+//   system checkpoint                       bundled DB: the current WAL position, archived → {"lsn":...}
+//   system read-only on|off                 bundled DB: the app login only reads (an upgrade's trial)
 //   system restore-test --reason <reason>   the restore test (the worker starts it; restoreTestCommand.mjs)
 
 import { promises as fs } from "node:fs";
@@ -19,6 +23,7 @@ import { dataRoot, freeSpace, inServerImage, installDatabase, pgbackrest, restor
 import { listMigrationFiles, runMigrations } from "../run-migrations.mjs";
 
 const LABEL = /^[0-9A-Za-z_-]{1,64}$/;
+const LSN = /^[0-9A-F]{1,8}\/[0-9A-F]{1,8}$/;
 const KEEP_DUMPS = 2;
 
 function fail(message) {
@@ -98,10 +103,46 @@ async function restoreBackup(database, args) {
   } catch {
     // stopped, as required
   }
+  // --lsn: the WAL position recorded right before the migrations (system checkpoint): every change committed
+  // until then comes back, not only what the backup itself holds.
+  const lsnIndex = args.indexOf("--lsn");
+  const lsn = lsnIndex >= 0 ? args[lsnIndex + 1] : null;
+  if (lsnIndex >= 0 && (!lsn || !LSN.test(lsn))) return fail("--lsn needs a WAL position such as 0/3000060");
+  const target = lsn ? ["--type=lsn", `--target=${lsn}`] : ["--type=immediate"];
   // The spool folder: /var/spool/pgbackrest belongs to root in the image; a restore only needs an empty one.
-  const run = await pgbackrest([`--set=${label}`, "--delta", "--type=immediate", "--target-action=promote", "--spool-path=/tmp/pgbackrest-spool", `--recovery-option=restore_command=${restoreCommand()}`, "restore"]);
+  const run = await pgbackrest([`--set=${label}`, "--delta", ...target, "--target-action=promote", "--spool-path=/tmp/pgbackrest-spool", `--recovery-option=restore_command=${restoreCommand()}`, "restore"]);
   if (run.code !== 0) return fail(`pgbackrest restore exited ${run.code}: ${scrub(run.stderr || run.stdout)}`);
-  console.log(JSON.stringify({ restored: label }));
+  console.log(JSON.stringify({ restored: label, lsn }));
+  return 0;
+}
+
+// The bundled database's administrator, over its socket (peer authentication for the image's user).
+const SUPERUSER = { host: "/var/run/postgresql", port: 5432, user: "postgres", database: "polynovea", application_name: "polynovea-upgrade" };
+
+/** The current WAL position, then archived (pgbackrest check switches WAL and waits for the archive). */
+async function checkpoint(database) {
+  if (!database.local || !inServerImage()) return fail("checkpoint is for the bundled database only");
+  const lsn = await withClient(SUPERUSER, async (client) => String((await client.query("select pg_catalog.pg_current_wal_lsn()::text as lsn")).rows[0].lsn));
+  if (!LSN.test(lsn)) return fail("the database reported an invalid WAL position");
+  const check = await pgbackrest(["check"]);
+  if (check.code !== 0) return fail(`pgbackrest check exited ${check.code}: ${scrub(check.stderr || check.stdout)}`);
+  console.log(JSON.stringify({ lsn }));
+  return 0;
+}
+
+/**
+ * read-only on|off: the app's database login only reads (default_transaction_read_only), so nothing can
+ * commit while an upgrade's new release is on trial; its open sessions are ended so the change applies.
+ */
+async function readOnly(database, args) {
+  const mode = args[0];
+  if (mode !== "on" && mode !== "off") return fail("usage: system read-only on|off");
+  if (!database.local || !inServerImage()) return fail("read-only is for the bundled database only");
+  await withClient(SUPERUSER, async (client) => {
+    await client.query(mode === "on" ? "alter role polynovea_app set default_transaction_read_only = on" : "alter role polynovea_app reset default_transaction_read_only");
+    await client.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where usename = 'polynovea_app' and pid <> pg_catalog.pg_backend_pid()");
+  });
+  console.log(JSON.stringify({ readOnly: mode === "on" }));
   return 0;
 }
 
@@ -116,8 +157,14 @@ export async function main(action, args) {
     if (action === "backup") return await backup(database);
     if (action === "migrate") return await migrate(database);
     if (action === "restore-backup") return await restoreBackup(database, args);
+    if (action === "mode") {
+      console.log(JSON.stringify({ local: database.local === true }));
+      return 0;
+    }
+    if (action === "checkpoint") return await checkpoint(database);
+    if (action === "read-only") return await readOnly(database, args);
   } catch (error) {
     return fail(scrub(error instanceof Error ? error.message : String(error)));
   }
-  return fail("usage: polynovea-cms system backup|migrate|restore-backup --set <label>|restore-test --reason <reason>");
+  return fail("usage: polynovea-cms system backup|migrate|mode|checkpoint|read-only on|off|restore-backup --set <label> [--lsn <lsn>]|restore-test --reason <reason>");
 }

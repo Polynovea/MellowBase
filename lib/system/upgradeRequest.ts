@@ -24,7 +24,7 @@ type Env = Record<string, string | undefined>;
 
 export const DEFAULT_STATUS_DIR = "/var/lib/polynovea-upgrade";
 const MAX_STATUS_BYTES = 1024 * 1024;
-const STEP_NAMES = new Set(["request", "verify", "wait", "backup", "pull", "migrate", "start", "health", "switch", "rollback", "restore"]);
+const STEP_NAMES = new Set(["request", "verify", "wait", "maintenance", "checkpoint", "resume", "agent", "backup", "pull", "migrate", "start", "health", "switch", "rollback", "restore"]);
 const OUTCOMES = new Set(["started", "ok", "failed", "skipped"]);
 const AGENT_STATUSES = new Set(["running", "succeeded", "rolled_back", "restore_needed", "failed"]);
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -142,6 +142,8 @@ export function parseAgentStatus(text: string): AgentStatus | null {
  * System page polls it; the Doctor calls it): each step is recorded once. Returns the status recorded.
  */
 export const PICKUP_TIMEOUT_MS = 15 * 60_000;
+/** Longer than the agent's own limit (polynovea-upgrade.service TimeoutStartSec=3h): a row still "running" after this is closed. */
+export const RUNNING_TIMEOUT_MS = 4 * 3_600_000;
 
 export async function ingestAgentStatus(env: Env = process.env, now: () => number = Date.now): Promise<UpgradeStatus | null> {
   const open = await openUpgrade();
@@ -162,6 +164,13 @@ export async function ingestAgentStatus(env: Env = process.env, now: () => numbe
   const status = text === null ? null : parseAgentStatus(text);
   // The status file is for this request only if it names its release and started after the request.
   if (!status || status.releaseId !== open.to_release || Date.parse(status.startedAt) < Date.parse(open.requested_at) - 60_000) {
+    // The agent stopped reporting (killed, or the server went away for good): close it so it cannot block
+    // every later upgrade. If the agent comes back it finishes the upgrade itself (it resumes at start).
+    if (open.status === "running" && now() - Date.parse(open.requested_at) > RUNNING_TIMEOUT_MS) {
+      const at = new Date(now()).toISOString();
+      await recordUpgradeProgress({ requestId: open.request_id, status: "failed", steps: [...open.steps_json, { step: "agent", outcome: "failed", at, detail: "The upgrade agent stopped reporting for 4 hours." }], toDigest: null });
+      return "failed";
+    }
     // The agent never picked it up (refused the file, or is not installed): close it so it cannot block.
     if (open.status === "requested" && now() - Date.parse(open.requested_at) > PICKUP_TIMEOUT_MS) {
       const at = new Date(now()).toISOString();

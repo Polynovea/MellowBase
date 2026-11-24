@@ -21,7 +21,7 @@ vi.mock("./systemData", () => ({
   }),
 }));
 
-const { startUpgrade, ingestAgentStatus, parseAgentStatus, PICKUP_TIMEOUT_MS } = await import("./upgradeRequest");
+const { startUpgrade, ingestAgentStatus, parseAgentStatus, PICKUP_TIMEOUT_MS, RUNNING_TIMEOUT_MS } = await import("./upgradeRequest");
 
 let root: string;
 let env: Record<string, string>;
@@ -113,7 +113,15 @@ describe("agent status", () => {
     expect(data.recorded[0]).toMatchObject({ status: "failed", steps: [{ step: "request", outcome: "failed" }] });
   });
 
-  it("does nothing without an open upgrade", async () => {
+  it("closes a row the agent left running for 4 hours, keeping its steps", async () => {
+    data.open = { request_id: "11111111-1111-4111-8111-111111111111", to_release: "0.4.1+bbbbbbb", requested_at: "2026-11-24T00:00:00.000Z", status: "running", steps_json: [{ step: "start", outcome: "started", at: "t" }] };
+    expect(await ingestAgentStatus(env, () => Date.parse("2026-11-24T00:00:00Z") + RUNNING_TIMEOUT_MS - 1)).toBe("running");
+    expect(data.recorded).toEqual([]);
+    expect(await ingestAgentStatus(env, () => Date.parse("2026-11-24T00:00:00Z") + RUNNING_TIMEOUT_MS + 1)).toBe("failed");
+    expect(data.recorded[0]).toMatchObject({ status: "failed", steps: [{ step: "start" }, { step: "agent", outcome: "failed" }] });
+  });
+
+    it("does nothing without an open upgrade", async () => {
     expect(await ingestAgentStatus(env)).toBeNull();
   });
 });
