@@ -13,6 +13,7 @@ import { createModel } from "@/lib/schema/modelService";
 import { uniqueKey } from "@/lib/schema/engine/testing";
 import { createDeveloperApiToken } from "@/lib/developer/apiTokenService";
 import type { FieldDefinition } from "@/lib/schema/fields/types";
+import { PRIVATE_HEADERS } from "@/lib/developer/items/http";
 import { GET } from "@/app/api/v1/types.ts/route";
 
 const f = (key: string, type: FieldDefinition["type"], extra: Partial<FieldDefinition> = {}): FieldDefinition =>
@@ -63,7 +64,7 @@ describeWithDatabase("GET /api/v1/types.ts [postgres]", (backend) => {
     expect(res.status).toBe(200);
     const headers = Object.fromEntries(["content-type", "cache-control", "vary", "x-content-type-options"].map((name) => [name, res.headers.get(name)]));
     report("headers", headers);
-    expect(headers).toEqual({ "content-type": "text/plain; charset=utf-8", "cache-control": "private, no-store", vary: "Authorization, x-polynovea-preview", "x-content-type-options": "nosniff" });
+    expect(headers).toEqual({ "content-type": "text/plain; charset=utf-8", "cache-control": "private, no-store", vary: PRIVATE_HEADERS.vary, "x-content-type-options": "nosniff" });
     const hash = res.headers.get("x-polynovea-schema-hash");
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     const body = await res.text();

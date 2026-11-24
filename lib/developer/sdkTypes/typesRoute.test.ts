@@ -3,6 +3,7 @@ import type { DeveloperApiContext } from "@/lib/developer/apiAuth";
 import { buildItemsOpenApi, type OpenApiModelInput } from "@/lib/developer/items/openapi";
 import { ARTICLE_SCHEMA, FIXTURE_HASHES } from "@/lib/developer/items/testing/fixtureModels";
 import { emitItemsTypes } from "@/lib/developer/sdkTypes/emit";
+import { PRIVATE_HEADERS } from "@/lib/developer/items/http";
 import { createTypesHandler } from "@/lib/developer/sdkTypes/typesRoute";
 
 const WORKSPACE_HASH = "f".repeat(64);
@@ -23,7 +24,7 @@ describe("GET /api/v1/types.ts", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     expect(res.headers.get("cache-control")).toBe("private, no-store");
-    expect(res.headers.get("vary")).toBe("Authorization, x-polynovea-preview");
+    expect(res.headers.get("vary")).toBe(PRIVATE_HEADERS.vary);
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("x-polynovea-schema-hash")).toBe(WORKSPACE_HASH);
     const body = await res.text();
