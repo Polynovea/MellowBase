@@ -1,0 +1,2 @@
+# Run on Linux (and in Git Bash): keep Unix line endings even on a Windows checkout.
+* text=auto eol=lf

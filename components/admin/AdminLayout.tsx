@@ -33,6 +33,7 @@ import {
   Sparkles,
   Tags,
   Wrench,
+  HeartPulse,
   X,
 } from "lucide-react";
 import { logout } from "@/lib/admin/authCheck";
@@ -66,6 +67,7 @@ const navItems = [
   { href: "/admin/environments", label: "Environments", icon: Server, module: "cms.environments" as const, group: "platform" },
   { href: "/admin/connections", label: "Connections", icon: Plug, module: "cms.connections" as const, group: "platform" },
   { href: "/admin/infrastructure", label: "Setup & Infrastructure", icon: Wrench, module: "cms.infrastructure" as const, group: "platform" },
+  { href: "/admin/system", label: "System", icon: HeartPulse, module: "cms.infrastructure" as const, group: "platform" },
   { href: "/admin/access", label: "Access", icon: Shield, module: "cms.access" as const, group: "platform" },
 ];
 

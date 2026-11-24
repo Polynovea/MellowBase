@@ -1,0 +1,10 @@
+[Unit]
+Description=Polynovea CMS upgrade requests (written by the System page)
+
+[Path]
+# The CMS writes this file; the agent only reads it (upgrade-agent.py explains the file rules).
+PathChanged=/var/lib/polynovea/upgrade-requests/request.json
+Unit=polynovea-upgrade.service
+
+[Install]
+WantedBy=multi-user.target

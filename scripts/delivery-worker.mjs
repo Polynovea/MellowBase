@@ -8,7 +8,7 @@
  * Unsupported job kinds remain queued rather than being falsely consumed.
  */
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import pg from "pg";
 import { guardedFetch } from "../lib/infrastructure/guardedNetwork.mjs";
@@ -18,6 +18,12 @@ import { postgresConnectionConfig } from "../lib/infrastructure/postgresTls.mjs"
 // Stored secrets: the same code as the app (master key ring, pv2.<kid>. values; legacy
 // CMS_CONFIG_ENCRYPTION_KEY values still read). Reads CMS_MASTER_KEY or <POLYNOVEA_CONFIG_DIR>/master.key.
 import { decryptConfig } from "../lib/setup/configCipher.mjs";
+import { databaseUrlFromConfig, readInstallConfigSync } from "../lib/setup/configStore.mjs";
+import { tlsConnectionFor } from "../lib/setup/installConnection.mjs";
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { restoreTestDue } from "../lib/system/restoreTest.mjs";
+import { dataRoot, inServerImage } from "../lib/system/serverHost.mjs";
 
 if (existsSync(".env.local")) {
   for (const raw of readFileSync(".env.local", "utf8").split("\n")) {
@@ -26,8 +32,20 @@ if (existsSync(".env.local")) {
   }
 }
 
+// Where the worker connects, as polynovea_app, in the same order as the app (lib/setup/mode.ts):
+// the setup wizard's config.enc (with exactly the wizard's TLS roots), then DATABASE_URL (development,
+// installs made before the wizard). Exit code 3 means "not set up yet", so the server image's
+// entrypoint waits and tries again instead of crash-looping.
 const DATABASE_URL = process.env.Database_URL || process.env.DATABASE_URL || process.env.database_url;
-if (!DATABASE_URL) throw new Error("DATABASE_URL (or Database_URL) is required");
+const NOT_CONFIGURED_EXIT = 3;
+function workerConnection() {
+  const config = readInstallConfigSync();
+  if (config) return tlsConnectionFor(databaseUrlFromConfig(config, "app"), config.database);
+  if (DATABASE_URL) return postgresConnectionConfig(DATABASE_URL);
+  console.error("[delivery-worker] No database yet: finish the setup wizard, or set DATABASE_URL.");
+  process.exit(NOT_CONFIGURED_EXIT);
+}
+const connectionSettings = workerConnection();
 
 const workerId = process.env.DELIVERY_WORKER_ID || `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 const pollMs = Math.max(250, Number(process.env.DELIVERY_WORKER_POLL_MS || 1500));
@@ -50,7 +68,15 @@ const SUPPORTED_QUEUES = ((queueArg ? queueArg.slice("--queues=".length) : null)
 let stopping = false;
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => { stopping = true; });
+  process.on(signal, () => {
+    stopping = true;
+    // A running restore test stops too (it records itself as interrupted and cleans up).
+    try {
+      restoreTestChild?.kill("SIGTERM");
+    } catch {
+      // a signal before the restore test scheduler is set up: nothing is running yet
+    }
+  });
 }
 
 async function resolveWorkerConnectionCredentials(client, workspaceId, connectionId) {
@@ -505,17 +531,71 @@ async function dispatchAnalyticsSync(client,job){
   }
 }
 
-const client = new pg.Client(postgresConnectionConfig(DATABASE_URL));
+const client = new pg.Client(connectionSettings);
 await client.connect();
+
+// The System Doctor's worker check reads this (migration 0077). Before 0077 is applied the column is
+// missing; the worker keeps running and says so once.
+let lastHeartbeat = 0;
+let heartbeatWarned = false;
+async function heartbeat() {
+  if (Date.now() - lastHeartbeat < 30_000) return;
+  lastHeartbeat = Date.now();
+  await client.query("update cms_runtime_state set worker_heartbeat_at = now() where singleton = true").catch((error) => {
+    if (!heartbeatWarned) console.error("[delivery-worker] heartbeat not recorded", error.code ?? error.message);
+    heartbeatWarned = true;
+  });
+}
+
+// The monthly restore test of the bundled database's backups (lib/system/restoreTest.mjs), and one
+// right after setup's first backup (the wizard leaves <data root>/restore-test-due). It runs as a
+// separate low-priority process so deliveries keep flowing; its result goes to system_restore_tests.
+let restoreTestChild = null;
+const workerStartedAt = new Date().toISOString();
+// This worker is the only one that runs restore tests on this server, so one still "running" when it
+// starts was cut off by a restart (its leftovers are removed by the next test).
+if (inServerImage()) {
+  await client.query("select public.polynovea_system_restore_test_interrupted($1)", [workerStartedAt]).catch((error) => console.error("[delivery-worker] interrupted restore tests not closed", error.code ?? error.message));
+}
+async function maybeStartRestoreTest() {
+  if (restoreTestChild || !inServerImage()) return;
+  try {
+    const { rows: [install] } = await client.query("select database_mode from public.installation limit 1");
+    if (install?.database_mode !== "local") return;
+    const { rows: [state] } = await client.query(
+      // A test cut off by a restart does not count as today's attempt: it runs again.
+      "select max(finished_at) filter (where status = 'passed') as last_passed, max(started_at) filter (where coalesce(error_code, '') <> 'INTERRUPTED') as last_attempt from public.system_restore_tests",
+    );
+    const marker = path.join(dataRoot(), "restore-test-due");
+    const reason = restoreTestDue({
+      lastPassedAt: state?.last_passed ? new Date(state.last_passed).toISOString() : null,
+      lastAttemptAt: state?.last_attempt ? new Date(state.last_attempt).toISOString() : null,
+      dueMarker: existsSync(marker),
+    });
+    if (!reason) return;
+    const cli = path.join(process.cwd(), "scripts", "polynovea-cms.mjs");
+    const lowPriority = existsSync("/usr/bin/ionice") ? ["/usr/bin/ionice", "-c", "3", "/usr/bin/nice", "-n", "19"] : ["/usr/bin/nice", "-n", "19"];
+    console.log(`[delivery-worker] starting a restore test (${reason})`);
+    restoreTestChild = spawn(lowPriority[0], [...lowPriority.slice(1), process.execPath, cli, "system", "restore-test", "--reason", reason], { stdio: "inherit", env: process.env });
+    restoreTestChild.on("exit", (code) => {
+      restoreTestChild = null;
+      if (code === 0 && reason === "first_backup") rmSync(marker, { force: true });
+    });
+  } catch (error) {
+    console.error("[delivery-worker] restore test scheduling skipped", error.code ?? error.message);
+  }
+}
 console.log(`[delivery-worker] started ${workerId}; adapters=${SUPPORTED_KINDS.join(",")}; queues=${SUPPORTED_QUEUES.join(",")}`);
 let lastMaintenanceSeed = 0;
 
 try {
   while (!stopping) {
+    await heartbeat();
     if (maintenanceEnabled && Date.now() - lastMaintenanceSeed > 3_600_000) {
       await client.query("select cms_age_analytics_freshness()").catch((error) => console.error("[delivery-worker] freshness aging failed", error.message));
       await client.query("select cms_enqueue_daily_maintenance_jobs()").catch((error) => console.error("[delivery-worker] maintenance enqueue failed", error.message));
       lastMaintenanceSeed = Date.now();
+      await maybeStartRestoreTest();
     }
     const jobs = [];
     for (const queueName of SUPPORTED_QUEUES) {

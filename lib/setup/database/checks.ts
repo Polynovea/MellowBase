@@ -71,9 +71,11 @@ export type TcpProbe = (address: string, port: number, timeoutMs: number) => Pro
 export type TlsProbe = (endpoint: Extract<DatabaseEndpoint, { kind: "remote" }>, timeoutMs: number) => Promise<void>;
 
 export class ProbeError extends Error {
-  constructor(readonly code: string) {
+  readonly code: string;
+  constructor(code: string) {
     super(code);
     this.name = "ProbeError";
+    this.code = code;
   }
 }
 

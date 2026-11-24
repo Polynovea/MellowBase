@@ -1,0 +1,45 @@
+# Opt-in: in-app upgrades on a compose host that runs the Polynovea upgrade agent
+# (release/packer/files/upgrade-agent.py; docs/self-hosting/upgrades.md). Use it with compose.yaml:
+#
+#   docker compose -f compose.yaml -f compose.upgrades.yaml --profile proxy up -d
+#
+# The CMS writes upgrade requests and runs restore tests in folders the agent on this host must see, and
+# reads the agent's status and the release key. Each is a host folder or file that must exist BEFORE `up`
+# (create_host_path: false): nothing is created root-owned by accident, and an install without these
+# simply keeps using compose.yaml alone. Create them once, as root:
+#
+#   install -d -o 10001 -g 10001 -m 0700 /var/lib/polynovea-host/upgrade-requests /var/lib/polynovea-host/restore-test
+#   install -d -o root -g root -m 0755 /var/lib/polynovea-upgrade
+#   install -m 0644 release.pub /etc/polynovea/release.pub
+#
+# The agent's /etc/polynovea/upgrade.env then names the same paths: RUNTIME=compose, COMPOSE_DIR, CONTAINER
+# (e.g. polynovea-cms-1), SERVICE=cms, COMPOSE_PROFILE=proxy, REQUEST_DIR=/var/lib/polynovea-host/upgrade-requests,
+# RESTORE_TEST_DIR=/var/lib/polynovea-host/restore-test.
+
+services:
+  cms:
+    volumes: &upgrade-mounts
+      - type: bind
+        source: ${POLYNOVEA_UPGRADE_REQUEST_DIR:-/var/lib/polynovea-host/upgrade-requests}
+        target: /var/lib/polynovea/upgrade-requests
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${POLYNOVEA_RESTORE_TEST_DIR:-/var/lib/polynovea-host/restore-test}
+        target: /var/lib/polynovea/restore-test
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${POLYNOVEA_UPGRADE_STATUS_DIR:-/var/lib/polynovea-upgrade}
+        target: /var/lib/polynovea-upgrade
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${POLYNOVEA_RELEASE_PUBKEY:-/etc/polynovea/release.pub}
+        target: /etc/polynovea/release.pub
+        read_only: true
+        bind:
+          create_host_path: false
+  cms-tunnel:
+    volumes: *upgrade-mounts

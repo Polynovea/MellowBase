@@ -1,0 +1,14 @@
+[Unit]
+Description=Polynovea CMS: prepare the data disk (/var/lib/polynovea)
+DefaultDependencies=no
+After=systemd-udev-settle.service local-fs-pre.target
+Before=var-lib-polynovea.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/polynovea/data-disk.sh
+TimeoutStartSec=330
+
+[Install]
+WantedBy=multi-user.target

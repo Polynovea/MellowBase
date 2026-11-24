@@ -164,9 +164,13 @@ export class AzureBlobExistsError extends Error {
  * error that keeps only the HTTP status; the original is logged under a reference.
  */
 export class AzureStorageError extends Error {
-  constructor(readonly statusCode: number | undefined, readonly reference: string) {
+  readonly statusCode: number | undefined;
+  readonly reference: string;
+  constructor(statusCode: number | undefined, reference: string) {
     super(`Azure Blob Storage request failed${statusCode ? ` (HTTP ${statusCode})` : ""} (ref ${reference})`);
     this.name = "AzureStorageError";
+    this.statusCode = statusCode;
+    this.reference = reference;
   }
 }
 

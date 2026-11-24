@@ -43,7 +43,15 @@ export function isClientSafeError(error: unknown): boolean {
  * The message to put in an API response for a caught error. Internal errors become
  * `${fallback} (ref XXXXXXXX)` and are logged with that reference.
  */
+/** SQLSTATE 25006: the app's login is read-only while an upgrade's new release is on trial. */
+export const UPGRADE_IN_PROGRESS = "An upgrade is in progress, so changes are paused for about two minutes. Try again shortly.";
+
+export function isUpgradeReadOnlyError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as ErrorLike).code === "25006");
+}
+
 export function clientErrorMessage(error: unknown, fallback = "Request failed"): string {
+  if (isUpgradeReadOnlyError(error)) return UPGRADE_IN_PROGRESS;
   if (isClientSafeError(error)) return (error as { message: string }).message;
   const ref = randomUUID().slice(0, 8);
   console.error("[api] %s (ref %s)", fallback, ref, error);

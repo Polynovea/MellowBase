@@ -1,7 +1,12 @@
 import type { NextConfig } from "next";
 
+// The server image (Dockerfile) builds with POLYNOVEA_STANDALONE=1 and runs `node server.js`. Every
+// other build is unchanged, so `next start` (Playwright, certify-all, local runs) keeps working.
+const standalone = process.env.POLYNOVEA_STANDALONE === "1";
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  ...(standalone ? { output: "standalone" as const } : {}),
   serverExternalPackages: [
     "@supabase/supabase-js",
     "@aws-sdk/client-s3",

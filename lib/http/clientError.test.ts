@@ -31,3 +31,13 @@ describe("clientErrorMessage", () => {
     expect(log.mock.calls[0][2]).toBe(message.slice(-9, -1));
   });
 });
+
+describe("upgrade trial (read-only database login)", () => {
+  it("tells the caller an upgrade is in progress instead of a reference-only error", async () => {
+    const { clientErrorMessage, isUpgradeReadOnlyError, UPGRADE_IN_PROGRESS } = await import("./clientError");
+    const error = Object.assign(new Error("cannot execute INSERT in a read-only transaction"), { code: "25006" });
+    expect(isUpgradeReadOnlyError(error)).toBe(true);
+    expect(clientErrorMessage(error, "Could not save")).toBe(UPGRADE_IN_PROGRESS);
+    expect(clientErrorMessage(Object.assign(new Error("x"), { code: "23505" }), "Could not save")).toMatch(/^Could not save \(ref /);
+  });
+});

@@ -1,0 +1,30 @@
+#!/bin/sh
+# Written by the Polynovea OpenTofu module. User data is readable through the metadata service and
+# kept on disk by cloud-init, so it holds no secrets: only the secret's ARN, the bucket, the region,
+# the domain and the image digests. The release package's own files do the rest (vm-bootstrap.sh).
+set -eu
+install -d -m 0755 /etc/polynovea
+cat > /etc/polynovea/polynovea.env <<'SETTINGS'
+# Non-secret values only.
+AWS_REGION=${region}
+%{ if secret_arn != "" ~}
+POLYNOVEA_DB_SECRET_REF=${secret_arn}
+%{ endif ~}
+POLYNOVEA_BACKUP_BUCKET=${bucket}
+%{ if domain != "" ~}
+POLYNOVEA_DOMAIN=${domain}
+%{ endif ~}
+%{ if acme_email != "" ~}
+POLYNOVEA_ACME_EMAIL=${acme_email}
+%{ endif ~}
+%{ if container_image != "" ~}
+POLYNOVEA_IMAGE_REF=${container_image}
+%{ endif ~}
+%{ if caddy_image != "" ~}
+POLYNOVEA_CADDY_IMAGE_REF=${caddy_image}
+%{ endif ~}
+SETTINGS
+chmod 0640 /etc/polynovea/polynovea.env
+cat > /usr/local/sbin/polynovea-bootstrap <<'POLYNOVEA_BOOTSTRAP_END'
+${bootstrap}POLYNOVEA_BOOTSTRAP_END
+systemd-run --unit=polynovea-bootstrap --description="Polynovea first boot" /bin/sh /usr/local/sbin/polynovea-bootstrap aws

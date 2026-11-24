@@ -44,7 +44,10 @@ export class SoftAuthenticator {
   private readonly cosePublicKey: Buffer;
   private signCount = 0;
 
-  constructor(private readonly rpId: string) {
+  private readonly rpId: string;
+
+  constructor(rpId: string) {
+    this.rpId = rpId;
     const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
     this.privateKey = privateKey;
     const jwk = publicKey.export({ format: "jwk" }) as { x: string; y: string };
