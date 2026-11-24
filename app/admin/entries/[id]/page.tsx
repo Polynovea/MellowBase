@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import AdminLayout from "@/components/admin/AdminLayout";
 import EntryForm from "@/components/admin/EntryForm";
@@ -51,6 +51,8 @@ export default function EntryEditorPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const [notice, setNotice] = useState("");
+  const searchParams = useSearchParams();
 
   const load = useCallback(async () => {
     try {
@@ -82,6 +84,13 @@ export default function EntryEditorPage() {
     void load();
   }, [load]);
 
+  // Arriving from "Create draft": say so once, then drop the flag so a reload doesn't repeat it.
+  useEffect(() => {
+    if (searchParams.get("created") !== "1") return;
+    setNotice("Draft created.");
+    router.replace(`/admin/entries/${id}`);
+  }, [searchParams, router, id]);
+
   const draft =
     versions.find(
       (version) => version.id === entry?.current_draft_version_id
@@ -92,6 +101,7 @@ export default function EntryEditorPage() {
     changeSummary: string
   ) => {
     setConflict(false);
+    setNotice("");
     const headers = await getAuthHeaders();
     const res = await fetch(`/api/entries/${id}`, {
       method: "PUT",
@@ -112,12 +122,16 @@ export default function EntryEditorPage() {
       setError(body.error || "Could not save draft");
       return;
     }
+    setError("");
+    const savedNumber: number | undefined = body.data?.version?.version_number;
+    setNotice(savedNumber ? `Draft version ${savedNumber} saved.` : "Draft saved.");
     await load();
   };
 
-  const perform = async (path: string, body?: unknown) => {
+  const perform = async (path: string, body?: unknown, success?: string) => {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(path, {
@@ -129,6 +143,7 @@ export default function EntryEditorPage() {
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || "Action failed");
+      if (success) setNotice(success);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Action failed");
@@ -148,16 +163,17 @@ export default function EntryEditorPage() {
           <div className="flex items-center gap-4">
             <Link
               href="/admin/entries"
+              aria-label="Back to records"
               className="rounded-lg border border-subtle p-2 text-fg-muted hover:text-fg-primary transition-colors"
             >
-              <ArrowLeft size={17} />
+              <ArrowLeft size={17} aria-hidden />
             </Link>
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-action">
-                Content library / {modelName}
+                Content library / {modelName} / {id.slice(0, 8)}
               </p>
               <h1 className="mt-1 text-3xl font-extrabold text-fg-primary">
-                ENTRY {id.slice(0, 8).toUpperCase()}
+                {entryTitle(schema, draft?.data_jsonb)}
               </h1>
             </div>
           </div>
@@ -183,7 +199,7 @@ export default function EntryEditorPage() {
               {capability === "publishable" && (
                 <button
                   disabled={busy}
-                  onClick={() => void perform(`/api/entries/${id}/publish`)}
+                  onClick={() => void perform(`/api/entries/${id}/publish`, undefined, "Published.")}
                   className="inline-flex items-center gap-2 rounded-lg bg-success-muted text-success hover:bg-success-muted transition-colors disabled:opacity-50 cursor-pointer"
                 >
                   <Send size={14} /> Publish draft
@@ -194,8 +210,13 @@ export default function EntryEditorPage() {
         </header>
 
         {error && (
-          <div className="mb-5 rounded-xl border border-danger bg-danger-muted p-4 text-sm text-danger">
+          <div role="alert" className="mb-5 rounded-xl border border-danger bg-danger-muted p-4 text-sm text-danger">
             {error}
+          </div>
+        )}
+        {notice && (
+          <div role="status" className="mb-5 rounded-xl border border-success bg-success-muted p-4 text-sm text-success">
+            {notice}
           </div>
         )}
 
@@ -249,7 +270,7 @@ export default function EntryEditorPage() {
                         onClick={() =>
                           void perform(`/api/entries/${id}/restore`, {
                             versionId: version.id,
-                          })
+                          }, `Version ${version.version_number} restored as the new draft.`)
                         }
                         className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-action hover:underline disabled:opacity-50 cursor-pointer"
                       >
@@ -269,4 +290,15 @@ export default function EntryEditorPage() {
       </div>
     </AdminLayout>
   );
+}
+
+/** The entry's own name for the page heading: its title (or name, or first text field), not its ID. */
+function entryTitle(schema: CanonicalSchema | null, data: Record<string, unknown> | undefined): string {
+  if (!data) return "Entry";
+  const candidates = ["title", "name", "headline", ...(schema?.fields ?? []).filter((field) => field.type === "text").map((field) => field.key)];
+  for (const key of candidates) {
+    const value = data[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "Untitled entry";
 }
