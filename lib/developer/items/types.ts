@@ -30,6 +30,9 @@ export const ITEM_GET_PARAMS = ["expand", "fields", "locale", "variant"] as cons
 
 export type Variant = "published" | "draft";
 
+/** Every channel a field can reach a caller through; all of them ask the same access object. */
+export type Channel = "output" | "filter" | "sort" | "search" | "expand" | "write" | "webhook" | "schedule" | "preview" | "mcp";
+
 // ---------------------------------------------------------------------------------------------------
 // Wire shapes
 
