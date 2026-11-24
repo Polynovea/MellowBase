@@ -566,6 +566,24 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     const rows = await readTableRows(workspaceId, source!, { entryIds: [ids[1]] });
     expect(rows.map((row) => row.data)).toEqual([{ headline: "T1", count: 1 }]);
     report("auto_resync", { entries: ids.length, counts: run.counts, fields: Object.keys(run.fields).length });
+
+    // The sync reads the aliases stored with the table when the stage succeeded; the verification
+    // derives them from the ledger on its own. So a wrong stored alias is caught as a mismatch.
+    const [stored] = await backend.query<{ field_aliases: Record<string, Array<{ name: string; below: number }>> }>(
+      "select field_aliases from content_model_tables where content_model_id = $1", [modelId]);
+    const [headlineColumn] = Object.keys(stored.field_aliases);
+    expect(stored.field_aliases).toEqual({ [headlineColumn]: [{ name: "title", below: changed.data.version.version_number }] });
+    await owner.query("update content_model_tables set field_aliases = '{}'::jsonb where content_model_id = $1", [modelId]);
+    await backfillModel(getDb(), { workspaceId, modelId });
+    const tampered = await verifyModel(getDb(), { workspaceId, modelId });
+    expect(tampered.matched).toBe(false);
+    expect(tampered.mismatches).toEqual(expect.arrayContaining([
+      { kind: "field_checksum", column: headlineColumn, variant: "draft" }, { kind: "field_checksum", column: headlineColumn, variant: "published" }]));
+    expect(await tableSource(workspaceId, modelId)).toBeNull();
+    await owner.query("update content_model_tables set field_aliases = public.polynovea_content_field_aliases(content_model_id, applied_shape) where content_model_id = $1", [modelId]);
+    await backfillModel(getDb(), { workspaceId, modelId });
+    expect(await verifyModel(getDb(), { workspaceId, modelId })).toMatchObject({ matched: true, mismatches: [] });
+    expect(await tableSource(workspaceId, modelId)).not.toBeNull();
   });
 
   it("random sequences of model changes, each applied and reverted, keep the table matching the snapshots", async () => {

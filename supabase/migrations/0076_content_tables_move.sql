@@ -151,6 +151,41 @@ begin
 end;
 $$;
 
+-- The aliases the sync uses, stored with each table when one of its model's schema stages succeeds,
+-- so a save reads one value instead of querying the ledger for every column. The verification does
+-- not use them: it derives the aliases from the ledger again on its own (a separate recursive query),
+-- so a wrong stored alias shows up as a checksum mismatch.
+alter table public.content_model_tables add column if not exists field_aliases jsonb not null default '{}'::jsonb;
+
+comment on column public.content_model_tables.field_aliases is
+  'Per column: the names its field had before, with the schema version each stopped applying at ({"<column>": [{"name", "below"}]}). Written when a schema stage succeeds (trigger on schema_migration_ledger); read by polynovea_content_sync_entries().';
+
+-- Runs in the worker's final stage transaction (the owner), after the engine's bookkeeping wrote the
+-- table's new shape: that stage's renames are then part of the ledger's succeeded history.
+create or replace function public.polynovea_content_store_field_aliases()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  update public.content_model_tables mt
+     set field_aliases = public.polynovea_content_field_aliases(mt.content_model_id, mt.applied_shape)
+   where mt.content_model_id = new.content_model_id;
+  return null;
+end;
+$$;
+
+drop trigger if exists schema_migration_ledger_field_aliases on public.schema_migration_ledger;
+create trigger schema_migration_ledger_field_aliases
+  after update of status on public.schema_migration_ledger
+  for each row
+  when (new.status = 'succeeded' and old.status is distinct from 'succeeded' and new.content_model_id is not null)
+  execute function public.polynovea_content_store_field_aliases();
+
+update public.content_model_tables mt
+   set field_aliases = public.polynovea_content_field_aliases(mt.content_model_id, mt.applied_shape);
+
 create or replace function public.polynovea_content_sync_entries(p_entry_ids uuid[])
 returns jsonb
 language plpgsql
@@ -191,7 +226,7 @@ begin
   select count(*) into v_found from public.content_entries e where e.id = any (v_ids);
 
   for m in
-    select e.content_model_id, t.table_name, t.applied_shape,
+    select e.content_model_id, t.table_name, t.applied_shape, t.field_aliases,
            coalesce(s.read_source = 'table', false) as reads_table,
            e.workspace_id,
            array_agg(e.id order by e.id) as ids
@@ -199,7 +234,7 @@ begin
       left join public.content_model_tables t on t.content_model_id = e.content_model_id and t.workspace_id = e.workspace_id
       left join public.content_model_storage s on s.content_model_id = e.content_model_id
      where e.id = any (v_ids)
-     group by e.content_model_id, e.workspace_id, t.table_name, t.applied_shape, s.read_source
+     group by e.content_model_id, e.workspace_id, t.table_name, t.applied_shape, t.field_aliases, s.read_source
      order by e.content_model_id
   loop
     if m.table_name is null then
@@ -215,7 +250,8 @@ begin
     if exists (select 1 from jsonb_each_text(v_columns) c where c.key !~ '^[a-z][a-z0-9_]{0,62}$' or c.value is null) then
       raise exception using errcode = '22023', message = 'content_table_shape_invalid';
     end if;
-    v_aliases := public.polynovea_content_field_aliases(m.content_model_id, m.applied_shape);
+    -- Old field names for snapshots saved before a rename: stored with the table (no ledger query).
+    v_aliases := coalesce(m.field_aliases, '{}'::jsonb);
 
     v_delete := format('delete from content.%I where _entry_id = any ($1)', m.table_name);
     -- jsonb_populate_record casts each JSON value to its column type the way PostgreSQL casts input;
@@ -421,7 +457,34 @@ begin
       left join public.content_entries e on e.id = r._entry_id
   $sql$, t.table_name) into v_table_counts using p_content_model_id, p_workspace_id;
 
-  v_aliases := public.polynovea_content_field_aliases(p_content_model_id, t.applied_shape);
+  -- The names each column's field had before, derived here from the ledger on its own: a recursive
+  -- query, not the stored field_aliases the sync used, so a wrong stored alias is a mismatch. Walking
+  -- the succeeded renames newest first, each column's key steps back through every rename that
+  -- produced it; "below" is the schema version that rename built toward.
+  with recursive renames as (
+    select row_number() over (order by mv.version_number desc, l.created_at desc, x.n) as ord,
+           x.rn ->> 'from' as old_key, x.rn ->> 'to' as new_key, mv.version_number as below
+      from public.schema_migration_ledger l
+      join public.content_model_versions mv on mv.id = l.target_version_id and mv.content_model_id = l.content_model_id
+      cross join lateral jsonb_array_elements(case when jsonb_typeof(l.renames) = 'array' then l.renames else '[]'::jsonb end)
+        with ordinality as x (rn, n)
+     where l.content_model_id = p_content_model_id and l.stage = 'expand' and l.status = 'succeeded'
+  ), walk (col, key, ord, below, depth) as (
+    select sc.key, sc.value ->> 'field', 0::bigint, null::integer, 0
+      from jsonb_each(coalesce(t.applied_shape -> 'columns', '{}'::jsonb)) sc
+    union all
+    select w.col, nx.old_key, nx.ord, nx.below, w.depth + 1
+      from walk w
+      cross join lateral (
+        select rr.old_key, rr.ord, rr.below from renames rr
+         where rr.ord > w.ord and rr.new_key = w.key and rr.old_key ~ '^[a-z][a-z0-9_]*$'
+         order by rr.ord
+         limit 1) nx
+     where w.depth < 1000
+  )
+  select coalesce(jsonb_object_agg(ag.col, ag.names), '{}'::jsonb) into v_aliases
+    from (select w.col, jsonb_agg(jsonb_build_object('name', w.key, 'below', w.below) order by w.depth) as names
+            from walk w where w.depth > 0 group by w.col) ag;
 
   -- Fields: one pass over each side for all columns.
   for c in
@@ -754,6 +817,7 @@ revoke all on function public.polynovea_content_verify_model(uuid, uuid, uuid, i
 revoke all on function public.polynovea_content_set_read_source(uuid, uuid, text, uuid) from public;
 revoke all on function public.polynovea_content_entries_sync() from public;
 revoke all on function public.polynovea_content_field_aliases(uuid, jsonb) from public;
+revoke all on function public.polynovea_content_store_field_aliases() from public;
 
 select public.polynovea_apply_app_access();
 

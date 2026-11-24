@@ -497,6 +497,7 @@ export interface ContentModelTables {
   applied_version_id: string | null;
   content_model_id: string;
   created_at: Generated<string>;
+  field_aliases: Generated<Json>;
   table_name: string;
   updated_at: Generated<string>;
   workspace_id: string;
