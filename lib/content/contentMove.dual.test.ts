@@ -359,12 +359,14 @@ describeWithDatabase("moving existing content into the model tables", (backend) 
     // Connection B: a verification starts meanwhile and reads the committed content, which still matches.
     const verifying = verifyModel(db, { workspaceId, modelId });
     // It reads without waiting; only recording its run waits for A's row in content_model_storage.
+    // (pg_locks, not pg_stat_activity: other roles' query text is hidden from the owner role.)
     const deadline = Date.now() + 15_000;
     for (;;) {
       const [waiting] = await owner.query<{ n: number }>(
-        "select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and query like '%polynovea_content_verify_model%' and pid <> pg_backend_pid()").then((r) => r.rows);
-      if (waiting.n > 0 || Date.now() > deadline) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+        "select count(*)::int as n from pg_locks where not granted and pid not in (pg_backend_pid(), $1)", [(app as unknown as { processID: number }).processID]).then((r) => r.rows);
+      if (waiting.n > 0) break;
+      if (Date.now() > deadline) throw new Error("the verification never waited for the open save");
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
     await app.query("commit");
     const run = await verifying;
