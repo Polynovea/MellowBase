@@ -164,7 +164,9 @@ docker exec "$PREFIX-tunnel" sh -ec '
     case "$c" in node\ *|*/node\ *) ;; *) continue ;; esac
     if echo "$c" | grep -q "dist/schema-migration-worker.mjs"; then found="$p"; fi
   done
-  if [ -n "$found" ]; then echo "ok    schema worker process runs dist/schema-migration-worker.mjs"; else echo "FAIL  no schema worker process"; exit 1; fi
+  if [ -n "$found" ]; then echo "ok    schema worker process runs dist/schema-migration-worker.mjs (pid ${found#/proc/})"; else echo "FAIL  no schema worker process"; exit 1; fi
+  # The worker process'"'"'s own environment (its pid above), never this shell'"'"'s; unreadable is a failure, not a pass.
+  if [ ! -r "$found/environ" ] || ! tr "\0" "\n" < "$found/environ" | grep -q "^PATH="; then echo "FAIL  cannot read the schema worker environment (${found}/environ)"; exit 1; fi
   if tr "\0" "\n" < "$found/environ" | grep -qiE "^(POLYNOVEA_MIGRATION_DATABASE_URL|DATABASE_URL)=.*polynovea_owner|postgres(ql)?://polynovea_owner"; then echo "FAIL  the owner credential is in the schema worker environment"; exit 1; else echo "ok    no owner credential in the schema worker environment"; fi
 '
 for i in $(seq 1 30); do
