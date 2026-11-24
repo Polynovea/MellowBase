@@ -247,7 +247,7 @@ describe.runIf(existsSync(armPath))("policy: Azure (compiled ARM JSON behind the
     expect(db.highAvailability.mode).toBe("Disabled");
     expect(one("Microsoft.DBforPostgreSQL/flexibleServers/configurations").properties.value).toBe("on");
     const locks = ofType("Microsoft.Authorization/locks");
-    expect(locks.map((l) => l.properties.level)).toEqual(["CanNotDelete", "CanNotDelete"]);
+    expect(locks.map((l) => l.properties.level)).toEqual(["CanNotDelete", "CanNotDelete", "CanNotDelete"]);
   });
 
   it("keeps storage private, Entra-only and encrypted, and Key Vault on RBAC with purge protection", () => {
@@ -602,5 +602,15 @@ describe("review item 3: the release gate", () => {
     expect(dev.status).toBe(0);
     expect(dev.stdout).toMatch(/not a release \(development build\)/);
     expect(read("scripts/validate.sh")).toMatch(/POLYNOVEA_RELEASE:-0\}" = 1[\s\S]+--release-check\n[\s\S]+--release-check --not-a-release/);
+  });
+});
+
+describe("review item 4: the Azure data disk has a delete lock", () => {
+  it("in Bicep and OpenTofu, with the removal documented", () => {
+    expect(bicep).toMatch(/resource dataDiskLock 'Microsoft\.Authorization\/locks@[^']+' = \{\n  name: 'polynovea-keep-data-disk'\n  scope: dataDisk\n  properties: \{\n    level: 'CanNotDelete'/);
+    const lock = tfResource(tofuAzure, "azurerm_management_lock", "data_disk");
+    expect(lock).toMatch(/scope\s+= azurerm_managed_disk\.data\.id/);
+    expect(lock).toMatch(/lock_level\s+= "CanNotDelete"/);
+    expect(read("azure/README.md")).toMatch(/delete `polynovea-keep-database`, `polynovea-keep-storage` and `polynovea-keep-data-disk`/);
   });
 });
