@@ -93,7 +93,7 @@ def make_handler(root):
 class AgentTest(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="upgrade-agent-test-")
-        os.chmod(self.root, 0o755)
+        os.chmod(self.root, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions (test fixture)
         self.requests = os.path.join(self.root, "requests")
         self.status = os.path.join(self.root, "status")
         os.makedirs(self.requests)
@@ -104,7 +104,7 @@ class AgentTest(unittest.TestCase):
             path = os.path.join(self.root, "bin", name)
             with open(path, "w") as handle:
                 handle.write(FAKE_DOCKER)
-            os.chmod(path, 0o755)
+            os.chmod(path, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions (test fixture)
         self.write("etc/polynovea.env", f"POLYNOVEA_DOMAIN=\nPOLYNOVEA_IMAGE_REF={REF_A}\n")
         self.write("etc/release.pub", "-----BEGIN PUBLIC KEY-----\nfake\n-----END PUBLIC KEY-----\n")
         self.write("health.json", json.dumps({"state": "running", "release": RELEASE_A}))
@@ -263,7 +263,7 @@ class AgentTest(unittest.TestCase):
 
     def test_a_writable_status_folder_is_refused(self):
         os.makedirs(self.status)
-        os.chmod(self.status, 0o777)
+        os.chmod(self.status, 0o777)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions (test fixture)
         with self.assertRaises(SystemExit):
             agent.StatusDir(self.status)
 
@@ -369,6 +369,10 @@ class AgentTest(unittest.TestCase):
             text = open(os.path.join(self.status, name)).read() if not name.startswith(".") else ""
             self.assertNotIn("s3cret", text)
             self.assertNotIn("postgresql://", text)
+
+    def test_health_url_is_loopback_http_only(self):
+        self.assertIsNone(agent.health({**agent.DEFAULTS, "HEALTH_URL": "file:///etc/shadow"}))
+        self.assertIsNone(agent.health({**agent.DEFAULTS, "HEALTH_URL": "http://169.254.169.254/latest"}))
 
     def test_https_only_channel(self):
         self.assertFalse(agent._channel_url_ok("http://releases.example.com/x", False))

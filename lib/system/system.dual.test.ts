@@ -6,15 +6,11 @@ import { describeWithDatabase } from "@/lib/db/testing/database";
 // system tables, the four functions' rules, and the audit trail of an upgrade's steps.
 
 const { beginRestoreTest, finishRestoreTest, listRestoreTests, listUpgrades, recordUpgradeProgress, requestUpgrade, UpgradeInProgressError, workerHeartbeat } = await import("./systemData");
-const { getDb } = await import("@/lib/db/index");
-const { sql } = await import("kysely");
 
-async function closeOpenUpgrades() {
-  // Tests share one database; close anything another test left open (as the owner).
-  await sql`update public.system_upgrades set status = 'failed', finished_at = now() where status in ('requested', 'running')`.execute(getDb()).catch(() => undefined);
-}
 
 describeWithDatabase("system operations (migration 0077)", (db) => {
+  // Tests share one database; close anything left open, as the owner (the app role cannot).
+  const closeOpenUpgrades = () => db.query("update public.system_upgrades set status = 'failed', finished_at = now() where status in ('requested', 'running')");
   describe("access", () => {
     it("polynovea_app reads the system tables but cannot write them directly", async () => {
       const rows = await db.query<{ relname: string; can_select: boolean; can_write: boolean }>(`
@@ -92,7 +88,7 @@ describeWithDatabase("system operations (migration 0077)", (db) => {
 
   describe("restore tests", () => {
     it("runs one at a time, closes an interrupted one after 6 hours, and records the result", async () => {
-      await sql`update public.system_restore_tests set status = 'failed', finished_at = now() where status = 'running'`.execute(getDb());
+      await db.query("update public.system_restore_tests set status = 'failed', finished_at = now() where status = 'running'");
       const id = await beginRestoreTest("manual");
       expect(id).toMatch(/^[0-9a-f-]{36}$/);
       expect(await beginRestoreTest("monthly")).toBeNull();
