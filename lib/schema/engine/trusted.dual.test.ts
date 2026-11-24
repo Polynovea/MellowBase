@@ -76,7 +76,7 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     expect(Object.values((await loadModelTable(getDb(), m.modelId))!.shape.columns).map((c) => c.field).sort()).toEqual(["body", "headline"]);
   });
 
-  it("refuses a deletion planned for an older version once a newer version keeps the field", async () => {
+  it("a field waiting to be deleted cannot be saved back; its deletion stays as planned", async () => {
     const m = await model();
     const first = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: m.v1, stage: "expand" });
     await applyExpandStage(owner, { plan: first, requestedBy: null, limits: TEST_LIMITS });
@@ -89,8 +89,13 @@ describeWithDatabase("plans rebuilt from trusted state", (backend) => {
     const deletion = await rebuild(getDb(), { contentModelId: m.modelId, targetVersionId: v2, stage: "expand" });
     const destructiveHash = computeStageHash(deletion, "destructive");
     await applyExpandStage(owner, { plan: await workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "expand", requestedPlanHash: computeStageHash(deletion, "expand") }), requestedBy: null, limits: TEST_LIMITS });
-    await save([field("title"), field("secret")]);
-    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "destructive", requestedPlanHash: destructiveHash }))).toMatchObject({ code: "stale_plan" });
+    // Since Phase 4 a save plans its change at once, so re-adding the field is refused at save time
+    // (it would bring back the old values); nothing is versioned and the deletion is unchanged. (A
+    // deletion planned for an older version is refused by the worker: trustedRunner.dual.)
+    const before = (await getModel(m.workspaceId, m.modelId))!.current_schema_version;
+    await expect(save([field("title"), field("secret")])).rejects.toThrow('The field "secret" is waiting to be deleted. To use the name again, confirm that deletion on the model page first; its old values will not come back.');
+    expect((await getModel(m.workspaceId, m.modelId))!.current_schema_version).toBe(before);
+    expect(await errorOf(workerCheck({ contentModelId: m.modelId, targetVersionId: v2, stage: "destructive", requestedPlanHash: destructiveHash }))).toBeNull();
     expect(Object.values((await loadModelTable(getDb(), m.modelId))!.shape.columns).map((c) => c.field).sort()).toEqual(["secret", "title"]);
   });
 

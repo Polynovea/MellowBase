@@ -114,7 +114,7 @@ describeWithDatabase("schema engine on PostgreSQL", (backend: BackendFixtures) =
     expect((await backend.query("select field_key from content_field_permissions where content_model_id = $1", [m.modelId])).map((r) => r.field_key)).toEqual(["title"]);
     // Re-adding it before the deletion is confirmed would bring its old values back: refused.
     m.setCurrent(m.schema(f("title")));
-    expect(String(await errorOf(m.prepare(m.schema(f("title"), f("secret")))))).toMatch(/waiting to be deleted; confirm or cancel that first/);
+    expect(String(await errorOf(m.prepare(m.schema(f("title"), f("secret")))))).toMatch(/waiting to be deleted\. To use the name again, confirm that deletion on the model page first/);
 
     for (const confirmation of ["", "Post", `${m.apiKey}x`]) {
       expect(await errorOf(applyDestructiveStage(owner, { ledgerId: awaitingConfirmationId!, confirmation, confirmedBy: m.adminUserId })))

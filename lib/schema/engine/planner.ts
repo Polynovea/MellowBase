@@ -193,7 +193,7 @@ function validateInput(input: PlanInput, limits: SchemaLimits): PlanProblem[] {
     const pending = new Set(Object.values(input.currentShape.columns).map((c) => c.field).filter((key) => !inSchema.has(key)));
     for (const field of target.fields) {
       if (pending.has(field.key)) {
-        problems.push({ code: "pending_deletion", message: `The field "${field.key}" is waiting to be deleted; confirm or cancel that first.` });
+        problems.push({ code: "pending_deletion", message: `The field "${field.key}" is waiting to be deleted. To use the name again, confirm that deletion on the model page first; its old values will not come back.` });
       }
     }
   }
