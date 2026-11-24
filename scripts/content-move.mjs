@@ -38,11 +38,16 @@ const args = process.argv.slice(2);
 const values = (flag) => args.flatMap((arg, i) => (arg === flag && UUID.test(args[i + 1] ?? "") ? [args[i + 1]] : []));
 const has = (flag) => args.includes(flag);
 const log = (event, fields = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), job: "content-move", event, ...fields }));
-// Kept deliberately in the JSON log lines: an operator command's output, read by whoever runs it (no
-// end user sees it), and the SQLSTATE plus the function's own code word is what lets support tell
-// one failure from another. It is never a message, a value or SQL text. Where the cause is known (a
-// table part-way through a change) the line also carries a plain-words `message`.
-const codeOf = (error) => (typeof error?.code === "string" && /^[0-9A-Z]{5}$/.test(error.code) ? error.code : "error") + (/^[a-z0-9_]{1,64}$/.test(String(error?.message)) ? `:${error.message}` : "");
+// Failure fields for the JSON log lines (moveErrorFields in lib/content/contentMove.ts): kept
+// deliberately, as this is an operator command's output, read by whoever runs it (no end user sees
+// it). A SQLSTATE plus the SQL function's code word, a schema engine refusal with its plain-words
+// message, or "error" with its type and a hint: never a bare "error", never values or SQL text.
+// POLYNOVEA_DEBUG=1 also prints an unexpected error's message to stderr.
+const failureFields = (error) => {
+  const fields = move.moveErrorFields(error);
+  if (fields.code === "error" && process.env.POLYNOVEA_DEBUG === "1") console.error(error);
+  return fields;
+};
 
 const db = getDb();
 const actor = values("--actor")[0] ?? null;
@@ -67,6 +72,13 @@ try {
 
   for (const model of models) {
     try {
+      // A schema the engine cannot build a table for (saved around the CMS) is reported, not attempted.
+      const problems = await move.modelSchemaProblems(db, { workspaceId: model.workspace_id, modelId: model.id });
+      if (problems.length) {
+        log("schema_invalid", { modelId: model.id, problems, message: move.describeSchemaProblems(problems) });
+        failures += 1;
+        continue;
+      }
       let table = await move.ensureModelTable(db, { workspaceId: model.workspace_id, modelId: model.id, requestedBy: actor });
       // With --wait, wait for a queued table creation or a change part-way through, then look again.
       const waitFor = table.status === "requested" ? table.expandLedgerId : table.status === "change_in_progress" ? table.ledgerId : null;
@@ -109,13 +121,13 @@ try {
         const change = await move.modelTableChange(db, model.id).catch(() => ({ state: "none" }));
         const table = move.tableStatusFromChange(change, "");
         log("table_changing", {
-          modelId: model.id, code: codeOf(error), status: table?.status ?? "changed_during_run",
+          modelId: model.id, ...failureFields(error), status: table?.status ?? "changed_during_run",
           message: table
             ? move.describeTableStatus(table)
             : "The model's table changed shape while content:move was copying (a schema change reached it). Nothing was switched; run content:move again.",
         });
       } else {
-        log("model_failed", { modelId: model.id, code: codeOf(error) });
+        log("model_failed", { modelId: model.id, ...failureFields(error) });
       }
     }
   }
