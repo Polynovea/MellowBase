@@ -77,7 +77,8 @@ async function completeOwnerSteps(page: Page): Promise<{ totpKey: string; recove
 
   await page.getByRole("button", { name: "Show the QR code" }).click();
   await expect(page.getByRole("img", { name: /QR code/ })).toBeVisible();
-  const totpKey = (await page.locator("code").first().textContent())!.trim();
+  // The key in "Add an account by hand with this key" (the page shows other code boxes, such as the CMS's address).
+  const totpKey = (await page.getByText("Add an account by hand with this key").locator("code").textContent())!.trim();
   await page.getByLabel("Code from the app").fill(await totpNow(totpKey));
   await page.getByRole("button", { name: "Check the code" }).click();
 
@@ -101,7 +102,7 @@ async function completeOwnerSteps(page: Page): Promise<{ totpKey: string; recove
   await page.getByRole("button", { name: "Show my keys" }).click();
   for (const [field, block] of [["Last 6 characters of the master key", "Master key"], ["Last 6 characters of the backup password", "Backup password"]] as const) {
     if (await page.getByLabel(field).count()) {
-      const value = (await page.locator("div", { hasText: block }).locator("code").first().textContent())!.trim();
+      const value = (await page.locator("p", { hasText: new RegExp(`^${block}`) }).locator("xpath=following-sibling::code[1]").textContent())!.trim();
       await page.getByLabel(field).fill(value.slice(-6));
     }
   }

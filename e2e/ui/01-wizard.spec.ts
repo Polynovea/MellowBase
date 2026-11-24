@@ -82,7 +82,8 @@ test("a fresh install reaches a signed-in owner through the wizard, by keyboard"
   await press(page, "Show the QR code");
   await expect(page.getByRole("img", { name: /QR code/ })).toBeVisible();
   await auditScreen(page, "wizard-3-authenticator");
-  const totpKey = (await page.locator("code").first().textContent())!.trim();
+  // The key in "Add an account by hand with this key" (the page shows other code boxes, such as the CMS's address).
+  const totpKey = (await page.getByText("Add an account by hand with this key").locator("code").textContent())!.trim();
   writeState({ owner: { ...ownerAccount, totpKey, recoveryCodes: [] } });
   const totpBox = page.getByLabel("Code from the app");
   await tabTo(page, totpBox);
@@ -131,7 +132,7 @@ test("a fresh install reaches a signed-in owner through the wizard, by keyboard"
   await auditScreen(page, "wizard-7-keys");
   for (const [field, block] of [["Last 6 characters of the master key", "Master key"], ["Last 6 characters of the backup password", "Backup password"]] as const) {
     if (await page.getByLabel(field).count()) {
-      const value = (await page.locator("div", { hasText: block }).locator("code").first().textContent())!.trim();
+      const value = (await page.locator("p", { hasText: new RegExp(`^${block}`) }).locator("xpath=following-sibling::code[1]").textContent())!.trim();
       await page.getByLabel(field).fill(value.slice(-6));
     }
   }
