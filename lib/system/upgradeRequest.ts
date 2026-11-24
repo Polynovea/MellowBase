@@ -31,8 +31,10 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const SECRETISH = /(postgres(?:ql)?:\/\/\S+|password=\S+|PGPASSWORD=\S+)/gi;
 
 export class UpgradeRequestError extends Error {
-  constructor(message: string, public status = 400) {
+  status: number;
+  constructor(message: string, status = 400) {
     super(message);
+    this.status = status;
   }
 }
 

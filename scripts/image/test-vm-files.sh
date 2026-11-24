@@ -24,7 +24,9 @@ export MSYS_NO_PATHCONV=1
 echo "== 1. provision.sh: both boot paths, run twice"
 docker run --rm -i -v "$SRC:/src:ro" "$UBUNTU" bash -euo pipefail <<'EOF'
 mkdir -p /stubs
-for tool in apt-get systemctl cloud-init; do
+# python3 runs only the upgrade agent's "installed" marker here; the agent has its own tests
+# (scripts/release/test_upgrade_agent.py).
+for tool in apt-get systemctl cloud-init python3; do
   printf '#!/bin/sh\necho "%s $*" >> /tmp/calls.log\nexit 0\n' "$tool" > "/stubs/$tool"
   chmod +x "/stubs/$tool"
 done
@@ -83,7 +85,8 @@ clean; stage; POLYNOVEA_START_NOW=1 sh /src/release/packer/provision.sh >/dev/nu
 snapshot > /tmp/plain-path.txt
 grep '^systemctl enable docker.service polynovea' /tmp/calls.log > /tmp/plain-enable.txt
 diff /tmp/image-path.txt /tmp/plain-path.txt && diff /tmp/image-enable.txt /tmp/plain-enable.txt && echo "ok    plain-Ubuntu path ends with the same files and enabled units"
-grep -q '^systemctl start --no-block polynovea-data-disk.service var-lib-polynovea.mount polynovea-console-code.service polynovea.service polynovea-caddy.service$' /tmp/calls.log && echo "ok    plain-Ubuntu path starts the services at once"
+grep -q '^systemctl start --no-block polynovea-data-disk.service var-lib-polynovea.mount polynovea-console-code.service polynovea.service polynovea-caddy.service polynovea-upgrade.path polynovea-upgrade-recover.service$' /tmp/calls.log && echo "ok    plain-Ubuntu path starts the services at once"
+grep -q '^python3 -I -B /opt/polynovea/upgrade-agent.py --mark$' /tmp/calls.log && [ "$(stat -c '%U %a' /var/lib/polynovea-upgrade)" = "root 755" ] && echo "ok    upgrade agent installed: root-owned status folder and its marker step"
 
 # A box whose data disk is already mounted and owned by the CMS user: left alone.
 chown 10001:10001 /var/lib/polynovea && chmod 0700 /var/lib/polynovea

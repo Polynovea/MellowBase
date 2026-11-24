@@ -7,13 +7,15 @@ import { clientErrorMessage } from "@/lib/http/clientError";
  */
 export class DatabaseSetupError extends Error {
   readonly status = 422;
-  constructor(
-    message: string,
-    readonly step: string,
-    readonly ref?: string,
-  ) {
+  // Plain fields, not constructor parameter properties: scripts load lib/ through Node's type
+  // stripping, which rejects parameter properties (see lib/noParameterProperties.test.ts).
+  readonly step: string;
+  readonly ref?: string;
+  constructor(message: string, step: string, ref?: string) {
     super(ref ? `${message} (ref ${ref})` : message);
     this.name = "DatabaseSetupError";
+    this.step = step;
+    this.ref = ref;
   }
 }
 

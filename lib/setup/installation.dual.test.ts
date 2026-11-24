@@ -5,6 +5,7 @@ import path from "node:path";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { resetModeForTests, resolveMode } from "@/lib/setup/mode";
+import { INSTALLATION_TEST_LOCK } from "@/lib/setup/owner/testing";
 
 // Migration 0072 (installation row) on plain PostgreSQL, as the roles themselves. Setup locks for good
 // on this row, so the app role must be able to insert it once and never change or delete it.
@@ -26,6 +27,10 @@ describe("installation row (migration 0072)", () => {
 
   beforeAll(async () => {
     owner = await connect(process.env.POLYNOVEA_TEST_POSTGRES_OWNER_URL);
+    // Other test files write the same singleton row: hold their shared lock for this whole file (a
+    // session lock on this connection) and start from an uninstalled database.
+    await owner.query("select pg_advisory_lock($1::bigint)", [INSTALLATION_TEST_LOCK]);
+    await owner.query("delete from installation");
     app = await connect(process.env.POLYNOVEA_TEST_POSTGRES_URL);
     app2 = await connect(process.env.POLYNOVEA_TEST_POSTGRES_URL);
     const suffix = randomUUID().slice(0, 8);
@@ -44,6 +49,7 @@ describe("installation row (migration 0072)", () => {
   afterAll(async () => {
     await owner?.query("delete from installation").catch(() => {});
     await owner?.query("delete from admin_users where id = $1", [adminId]).catch(() => {});
+    await owner?.query("select pg_advisory_unlock($1::bigint)", [INSTALLATION_TEST_LOCK]).catch(() => {});
     await Promise.all([owner?.end(), app?.end(), app2?.end()]);
   });
 

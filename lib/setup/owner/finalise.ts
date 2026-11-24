@@ -45,13 +45,13 @@ export const SIGN_IN_PATH = "/admin";
 const FINALISE_LOCK_KEY = 7_315_220_260_001;
 
 export class FinaliseError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status: 409 | 500,
-  ) {
+  readonly code: string;
+  readonly status: 409 | 500;
+  constructor(code: string, message: string, status: 409 | 500) {
     super(message);
     this.name = "FinaliseError";
+    this.code = code;
+    this.status = status;
   }
 }
 

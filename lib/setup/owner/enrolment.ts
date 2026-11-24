@@ -96,13 +96,13 @@ declare module "@/lib/setup/setupSession" {
 
 /** A refusal the wizard shows the person as it is (no secrets, no internals). */
 export class EnrolmentError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status = 400,
-  ) {
+  readonly code: string;
+  readonly status: number;
+  constructor(code: string, message: string, status = 400) {
     super(message);
     this.name = "EnrolmentError";
+    this.code = code;
+    this.status = status;
   }
 }
 
