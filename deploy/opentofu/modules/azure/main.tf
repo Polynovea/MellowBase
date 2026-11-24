@@ -57,6 +57,15 @@ data "azurerm_resource_group" "main" {
 
 data "azurerm_client_config" "current" {}
 
+# Key Vault keeps a deleted vault's name for 90 days (purge protection), so the vault name also takes
+# a random part made once per install and kept in state: a fresh install into the same resource
+# group never collides with a vault still being held.
+resource "random_string" "install" {
+  length  = 10
+  upper   = false
+  special = false
+}
+
 # ------------------------------------------------------------------ network
 
 resource "azurerm_network_security_group" "vm" {
@@ -302,7 +311,7 @@ resource "azurerm_management_lock" "database" {
 
 resource "azurerm_key_vault" "main" {
   count                         = local.managed ? 1 : 0
-  name                          = "pnv-${local.suffix}"
+  name                          = "pnv-${random_string.install.result}"
   location                      = var.location
   resource_group_name           = var.resource_group_name
   tenant_id                     = data.azurerm_client_config.current.tenant_id

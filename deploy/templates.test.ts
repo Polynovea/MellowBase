@@ -132,7 +132,7 @@ describe("Azure: the secret reference Bicep sets", () => {
   it("is the Key Vault secret's versionless URI", () => {
     expect(bicep).toContain("'POLYNOVEA_DB_SECRET_REF=${databaseSecret.properties.secretUri}'");
     expect(bicep).toContain("var secretName = 'polynovea-database-admin'");
-    expect(bicep).toContain("name: 'pnv-${suffix}'");
+    expect(bicep).toContain("name: 'pnv-${uniqueString(resourceGroup().id, installId)}'");
   });
 
   it("produces URIs the wizard accepts (uniqueString gives 13 lowercase letters and digits)", () => {
@@ -140,10 +140,10 @@ describe("Azure: the secret reference Bicep sets", () => {
       const uri = `https://pnv-${suffix}.vault.azure.net/secrets/polynovea-database-admin`;
       expect(parseSecretRef(uri), uri).toEqual({ kind: "azure", uri, vaultUrl: `https://pnv-${suffix}.vault.azure.net`, name: "polynovea-database-admin", version: null });
     }
-    // OpenTofu: "pnv-" plus 10 hex characters, the same URI from versionless_id.
-    expect(tofuAzure).toContain('name                          = "pnv-${local.suffix}"');
+    // OpenTofu: "pnv-" plus 10 lowercase letters and digits, the same URI from versionless_id.
+    expect(tofuAzure).toContain('name                          = "pnv-${random_string.install.result}"');
     expect(tofuAzure).toContain("POLYNOVEA_DB_SECRET_REF=${azurerm_key_vault_secret.database[0].versionless_id}");
-    expect(parseSecretRef("https://pnv-0a1b2c3d4e.vault.azure.net/secrets/polynovea-database-admin")).toMatchObject({ kind: "azure" });
+    expect(parseSecretRef("https://pnv-0a1b2c3d4z.vault.azure.net/secrets/polynovea-database-admin")).toMatchObject({ kind: "azure" });
   });
 
   it("writes the secret in the shape the wizard reads", () => {
@@ -612,5 +612,17 @@ describe("review item 4: the Azure data disk has a delete lock", () => {
     expect(lock).toMatch(/scope\s+= azurerm_managed_disk\.data\.id/);
     expect(lock).toMatch(/lock_level\s+= "CanNotDelete"/);
     expect(read("azure/README.md")).toMatch(/delete `polynovea-keep-database`, `polynovea-keep-storage` and `polynovea-keep-data-disk`/);
+  });
+});
+
+describe("review item 5: the Key Vault name is per install", () => {
+  it("takes an install ID that's new for each install and passed back for updates", () => {
+    expect(bicep).toContain("param installId string = newGuid()");
+    expect(bicep).toContain("name: 'pnv-${uniqueString(resourceGroup().id, installId)}'");
+    expect(bicep).toContain("output installId string = installId");
+    expect(tfResource(tofuAzure, "random_string", "install")).toMatch(/length\s+= 10[\s\S]+upper\s+= false[\s\S]+special\s+= false/);
+    expect(read("azure/README.md")).toMatch(/### Updating an install: keep the install ID[\s\S]+installId=<value>/);
+    // uniqueString gives 13 lowercase letters and digits; the URI still parses.
+    expect(parseSecretRef("https://pnv-abcdefghij012.vault.azure.net/secrets/polynovea-database-admin")).toMatchObject({ kind: "azure" });
   });
 });
