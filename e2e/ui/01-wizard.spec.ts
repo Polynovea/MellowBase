@@ -82,8 +82,8 @@ test("a fresh install reaches a signed-in owner through the wizard, by keyboard"
   await press(page, "Show the QR code");
   await expect(page.getByRole("img", { name: /QR code/ })).toBeVisible();
   await auditScreen(page, "wizard-3-authenticator");
-  // The key in "Add an account by hand with this key" (the page shows other code boxes, such as the CMS's address).
-  const totpKey = (await page.getByText("Add an account by hand with this key").locator("code").textContent())!.trim();
+  // By its test id: the setup pages show other code boxes too (the CMS's address, the SSH command).
+  const totpKey = (await page.getByTestId("totp-manual-key").textContent())!.trim();
   writeState({ owner: { ...ownerAccount, totpKey, recoveryCodes: [] } });
   const totpBox = page.getByLabel("Code from the app");
   await tabTo(page, totpBox);
@@ -130,9 +130,9 @@ test("a fresh install reaches a signed-in owner through the wizard, by keyboard"
   // Step 4b: the keys to keep (only those this install has).
   await press(page, "Show my keys");
   await auditScreen(page, "wizard-7-keys");
-  for (const [field, block] of [["Last 6 characters of the master key", "Master key"], ["Last 6 characters of the backup password", "Backup password"]] as const) {
+  for (const [field, testId] of [["Last 6 characters of the master key", "master-key"], ["Last 6 characters of the backup password", "backup-password"]] as const) {
     if (await page.getByLabel(field).count()) {
-      const value = (await page.locator("p", { hasText: new RegExp(`^${block}`) }).locator("xpath=following-sibling::code[1]").textContent())!.trim();
+      const value = (await page.getByTestId(testId).textContent())!.trim();
       await page.getByLabel(field).fill(value.slice(-6));
     }
   }

@@ -77,8 +77,8 @@ async function completeOwnerSteps(page: Page): Promise<{ totpKey: string; recove
 
   await page.getByRole("button", { name: "Show the QR code" }).click();
   await expect(page.getByRole("img", { name: /QR code/ })).toBeVisible();
-  // The key in "Add an account by hand with this key" (the page shows other code boxes, such as the CMS's address).
-  const totpKey = (await page.getByText("Add an account by hand with this key").locator("code").textContent())!.trim();
+  // By its test id: the setup pages show other code boxes too (the CMS's address, the SSH command).
+  const totpKey = (await page.getByTestId("totp-manual-key").textContent())!.trim();
   await page.getByLabel("Code from the app").fill(await totpNow(totpKey));
   await page.getByRole("button", { name: "Check the code" }).click();
 
@@ -100,9 +100,9 @@ async function completeOwnerSteps(page: Page): Promise<{ totpKey: string; recove
   await page.getByRole("button", { name: "Continue" }).click();
 
   await page.getByRole("button", { name: "Show my keys" }).click();
-  for (const [field, block] of [["Last 6 characters of the master key", "Master key"], ["Last 6 characters of the backup password", "Backup password"]] as const) {
+  for (const [field, testId] of [["Last 6 characters of the master key", "master-key"], ["Last 6 characters of the backup password", "backup-password"]] as const) {
     if (await page.getByLabel(field).count()) {
-      const value = (await page.locator("p", { hasText: new RegExp(`^${block}`) }).locator("xpath=following-sibling::code[1]").textContent())!.trim();
+      const value = (await page.getByTestId(testId).textContent())!.trim();
       await page.getByLabel(field).fill(value.slice(-6));
     }
   }
