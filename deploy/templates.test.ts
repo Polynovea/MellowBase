@@ -677,3 +677,17 @@ describe("review nit 8: Azure egress like AWS, and OpenTofu emails checked", () 
     expect(read("opentofu/modules/azure/variables.tf")).toMatch(/variable "budget_email" \{\n  type = string\n\n  validation \{/);
   });
 });
+
+describe("review nits 9 and 10: operator clean-up and costs that outlive the server", () => {
+  it("tells OpenTofu operators to remove their vault role and IP access after apply", () => {
+    expect(read("opentofu/README.md")).toMatch(/After the first apply on Azure, take your own access away again[\s\S]+operator_ip_ranges = \[\][\s\S]+Key Vault Secrets Officer/);
+  });
+
+  it("notes snapshots, retained storage and autogrow next to the cost estimates", () => {
+    for (const file of ["README.md", "aws/README.md", "azure/README.md"]) {
+      const text = read(file);
+      expect(text, file).toMatch(/snapshot|kept/i);
+      expect(text, file).toMatch(/grows automatically/);
+    }
+  });
+});
