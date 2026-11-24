@@ -12,6 +12,7 @@ import ExperienceRenderer from "@/components/experience/ExperienceRenderer";
 import type { ExperienceDocument } from "@/lib/experience/types";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Preview · Polynovea CMS", robots: { index: false, follow: false } };
 
 type Params = {
   params: Promise<{ token: string }>;

@@ -18,6 +18,7 @@ export default function CalendarPage() {
   const [kind, setKind] = useState("review_due");
   const [startsAt, setStartsAt] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -34,12 +35,12 @@ export default function CalendarPage() {
   useEffect(() => { void load(); }, []);
 
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); setBusy(true); setError("");
+    event.preventDefault(); setBusy(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/calendar", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, kind, startsAt: new Date(startsAt).toISOString() }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
-      setTitle(""); setStartsAt(""); await load();
+      setTitle(""); setStartsAt(""); setNotice("Event scheduled."); await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not schedule event"); }
     finally { setBusy(false); }
   };
@@ -52,13 +53,14 @@ export default function CalendarPage() {
           <CalendarDays className="text-icon-muted" size={20} />
         </header>
 
-        {error ? <div className="ui-alert ui-alert-danger mt-5">{error}</div> : null}
+        {error ? <div role="alert" className="ui-alert ui-alert-danger mt-5">{error}</div> : null}
+        {notice ? <div role="status" className="ui-alert ui-alert-success mt-5">{notice}</div> : null}
 
         <section className="ui-section">
           <h2 className="ui-section-title">Schedule event</h2>
           <form onSubmit={submit} className="mt-4 grid gap-4 rounded-2xl bg-surface-1 p-5 md:grid-cols-[1fr_180px_220px_auto]">
             <label><span className="text-[12px] font-medium text-fg-secondary">Event</span><input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Review product launch" className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm" /></label>
-            <label><span className="text-[12px] font-medium text-fg-secondary">Type</span><select value={kind} onChange={(e) => setKind(e.target.value)} className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm">{["draft_due","review_due","approval_due","publish","release","expiry","campaign"].map((value) => <option key={value}>{value.replaceAll("_", " ")}</option>)}</select></label>
+            <label><span className="text-[12px] font-medium text-fg-secondary">Type</span><select value={kind} onChange={(e) => setKind(e.target.value)} className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm">{["draft_due","review_due","approval_due","publish","release","expiry","campaign"].map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></label>
             <label><span className="text-[12px] font-medium text-fg-secondary">When</span><input required type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} className="mt-2 w-full rounded-lg px-3 py-2.5 text-sm" /></label>
             <div className="flex items-end"><button disabled={busy} className="ui-btn ui-btn-primary w-full"><Plus size={13} />Schedule</button></div>
           </form>

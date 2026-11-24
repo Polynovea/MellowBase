@@ -92,7 +92,7 @@ export default function NewModelPage() {
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Could not create model");
-      router.push(`/admin/models/${body.data.model.id}`);
+      router.push(`/admin/models/${body.data.model.id}?created=1`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create model");
     } finally {
@@ -113,18 +113,18 @@ export default function NewModelPage() {
       <form onSubmit={submit} className="mx-auto flex max-w-5xl flex-col gap-6">
         <header className="flex items-center justify-between border-b border-subtle pb-5">
           <div className="flex items-center gap-4">
-            <Link href="/admin/models" className="rounded-lg border border-subtle p-2 text-fg-muted hover:text-fg-primary"><ArrowLeft size={17} /></Link>
+            <Link href="/admin/models" aria-label="Back to data models" className="rounded-lg border border-subtle p-2 text-fg-muted hover:text-fg-primary"><ArrowLeft size={17} aria-hidden /></Link>
             <div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-action">Schema studio / New</p><h1 className="mt-1 text-3xl font-extrabold">CREATE MODEL</h1></div>
           </div>
           <button disabled={saving} className="inline-flex items-center gap-2 rounded-lg ui-btn ui-btn-primary disabled:opacity-50"><Check size={15} />{saving ? "Creating…" : "Create model"}</button>
         </header>
-        {error && <div className="rounded-xl border border-danger bg-danger-muted px-4 py-3 text-sm text-danger">{error}</div>}
+        {error && <div role="alert" className="rounded-xl border border-danger bg-danger-muted px-4 py-3 text-sm text-danger">{error}</div>}
 
         <section className="rounded-2xl border border-subtle bg-surface-1 p-6">
           <p className="text-xs font-bold uppercase tracking-wider text-fg-muted">Start from</p>
           <div className="mt-3 flex flex-wrap gap-2">
             {(["blank", "template", "clone"] as const).map((m) => (
-              <button key={m} type="button" onClick={() => setMode(m)} className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wider ${mode === m ? "ui-btn ui-btn-primary" : "border border-subtle text-fg-secondary hover:text-fg-primary"}`}>
+              <button key={m} type="button" aria-pressed={mode === m} onClick={() => setMode(m)} className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wider ${mode === m ? "ui-btn ui-btn-primary" : "border border-subtle text-fg-secondary hover:text-fg-primary"}`}>
                 {m === "blank" ? "Blank" : m === "template" ? "Template" : "Clone existing"}
               </button>
             ))}
@@ -142,6 +142,7 @@ export default function NewModelPage() {
           {mode === "clone" && (
             <div className="mt-4">
               <select
+                aria-label="Model to clone fields from"
                 value={cloneSourceId}
                 onChange={(e) => { setCloneSourceId(e.target.value); void applyClone(e.target.value); }}
                 className="w-full rounded-lg border border-default bg-field px-3.5 py-3 text-sm text-fg-primary outline-none"

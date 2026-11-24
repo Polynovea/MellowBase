@@ -32,6 +32,10 @@ function LoginScreen({
   const violetRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    document.title = "Sign in · Polynovea CMS";
+  }, []);
+
+  useEffect(() => {
     const onMove = (e: MouseEvent) => {
       const x = e.clientX / window.innerWidth;
       const y = e.clientY / window.innerHeight;
@@ -72,7 +76,7 @@ function LoginScreen({
       <div className="relative z-10 flex min-h-screen flex-col items-center justify-center p-6">
         <main className="w-full max-w-[420px]">
           <div
-            className="rounded-2xl p-10 bg-[#0E0E11]/80 border border-action/20 shadow-[0_24px_80px_rgba(0,0,0,0.6),_inset_0_1px_0_rgba(230,211,163,0.08)] backdrop-blur-[20px]"
+            className="rounded-2xl p-10 bg-surface-1/90 border border-action/20 shadow-[0_24px_80px_rgba(0,0,0,0.6),_inset_0_1px_0_rgba(230,211,163,0.08)] backdrop-blur-[20px]"
           >
             {/* Brand */}
             <header className="mb-10 flex flex-col items-center">
@@ -84,7 +88,7 @@ function LoginScreen({
                 </svg>
               </div>
               <h1 className="font-headline font-bold text-2xl tracking-[-0.01em] text-on-surface mb-1">POLYNOVEA</h1>
-              <p className="font-body text-[10px] font-semibold tracking-[0.2em] uppercase text-action/50">Executive Command</p>
+              <p className="font-body text-[10px] font-semibold tracking-[0.2em] uppercase text-fg-muted">Content management</p>
             </header>
 
             {/* Title */}
@@ -172,32 +176,18 @@ function LoginScreen({
               </p>
               <div className="h-px w-8 bg-surface-2" />
               <p className="text-center font-body text-[11px] text-fg-muted leading-relaxed max-w-[260px]">
-                Authorized personnel only. Access monitored by Global Security Protocols.
+                Only people invited to this workspace can sign in.
               </p>
             </div>
           </div>
 
-          {/* Status indicator */}
-          <div className="mt-6 flex items-center justify-center gap-2 opacity-50 transition-opacity hover:opacity-100">
-            <span className="h-1.5 w-1.5 rounded-full bg-success-muted animate-pulse" />
-            <span className="font-body text-[10px] font-semibold uppercase tracking-[0.15em] text-fg-muted">
-              System Status: Operational
-            </span>
-          </div>
         </main>
 
         {/* Bottom bar */}
         <div className="fixed bottom-0 left-0 right-0 z-10 flex flex-col items-center justify-between gap-3 px-8 py-4 sm:flex-row">
           <p className="font-body text-[10px] uppercase tracking-[0.08em] text-fg-muted">
-            © {new Date().getFullYear()} Polynovea Executive Command. All Rights Reserved.
+            Polynovea CMS
           </p>
-          <nav className="flex gap-6">
-            {["Privacy Protocol", "Terms of Access", "System Status"].map((label) => (
-              <span key={label} className="cursor-default font-body text-[10px] uppercase tracking-[0.08em] text-fg-muted transition-colors hover:text-fg-secondary">
-                {label}
-              </span>
-            ))}
-          </nav>
         </div>
       </div>
     </>

@@ -1,7 +1,8 @@
 "use client";
 
-import { ChangeEvent, useCallback, useEffect, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import AdminLayout from "@/components/admin/AdminLayout";
+import { useDialogKeyboard } from "@/components/admin/useDialogKeyboard";
 import {
   ImagePlus,
   Loader2,
@@ -71,6 +72,10 @@ export default function MediaPage() {
   const [colName, setColName] = useState("");
   const [colSlug, setColSlug] = useState("");
   const [colDesc, setColDesc] = useState("");
+  const detailsRef = useRef<HTMLDivElement>(null);
+  const collectionRef = useRef<HTMLDivElement>(null);
+  useDialogKeyboard(detailsRef, selectedAsset !== null, () => setSelectedAsset(null));
+  useDialogKeyboard(collectionRef, showCreateColModal, () => setShowCreateColModal(false));
 
   const loadAssets = useCallback(async () => {
     setLoading(true);
@@ -113,6 +118,7 @@ export default function MediaPage() {
 
   async function handleInspectAsset(asset: Asset) {
     setSelectedAsset(asset);
+    setAssetUsage([]);
     setLoadingUsage(true);
     try {
       const res = await fetch(`/api/assets/${asset.id}/usage`);
@@ -129,7 +135,10 @@ export default function MediaPage() {
 
   const upload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    // Cleared at once, so choosing the same file again (after an error, say) uploads it again.
+    event.target.value = "";
     if (!file) return;
+    setSuccess(null);
     setUploading(true);
     setError(null);
     try {
@@ -228,8 +237,9 @@ export default function MediaPage() {
               <Plus className="w-4 h-4 text-primary" />
               New Collection
             </button>
-            <label className="ui-btn ui-btn-primary cursor-pointer">
-              <input type="file" className="hidden" onChange={upload} accept="image/*,video/*,.pdf" />
+            <label className="ui-btn ui-btn-primary cursor-pointer focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--focus-ring)]">
+              {/* sr-only, not hidden: a hidden file input can't be reached with the keyboard. */}
+              <input type="file" aria-label="Upload asset" className="sr-only" onChange={upload} accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,application/pdf" />
               {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
               {uploading ? "Uploading…" : "Upload Asset"}
             </label>
@@ -309,9 +319,14 @@ export default function MediaPage() {
                 {assets.map((asset) => (
                   <article
                     key={asset.id}
-                    onClick={() => handleInspectAsset(asset)}
-                    className="ui-card group cursor-pointer overflow-hidden transition-colors hover:border-primary/40"
+                    className="ui-card group relative cursor-pointer overflow-hidden transition-colors hover:border-primary/40"
                   >
+                    <button
+                      type="button"
+                      onClick={() => handleInspectAsset(asset)}
+                      aria-label={`Open ${asset.filename}: details and where it is used`}
+                      className="absolute inset-0 z-10 rounded-[inherit]"
+                    />
                     <div className="h-36 w-full bg-surface-2 flex items-center justify-center overflow-hidden">
                       {asset.mime_type.startsWith("image/") ? (
                         <img
@@ -339,17 +354,19 @@ export default function MediaPage() {
         {/* Asset Inspector Modal */}
         {selectedAsset && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="ui-card-elevated max-w-xl w-full p-6 space-y-4">
+            <div ref={detailsRef} role="dialog" aria-modal="true" aria-labelledby="asset-details-title" className="ui-card-elevated max-w-xl w-full p-6 space-y-4">
               <div className="flex items-start justify-between border-b border-subtle pb-3">
                 <div>
-                  <h3 className="max-w-md truncate text-lg font-bold text-fg-primary">{selectedAsset.filename}</h3>
+                  <h2 id="asset-details-title" className="max-w-md truncate text-lg font-bold text-fg-primary">{selectedAsset.filename}</h2>
                   <p className="font-mono text-[10px] text-fg-muted mt-0.5">ID: {selectedAsset.id}</p>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setSelectedAsset(null)}
+                  aria-label="Close details"
                   className="text-fg-muted hover:text-fg-primary text-sm"
                 >
-                  ✕
+                  <span aria-hidden>✕</span>
                 </button>
               </div>
 
@@ -383,9 +400,9 @@ export default function MediaPage() {
 
               {/* Where-Used Section */}
               <div className="border-t border-subtle pt-3 space-y-2">
-                <h4 className="text-[10px] font-bold uppercase tracking-widest text-fg-muted">
-                  Where Used Impact Graph ({assetUsage.length} references)
-                </h4>
+                <h3 className="text-[10px] font-bold uppercase tracking-widest text-fg-muted">
+                  {loadingUsage ? "Where it is used" : assetUsage.length === 0 ? "Not used yet" : `Used in ${assetUsage.length} ${assetUsage.length === 1 ? "entry" : "entries"}`}
+                </h3>
                 {loadingUsage ? (
                   <div className="text-xs text-fg-muted py-2">Loading references...</div>
                 ) : assetUsage.length === 0 ? (
@@ -408,7 +425,7 @@ export default function MediaPage() {
 
               <div className="flex justify-between items-center pt-3 border-t border-subtle">
                 <label className="cursor-pointer px-3.5 py-2 bg-warning-muted hover:bg-warning-muted text-warning border border-warning rounded-lg text-xs font-semibold flex items-center gap-1.5">
-                  <input type="file" className="hidden" onChange={handleReplaceAsset} accept="image/*,video/*,.pdf" />
+                  <input type="file" aria-label="Replace file (keeps the same ID)" className="sr-only" onChange={handleReplaceAsset} accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,application/pdf" />
                   <RefreshCw className="w-3.5 h-3.5" />
                   {replacing ? "Replacing..." : "Replace File (Preserve ID)"}
                 </label>
@@ -426,12 +443,13 @@ export default function MediaPage() {
         {/* Create Collection Modal */}
         {showCreateColModal && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="ui-card-elevated max-w-md w-full p-6 space-y-4">
-              <h3 className="text-lg font-bold text-fg-primary">Create Media Collection</h3>
+            <div ref={collectionRef} role="dialog" aria-modal="true" aria-labelledby="create-collection-title" className="ui-card-elevated max-w-md w-full p-6 space-y-4">
+              <h2 id="create-collection-title" className="text-lg font-bold text-fg-primary">Create Media Collection</h2>
               <form onSubmit={handleCreateCollection} className="space-y-4">
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Collection Name</label>
+                  <label htmlFor="collection-name" className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Collection Name</label>
                   <input
+                    id="collection-name"
                     type="text"
                     required
                     value={colName}
@@ -444,8 +462,9 @@ export default function MediaPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Slug</label>
+                  <label htmlFor="collection-slug" className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Slug</label>
                   <input
+                    id="collection-slug"
                     type="text"
                     required
                     value={colSlug}
@@ -455,8 +474,9 @@ export default function MediaPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Description</label>
+                  <label htmlFor="collection-description" className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Description</label>
                   <textarea
+                    id="collection-description"
                     value={colDesc}
                     onChange={(e) => setColDesc(e.target.value)}
                     rows={2}

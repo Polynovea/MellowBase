@@ -167,6 +167,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     ? "Profile & Settings"
     : pathname === "/admin/security" ? "Sign-in & Security" : activeItem?.label || "Admin";
 
+  // Each screen names itself in the browser tab (every tab used to say "Polynovea Admin").
+  useEffect(() => {
+    document.title = `${pageLabel} · Polynovea CMS`;
+  }, [pageLabel]);
+
   const handleLogout = async () => {
     // Wait for the server to end the session before leaving the page.
     await logout();
@@ -176,7 +181,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const profileInitial = (profile?.display_name || profile?.username || "R").slice(0, 1).toUpperCase();
 
   const NavTree = ({ mobile = false }: { mobile?: boolean }) => (
-    <nav className="flex-1 px-3 pb-5">
+    <nav aria-label="Sections" className="flex-1 px-3 pb-5">
       {groupedNav.map((group) => (
         <div key={group.key} className="mt-5 first:mt-2">
           <div className="px-3 pb-1.5 text-[11px] font-medium text-fg-muted">{group.label}</div>
@@ -188,6 +193,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 <Link
                   key={item.href}
                   href={item.href}
+                  aria-current={active ? "page" : undefined}
                   onClick={mobile ? () => setMobileOpen(false) : undefined}
                   className={`group flex min-h-9 items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium no-underline transition-colors ${
                     active

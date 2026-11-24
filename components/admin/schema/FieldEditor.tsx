@@ -22,6 +22,8 @@ interface FieldEditorProps {
   onMove: (direction: -1 | 1) => void;
   relationTargets: RelationTarget[];
   otherFieldKeys: string[];
+  /** The field is in the saved schema: its key names a database column, so it can't be edited here (a new key would delete the old column's data). */
+  keyLocked?: boolean;
 }
 
 const inputClass = "w-full rounded-lg border border-default bg-field px-3 py-2 text-sm normal-case tracking-normal text-fg-primary outline-none focus:border-action/50";
@@ -41,7 +43,7 @@ function updateHelpText(field: FieldDefinition, value: string): Partial<FieldDef
   return { uiHints };
 }
 
-export default function FieldEditor({ field, index, total, onChange, onRemove, onMove, relationTargets, otherFieldKeys }: FieldEditorProps) {
+export default function FieldEditor({ field, index, total, onChange, onRemove, onMove, relationTargets, otherFieldKeys, keyLocked = false }: FieldEditorProps) {
   const [expanded, setExpanded] = useState(false);
   const registryEntry = FIELD_TYPE_REGISTRY[field.type];
   const supports = new Set(registryEntry?.supportedValidation ?? []);
@@ -96,16 +98,18 @@ export default function FieldEditor({ field, index, total, onChange, onRemove, o
   })();
 
   return (
-    <div className="rounded-xl border border-subtle bg-field p-4">
+    <div role="group" aria-label={`Field: ${field.label.trim() || index + 1}`} className="rounded-xl border border-subtle bg-field p-4">
       <div className="grid gap-3 md:grid-cols-[28px_1fr_1fr_170px_auto]">
-        <button type="button" onClick={() => setExpanded((v) => !v)} className="flex h-9 items-center justify-center rounded-md bg-surface-2 text-fg-muted hover:text-action" aria-label="Toggle field details">
+        <button type="button" onClick={() => setExpanded((v) => !v)} className="flex h-9 items-center justify-center rounded-md bg-surface-2 text-fg-muted hover:text-action" aria-label="Field details" aria-expanded={expanded}>
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </button>
         <input
           required
           value={field.label}
-          onChange={(e) => onChange({ label: e.target.value, key: field.key ? field.key : toFieldKey(e.target.value) })}
+          // The key follows the label until someone edits the key itself (it used to stop after the first letter).
+          onChange={(e) => onChange({ label: e.target.value, key: keyLocked || (field.key && field.key !== toFieldKey(field.label)) ? field.key : toFieldKey(e.target.value) })}
           placeholder="Field label"
+          aria-label="Field label"
           className={inputClass}
         />
         <input
@@ -113,10 +117,14 @@ export default function FieldEditor({ field, index, total, onChange, onRemove, o
           pattern="[a-z][a-z0-9_]*"
           value={field.key}
           onChange={(e) => onChange({ key: toFieldKey(e.target.value) })}
+          readOnly={keyLocked}
           placeholder="field_key"
-          className={`${inputClass} font-mono text-action`}
+          aria-label="Field key"
+          title={keyLocked ? "A saved field's key can't change: it names the stored data. Change the label instead, or add a new field." : "Lower case letters, numbers and underscores; used in the API."}
+          className={`${inputClass} font-mono text-action${keyLocked ? " cursor-not-allowed opacity-70" : ""}`}
         />
         <select
+          aria-label="Field type"
           value={field.type}
           onChange={(e) => {
             const type = e.target.value as FieldType;
