@@ -72,6 +72,8 @@ test("the calendar's own form: a missing title is caught, then an event of a cho
 
   await page.getByLabel("Event").fill("UI test publish slot");
   await page.getByLabel("Type").selectOption({ label: "publish" });
+  // Only campaigns stand alone: a publish slot is about something (here, the release).
+  await page.getByLabel(/^About/).selectOption({ label: `Release: ${RELEASE}` });
   const when = new Date(Date.now() + 3 * 24 * 3600_000);
   await page.getByLabel("When").fill(new Date(when.getTime() - when.getTimezoneOffset() * 60_000).toISOString().slice(0, 16));
   await submit.click();

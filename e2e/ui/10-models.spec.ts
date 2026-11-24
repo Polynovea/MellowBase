@@ -115,8 +115,9 @@ test("add a field, rename it, delete it, restore it by re-adding, and delete ano
   await expect(groups).toHaveCount(3);
   await page.getByRole("button", { name: "Add field" }).click();
   await expect(groups).toHaveCount(4);
-  const readded = field(page, "4");
-  await readded.getByLabel("Field label").fill("Strapline");
+  await field(page, "4").getByLabel("Field label").fill("Strapline");
+  // The row is named after its label now ("Field: Strapline"); the deleted field's row is gone.
+  const readded = field(page, "Strapline");
   await readded.getByLabel("Field key").fill("subtitle");
   await reviewAndApply(page);
   await expect(page.getByRole("status").filter({ hasText: /Restored "subtitle"/ })).toBeVisible();
