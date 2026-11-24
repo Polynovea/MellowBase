@@ -24,7 +24,7 @@ type Env = Record<string, string | undefined>;
 
 export const DEFAULT_STATUS_DIR = "/var/lib/polynovea-upgrade";
 const MAX_STATUS_BYTES = 1024 * 1024;
-const STEP_NAMES = new Set(["request", "verify", "wait", "maintenance", "checkpoint", "resume", "agent", "backup", "pull", "migrate", "start", "health", "switch", "rollback", "restore"]);
+const STEP_NAMES = new Set(["request", "verify", "wait", "maintenance", "checkpoint", "resume", "agent", "writes", "backup", "pull", "migrate", "start", "health", "switch", "rollback", "restore"]);
 const OUTCOMES = new Set(["started", "ok", "failed", "skipped"]);
 const AGENT_STATUSES = new Set(["running", "succeeded", "rolled_back", "restore_needed", "failed"]);
 const DIGEST = /^sha256:[0-9a-f]{64}$/;

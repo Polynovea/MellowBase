@@ -848,17 +848,39 @@ def upgrade(config: dict, folder: StatusDir, runtime: Runtime, status: Status, r
     restarted = runtime.restart()
     status.step("start", "ok" if restarted else "failed")
     healthy = restarted and wait_for_release(config, release_id, max(0.0, deadline - (time.monotonic() - started_at)))
-    if healthy and (folder.read_json("state.json") or {}).get("inFlight", {}).get("lsn"):
-        # Changes were paused for the trial (restore mode, bundled database): resume them now.
-        healthy = exec_cli(config, config["CONTAINER"], ["system", "read-only", "off"], 120).returncode == 0
-        if not healthy:
-            status.step("switch", "failed", "changes could not be resumed on the new release")
     if not healthy:
         status.step("health", "failed", f"{release_id} not healthy within {int(deadline)} s")
         raise StepFailed("health", "health check failed")
     status.step("health", "ok", f"{release_id} healthy after {int(time.monotonic() - started_at)} s")
+    # From here the new release is the good one: a failure or a crash finishes FORWARD (resume changes),
+    # never back, so a "successful" upgrade can't leave the CMS read-only.
+    inflight = save_inflight(folder, phase="healthy")
+    return finish_forward(config, folder, status, inflight, cms_running=True)
+
+
+def finish_forward(config: dict, folder: StatusDir, status: Status, inflight: dict, cms_running: bool) -> str:
+    """The new release passed its health check: resume changes if they were paused for its trial (restore
+    mode), record it as the last good release and finish. With the CMS not running (at boot), changes are
+    resumed from a database-only container of the new release."""
+    if inflight.get("lsn"):
+        resumed = cms_running and exec_cli(config, config["CONTAINER"], ["system", "read-only", "off"], 120).returncode == 0
+        if not resumed:
+            database = MaintenanceDatabase(config, inflight["newRef"])
+            try:
+                database.start()
+                resumed = exec_cli(config, database.name, ["system", "read-only", "off"], 120).returncode == 0
+            except StepFailed:
+                resumed = False
+            finally:
+                database.stop()
+        if not resumed:
+            # Keep the in-flight record: the next run of the agent, or --recover at boot, tries again.
+            status.step("writes", "failed", "changes are still paused; the agent retries at its next run or at boot")
+            status.finish("failed")
+            return "failed"
+        status.step("writes", "ok", "changes resumed (read-only off)")
     status.step("switch", "ok", "traffic on the new release")
-    clear_inflight(folder, lastGoodRef=release["ref"], lastGoodRelease=release_id, at=now())
+    clear_inflight(folder, lastGoodRef=inflight["newRef"], lastGoodRelease=inflight["release"], at=now())
     status.finish("succeeded")
     return "succeeded"
 
@@ -868,6 +890,9 @@ def recover(config: dict, folder: StatusDir, runtime: Runtime, status: Status, i
     (at boot, before polynovea.service) it only fixes the pin and the database; the service starts it."""
     phase = inflight.get("phase")
     previous_ref = inflight.get("previousRef")
+    if phase == "healthy" and inflight.get("newRef") and inflight.get("release"):
+        status.step("resume", "ok", "the new release had passed its health check: finishing the upgrade")
+        return finish_forward(config, folder, status, inflight, cms_running=start_now)
     if phase in (None, "prepared") or not previous_ref:
         # Nothing was changed: the previous release is still running.
         status.finish("failed")
@@ -942,10 +967,11 @@ def resume_interrupted(config: dict, folder: StatusDir, start_now: bool) -> str 
     """At start (under the lock): an upgrade left 'running' by a reboot, a timeout or a kill is finished
     now, switching back when the new release never passed its health check."""
     previous = folder.read_json("status.json")
-    if not previous or previous.get("status") != "running":
-        return None
     state = folder.read_json("state.json") or {}
     inflight = state.get("inFlight") or {}
+    # Also a finished-but-failed upgrade whose new release was healthy and whose changes are still paused.
+    if not previous or (previous.get("status") != "running" and inflight.get("phase") != "healthy"):
+        return None
     status = Status.resume(folder, previous)
     status.step("resume", "started", "the agent stopped during this upgrade (reboot, timeout or crash)")
     runtime = Runtime(config)
@@ -955,7 +981,7 @@ def resume_interrupted(config: dict, folder: StatusDir, start_now: bool) -> str 
         log(f"resume failed: {type(error).__name__}")
         status.finish("failed")
         result = "failed"
-    if inflight.get("release"):
+    if inflight.get("release") and result != "succeeded":
         record_failure(folder, inflight["release"])
     return result
 

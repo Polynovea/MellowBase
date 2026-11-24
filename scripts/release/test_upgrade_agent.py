@@ -591,6 +591,49 @@ class AgentTest(unittest.TestCase):
         self.assertIn(f"compose --project-directory {compose} -p polynovea --profile proxy up -d --no-deps --force-recreate cms", calls)
         self.assertIn("--volumes-from polynovea-cms-1", calls)
 
+    # ── after the health check: finish forward, never leave the CMS read-only ──────────────────
+    def test_a_successful_restore_mode_upgrade_resumes_changes_after_health(self):
+        self.publish(rollback=None)
+        self.request()
+        self.assertEqual(self.run_agent(), 0)
+        steps = [(s["step"], s["outcome"]) for s in self.status_json()["steps"]]
+        self.assertLess(steps.index(("health", "ok")), steps.index(("writes", "ok")))
+        self.assertLess(steps.index(("writes", "ok")), steps.index(("switch", "ok")))
+        calls = self.calls()
+        self.assertIn("exec -w /app polynovea node scripts/polynovea-cms.mjs system read-only off", calls)
+        state = json.loads(read(os.path.join(self.status, "state.json")))
+        self.assertNotIn("inFlight", state)
+        self.assertEqual(state["lastGoodRef"], REF_B)
+
+    def test_a_crash_after_health_before_read_only_off_is_finished_at_boot(self):
+        # Killed after B passed its health check, before changes were resumed: --recover (at boot, CMS
+        # not running) finishes forward: read-only off from a database-only container of B, B stays.
+        self._interrupted(REF_B, {"release": RELEASE_B, "previousRef": REF_A, "newRef": REF_B, "fromRelease": RELEASE_A,
+                                  "rollback": "restore", "phase": "healthy", "backupKind": "pgbackrest",
+                                  "backupLabel": "20261124-010101F", "lsn": "0/3000060"})
+        self.assertEqual(agent.main(["--recover"]), 0)
+        status = self.status_json()
+        self.assertEqual(status["status"], "succeeded")
+        self.assertIn(("writes", "ok"), [(s["step"], s["outcome"]) for s in status["steps"]])
+        calls = self.calls()
+        self.assertIn(f"run -d --name polynovea-upgrade-db --network host", calls)
+        self.assertIn(REF_B, calls.split("run -d --name polynovea-upgrade-db")[1].splitlines()[0])
+        self.assertIn("exec -w /app polynovea-upgrade-db node scripts/polynovea-cms.mjs system read-only off", calls)
+        self.assertNotIn("restore-backup", calls)
+        self.assertEqual(self.ref(), REF_B)
+        state = json.loads(read(os.path.join(self.status, "state.json")))
+        self.assertNotIn("inFlight", state)
+        self.assertEqual(state["lastGoodRef"], REF_B)
+        self.assertNotIn(RELEASE_B, state.get("failures", {}))
+
+    def test_a_crash_after_health_is_finished_forward_on_the_next_run(self):
+        self._interrupted(REF_B, {"release": RELEASE_B, "previousRef": REF_A, "newRef": REF_B, "fromRelease": RELEASE_A,
+                                  "rollback": "restore", "phase": "healthy", "lsn": "0/3000060"})
+        self.assertEqual(agent.main([]), 0)  # no request: only the interrupted upgrade is finished
+        self.assertEqual(self.status_json()["status"], "succeeded")
+        self.assertIn("exec -w /app polynovea node scripts/polynovea-cms.mjs system read-only off", self.calls())
+        self.assertEqual(self.ref(), REF_B)
+
     def test_https_only_channel(self):
         self.assertFalse(agent._channel_url_ok("http://releases.example.com/x", False))
         self.assertFalse(agent._channel_url_ok("https://user:pw@releases.example.com/x", False))

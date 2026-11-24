@@ -137,8 +137,8 @@ point_channel() { # releaseId folder
   printf '{"schema":1,"releaseId":"%s","release":"%s/release.json","signature":"%s/release.json.sig"}\n' "$1" "$2" "$2" > "$CHANNEL/latest.json"
 }
 
-step "Releases B (0.4.1, compatible) and B' (0.4.2, restore; its health never reports 0.4.2)"
-REF_B="$(make_release 0.4.1 0.4.1+bbbbbbb 0.4.1+bbbbbbb compatible "$CHANNEL/0.4.1")"
+step "Releases B (0.4.1, restore mode) and B' (0.4.2, restore mode; its health never reports 0.4.2)"
+REF_B="$(make_release 0.4.1 0.4.1+bbbbbbb 0.4.1+bbbbbbb "" "$CHANNEL/0.4.1")"
 REF_BAD="$(make_release 0.4.2 0.4.2+ccccccc 0.4.2+broken "" "$CHANNEL/0.4.2")"
 echo "A  $REF_A ($RELEASE_A)"; echo "B  $REF_B"; echo "B' $REF_BAD"
 
@@ -270,12 +270,34 @@ docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_A" /etc/polynovea/polynov
 status_json | grep -q '"step": "maintenance"' && status_json | grep -q '"step": "checkpoint"' && ok "the CMS stopped taking changes before the backup; the restore point was recorded" || fail "restore-mode order not followed"
 [ "$(app_write "$CMS" e2e-after-rollback)" = COMMITTED ] && ok "A takes changes again after the switch-back (read-only undone by the restore)" || fail "A is still read-only after the switch-back"
 
-step "Upgrade A -> B (0.4.1, compatible)"
+step "Upgrade A -> B (0.4.1, restore mode: changes paused until B passes its health check)"
 point_channel 0.4.1+bbbbbbb 0.4.1
 request 0.4.1+bbbbbbb
 start=$(date +%s)
-docker exec "$AGENT" python3 -I -B /opt/polynovea/upgrade-agent.py || fail "the upgrade to B failed: $(status_json)"
-echo "agent run: $(( $(date +%s) - start ))s; switch (start -> healthy): $(step_seconds start started health ok)s"
+docker exec "$AGENT" rm -f /var/lib/polynovea-upgrade/agent.exit
+docker exec -d "$AGENT" sh -c 'python3 -I -B /opt/polynovea/upgrade-agent.py > /var/lib/polynovea-upgrade/agent.log 2>&1; echo $? > /var/lib/polynovea-upgrade/agent.exit'
+# Probe B's database as the app as soon as B's container runs, until a write commits. During B's trial
+# (before its health check passes and the agent resumes changes) every attempt must be refused.
+PROBES=""
+for _ in $(seq 1 600); do
+  if docker inspect --format '{{.Config.Image}}' "$CMS" 2>/dev/null | grep -q "$REF_B"; then
+    RESULT="$(app_write "$CMS" "e2e-b-probe-$(date +%s%N)")"
+    case "$RESULT" in "ERROR unreachable"|ERROR\ ECONNREFUSED|ERROR\ 57P03|ERROR\ undefined) ;; *) PROBES="$PROBES $RESULT" ;; esac
+    case "$RESULT" in COMMITTED) break ;; esac
+  fi
+  docker exec "$AGENT" test -f /var/lib/polynovea-upgrade/agent.exit && [ -n "$PROBES" ] && case "$PROBES" in *COMMITTED*) break ;; esac
+  sleep 0.2
+done
+for _ in $(seq 1 300); do docker exec "$AGENT" test -f /var/lib/polynovea-upgrade/agent.exit && break; sleep 1; done
+[ "$(docker exec "$AGENT" cat /var/lib/polynovea-upgrade/agent.exit)" = 0 ] || fail "the upgrade to B failed: $(status_json)"
+echo "agent run: $(( $(date +%s) - start ))s; writes paused (maintenance -> writes resumed): $(step_seconds maintenance started writes ok)s; CMS down (maintenance -> start): $(step_seconds maintenance started start started)s; start -> healthy: $(step_seconds start started health ok)s"
+echo "app writes on B, in order:$PROBES"
+case "$PROBES" in " REFUSED 25006"*) ok "writes were refused during B's trial (read-only login)" ;; *) fail "first app write on B was not refused during the trial:$PROBES" ;; esac
+case "$PROBES" in *COMMITTED) ok "a write succeeds on B once the trial is over" ;; *) fail "no write committed on B after the upgrade:$PROBES" ;; esac
+status_json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s).steps.map(x=>x.step+':'+x.outcome);const h=v.indexOf('health:ok'),w=v.indexOf('writes:ok');process.exit(h>=0&&w>h?0:1)})" \
+  && ok "'read-only off' (writes resumed) is recorded after the health check passed" || fail "writes resumed is not recorded after health ok: $(status_json)"
+[ "$(psql_cms "select count(*) from pg_catalog.pg_db_role_setting s join pg_catalog.pg_roles r on r.oid = s.setrole where r.rolname = 'polynovea_app' and array_to_string(s.setconfig, ',') like '%default_transaction_read_only%'")" = 0 ] \
+  && ok "default_transaction_read_only is not set for polynovea_app (pg_db_role_setting)" || fail "polynovea_app is still read-only"
 wait_state running 0.4.1+bbbbbbb && ok "B is serving (/api/health reports 0.4.1+bbbbbbb)"
 docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_B" /etc/polynovea/polynovea.env && ok "the pin is B's digest"
 docker exec "$AGENT" python3 -I -B /opt/polynovea/upgrade-agent.py && ok "the same request is not run twice"
