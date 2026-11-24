@@ -102,7 +102,9 @@ test("a fresh install reaches a signed-in owner through the wizard, by keyboard"
 
   // Step 3d: recovery codes; confirming with the wrong one is refused.
   await press(page, "Show my recovery codes");
-  const items = await page.locator("ol li").allTextContents();
+  // Waits for the list itself (reading at once raced the page drawing it), found by its test id.
+  await expect(page.getByTestId("recovery-codes").locator("li")).toHaveCount(10);
+  const items = await page.getByTestId("recovery-codes").locator("li").allTextContents();
   const recoveryCodes = items.map((text) => text.replace(/^\s*\d+\.\s*/, "").trim()).filter((text) => /^[A-Za-z0-9]{5}-[A-Za-z0-9]{7}$/.test(text));
   expect(recoveryCodes).toHaveLength(10);
   writeState({ owner: { ...ownerAccount, totpKey, recoveryCodes } });

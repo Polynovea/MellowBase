@@ -27,6 +27,7 @@ Axe counts are critical / serious / moderate / minor, for 390 px light, 390 px d
 | [wizard-1-setup-code](screenshots/wizard-1-setup-code-1440-light.jpg) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | no | Set up Polynovea CMS |
 | [wizard-2-owner-details](screenshots/wizard-2-owner-details-1440-light.jpg) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | no | Set up Polynovea CMS |
 | [wizard-3-authenticator](screenshots/wizard-3-authenticator-1440-light.jpg) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | no | Set up Polynovea CMS |
+| [wizard-4-passkey](screenshots/wizard-4-passkey-1440-light.jpg) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | no | Set up Polynovea CMS |
 
 Serious or critical axe findings across all views: **0**.
 

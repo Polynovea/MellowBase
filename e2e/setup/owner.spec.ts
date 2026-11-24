@@ -87,7 +87,9 @@ async function completeOwnerSteps(page: Page): Promise<{ totpKey: string; recove
   await page.getByRole("button", { name: "Add a passkey" }).click();
 
   await page.getByRole("button", { name: "Show my recovery codes" }).click();
-  const items = await page.locator("ol li").allTextContents();
+  // Waits for the list itself (reading at once raced the page drawing it), found by its test id.
+  await expect(page.getByTestId("recovery-codes").locator("li")).toHaveCount(10);
+  const items = await page.getByTestId("recovery-codes").locator("li").allTextContents();
   const recoveryCodes = items.map((text) => text.replace(/^\s*\d+\.\s*/, "").trim()).filter((text) => /^[A-Za-z0-9]{5}-[A-Za-z0-9]{7}$/.test(text));
   expect(recoveryCodes).toHaveLength(10);
   const label = await page.getByLabel(/Type code number \d+/).getAttribute("id");

@@ -243,7 +243,7 @@ export function RecoveryStep({ onDone, onSessionLost }: StepProps) {
         <button type="button" onClick={() => void issue()} disabled={busy} className="ui-btn ui-btn-primary self-start">{busy ? "Working…" : "Show my recovery codes"}</button>
       ) : (
         <>
-          <ol className="grid grid-cols-2 gap-2 font-mono text-[13px] text-fg-primary">
+          <ol data-testid="recovery-codes" className="grid grid-cols-2 gap-2 font-mono text-[13px] text-fg-primary">
             {codes.map((code, index) => <li key={code}><span className="text-fg-muted">{index + 1}.</span> {code}</li>)}
           </ol>
           <div className="flex flex-wrap gap-2">
