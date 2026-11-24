@@ -38,7 +38,9 @@ apt-get install -y --no-install-recommends docker.io unattended-upgrades ca-cert
 install -m 0644 "$FILES/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
 install -m 0644 "$FILES/52polynovea-unattended-upgrades" /etc/apt/apt.conf.d/52polynovea-unattended-upgrades
 
-# 2. Docker: logs to the journal (kept 14 days), containers keep running while the daemon restarts.
+# 2. Docker: logs to the journal (kept 14 days). live-restore stays off on purpose: the CMS runs in the
+#    foreground of polynovea.service (docker run --rm), so when dockerd restarts (for example a security
+#    update), systemd restarts the service and verify-images.sh checks the image again before it starts.
 install -d -m 0755 /etc/docker /etc/systemd/journald.conf.d
 install -m 0644 "$FILES/daemon.json" /etc/docker/daemon.json
 install -m 0644 "$FILES/journald-polynovea.conf" /etc/systemd/journald.conf.d/polynovea.conf
