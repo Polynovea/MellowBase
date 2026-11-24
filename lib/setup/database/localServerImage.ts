@@ -41,9 +41,13 @@ export interface ImagePaths {
   localDbScript: string;
 }
 
-/** Where everything lives in the image. All on the data disk except the socket and the script. */
-export function imagePaths(env: Env = process.env): ImagePaths {
-  const dataRoot = env.POLYNOVEA_DATA_ROOT?.trim() || IMAGE_DATA_ROOT;
+/**
+ * Where everything lives in the image. All on the data disk except the socket and the script. The data
+ * root is fixed (no override): the wizard, local-db.sh, entrypoint.mjs and the archive_command in
+ * postgresql.conf must all agree on it, and a fixed path cannot carry shell syntax into archive_command.
+ */
+export function imagePaths(): ImagePaths {
+  const dataRoot = IMAGE_DATA_ROOT;
   return {
     dataRoot,
     dataDir: path.posix.join(dataRoot, "postgresql"),
@@ -135,5 +139,5 @@ export function createImageLocalServerHost(paths: ImagePaths = imagePaths(), dep
 
 /** The image's host, or null outside the image. */
 export function imageLocalServerHost(env: Env = process.env): LocalServerHost | null {
-  return runningInServerImage(env) ? createImageLocalServerHost(imagePaths(env)) : null;
+  return runningInServerImage(env) ? createImageLocalServerHost(imagePaths()) : null;
 }

@@ -11,7 +11,9 @@
 set -eu
 
 PGBIN=/usr/lib/postgresql/16/bin
-DATA_ROOT="${POLYNOVEA_DATA_ROOT:-/var/lib/polynovea}"
+# Fixed, with no override: the wizard (localServerImage.ts), entrypoint.mjs and the archive_command
+# below must all agree on it, and a fixed path cannot carry shell syntax into archive_command.
+DATA_ROOT=/var/lib/polynovea
 PGDATA="$DATA_ROOT/postgresql"
 SOCKET_DIR=/var/run/postgresql
 LOG_DIR="$DATA_ROOT/log"
@@ -59,7 +61,7 @@ password_encryption = scram-sha-256
 ssl = off
 wal_level = replica
 archive_mode = on
-archive_command = 'pgbackrest --config=$PGBACKREST_CONFIG --log-path=$LOG_DIR/pgbackrest --lock-path=/tmp/pgbackrest --stanza=polynovea archive-push %p'
+archive_command = 'pgbackrest --config="$PGBACKREST_CONFIG" --log-path="$LOG_DIR/pgbackrest" --lock-path=/tmp/pgbackrest --stanza=polynovea archive-push "%p"'
 archive_timeout = 300
 max_wal_senders = 3
 # Logs on the data disk, one file per weekday, overwritten a week later (14 days is the CMS's own limit).

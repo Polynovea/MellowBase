@@ -97,6 +97,7 @@ docker exec "$PREFIX-tunnel" sh -ec '
   sql() { psql -h /var/run/postgresql -U postgres -d polynovea -Atc "$1"; }
   check() { if [ "$1" = "$2" ]; then echo "ok    $3"; else echo "FAIL  $3: got [$1], expected [$2]"; exit 1; fi; }
   check "$(sql "show listen_addresses")" "127.0.0.1" "listens on 127.0.0.1 only"
+  check "$(sql "show archive_command")" "pgbackrest --config=\"/var/lib/polynovea/etc/pgbackrest.conf\" --log-path=\"/var/lib/polynovea/log/pgbackrest\" --lock-path=/tmp/pgbackrest --stanza=polynovea archive-push \"%p\"" "archive_command uses the fixed data root, every path quoted"
   check "$(sql "select string_agg(rolname, \$\$,\$\$ order by rolname) from pg_roles where rolname like \$\$polynovea\\_%\$\$")" "polynovea_app,polynovea_owner" "polynovea_owner and polynovea_app exist"
   # Sign-in rules (pg_hba): nothing accepts a connection except the superuser over the socket by peer,
   # and polynovea_owner/polynovea_app to the polynovea database from 127.0.0.1/32 by SCRAM.

@@ -21,7 +21,8 @@ import { accessSync, constants, existsSync, statSync } from "node:fs";
 import path from "node:path";
 
 const APP_DIR = process.env.POLYNOVEA_APP_DIR || "/app";
-const DATA_ROOT = process.env.POLYNOVEA_DATA_ROOT || "/var/lib/polynovea";
+// Fixed, like lib/setup/database/localServerImage.ts and local-db.sh: no override.
+const DATA_ROOT = "/var/lib/polynovea";
 const LOCAL_DB = "/opt/polynovea/bin/local-db.sh";
 const WORKER = path.join(APP_DIR, "scripts", "delivery-worker.mjs");
 const NOT_CONFIGURED_EXIT = 3;

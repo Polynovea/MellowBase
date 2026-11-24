@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { localServerSettings } from "./localServer";
 import { createImageLocalServerHost, IMAGE_LOCAL_DB_SCRIPT, imageLocalServerHost, imagePaths, imagePgBackRestEnv, runningInServerImage } from "./localServerImage";
@@ -17,7 +19,7 @@ describe("server image detection", () => {
 
 describe("image paths", () => {
   it("keeps the database, its backups and pgBackRest's config on the data disk", () => {
-    const paths = imagePaths({});
+    const paths = imagePaths();
     expect(paths.dataRoot).toBe("/var/lib/polynovea");
     for (const value of [paths.dataDir, paths.localRepoPath, paths.pgBackRestConfigPath, paths.pgBackRestLogPath]) {
       expect(value.startsWith("/var/lib/polynovea/")).toBe(true);
@@ -26,14 +28,38 @@ describe("image paths", () => {
     expect(paths.localDbScript).toBe(IMAGE_LOCAL_DB_SCRIPT);
   });
 
+  it("is fixed: no environment override in the wizard, local-db.sh or the entrypoint, so all three agree", () => {
+    vi.stubEnv("POLYNOVEA_DATA_ROOT", "/tmp/elsewhere");
+    try {
+      expect(imagePaths().dataRoot).toBe("/var/lib/polynovea");
+      expect(localServerSettings().dataDir).toBe("/var/lib/polynovea/postgresql");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const root = path.resolve(__dirname, "..", "..", "..");
+    const localDb = readFileSync(path.join(root, "docker/local-db.sh"), "utf8");
+    const entrypoint = readFileSync(path.join(root, "docker/entrypoint.mjs"), "utf8");
+    for (const source of [localDb, entrypoint]) expect(source).not.toMatch(/POLYNOVEA_DATA_ROOT/);
+    expect(localDb).toMatch(/^DATA_ROOT=\/var\/lib\/polynovea\b/m);
+    expect(entrypoint).toMatch(/^const DATA_ROOT = "\/var\/lib\/polynovea";$/m);
+  });
+
+  it("quotes every path in archive_command (PostgreSQL runs it through a shell)", () => {
+    const localDb = readFileSync(path.resolve(__dirname, "..", "..", "..", "docker/local-db.sh"), "utf8");
+    const line = localDb.split(/\r?\n/).find((l) => l.startsWith("archive_command = ")) ?? "";
+    expect(line).toContain('--config="$PGBACKREST_CONFIG"');
+    expect(line).toContain('--log-path="$LOG_DIR/pgbackrest"');
+    expect(line).toContain('archive-push "%p"');
+  });
+
   it("is what the wizard uses", () => {
-    const paths = imagePaths({});
+    const paths = imagePaths();
     expect(localServerSettings()).toEqual({ dataDir: paths.dataDir, port: 5432, socketPath: paths.socketDir, localRepoPath: paths.localRepoPath });
   });
 });
 
 describe("the image's LocalServerHost", () => {
-  const paths = imagePaths({});
+  const paths = imagePaths();
 
   it("starts PostgreSQL through the image's script", async () => {
     const run = vi.fn(async () => {});
