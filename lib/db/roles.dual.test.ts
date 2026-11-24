@@ -47,6 +47,7 @@ function catalogChecks(label: string, url: () => string | undefined) {
       // 0074: tables the migration worker and the engine's bookkeeping act on; the app may only read them
       // (schema_migration_ledger: read, and insert the request columns only; see appAccess.dual.test.ts).
       expect(rows.filter((row) => !row.can_write).map((row) => row.relname).sort()).toEqual([
+        "content_model_move_runs", "content_model_storage",
         "content_model_tables", "polynovea_migration_ledger", "schema_expand_contract_tasks", "schema_migration_confirmations",
         "schema_migration_ledger", "schema_migration_runs", "schema_name_reservations",
       ]);

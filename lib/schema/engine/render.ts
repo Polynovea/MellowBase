@@ -1,7 +1,8 @@
 // SQL for each plan step. Every identifier goes through assertIdentifier() and then Kysely's sql.id()
 // (double-quoted); column types and FK actions come from fixed maps, never from input; the only value
 // (a backfill default) is a bound parameter. Nothing user-supplied is concatenated into SQL.
-import { sql, type RawBuilder } from "kysely";
+import { sql, type Kysely, type RawBuilder, type Transaction } from "kysely";
+import type { DB } from "@/lib/db/generated/database";
 import { isPgColumnType } from "@/lib/schema/engine/columns";
 import { assertIdentifier, derivedName, STORAGE_COLUMNS, TABLE_NAME_PATTERN } from "@/lib/schema/engine/names";
 import type { ColumnShape, ForeignKeyAction, PgColumnType, PlanStep, RenderedStatement } from "@/lib/schema/engine/plan";
@@ -13,6 +14,18 @@ export const APP_POLICY = "polynovea_app_all";
 export interface RenderOptions {
   /** Build and drop indexes CONCURRENTLY, outside a transaction (default true, for the runner). The reference executor and tests set false. */
   concurrentIndexes?: boolean;
+  /**
+   * The schema pg_trgm is installed in (trigramSchema() looks it up), so gin_trgm_ops is named
+   * exactly. Without it the operator class is left to the session's search_path.
+   */
+  trgmSchema?: string;
+}
+
+/** The schema pg_trgm is installed in, or null if it is not installed. */
+export async function trigramSchema(db: Kysely<DB> | Transaction<DB>): Promise<string | null> {
+  const { rows } = await sql<{ schema: string }>`
+    select n.nspname as schema from pg_catalog.pg_extension e join pg_catalog.pg_namespace n on n.oid = e.extnamespace where e.extname = 'pg_trgm'`.execute(db);
+  return rows[0]?.schema ?? null;
 }
 
 export function tableRef(table: string): RawBuilder<unknown> {
@@ -84,12 +97,13 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
     case "rename_column": {
       if (step.from === step.to) return [];
       const statements = [tx(sql`alter table ${table} rename column ${ident(step.from)} to ${ident(step.to)}`)];
-      const renameIndex = (kind: "uq" | "ix") =>
+      const renameIndex = (kind: "uq" | "ix" | "tg") =>
         tx(sql`alter index ${indexRef(derivedName(kind, step.table, step.from))} rename to ${ident(derivedName(kind, step.table, step.to))}`);
       const renameConstraint = (kind: "ck" | "fk") =>
         tx(sql`alter table ${table} rename constraint ${ident(derivedName(kind, step.table, step.from))} to ${ident(derivedName(kind, step.table, step.to))}`);
       if (step.column.unique) statements.push(renameIndex("uq"));
       if (step.column.indexed) statements.push(renameIndex("ix"));
+      if (step.column.searchIndexed) statements.push(renameIndex("tg"));
       if (step.column.requiredWhenPublished) statements.push(renameConstraint("ck"));
       if (step.column.foreignKey) statements.push(renameConstraint("fk"));
       return statements;
@@ -125,6 +139,17 @@ export function renderStep(step: PlanStep, options: RenderOptions = {}): Rendere
     case "drop_index": {
       const name = indexRef(derivedName(step.unique ? "uq" : "ix", step.table, step.column));
       const query = sql`drop index ${sql.raw(concurrently ? "concurrently " : "")}${name}`;
+      return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently, ownTransaction: false }];
+    }
+    case "add_search_index": {
+      // gin_trgm_ops is pg_trgm's (migration 0017; 0076 notes where it must be installed).
+      const name = ident(derivedName("tg", step.table, step.column));
+      const opclass = options.trgmSchema ? sql`${sql.id(assertIdentifier(options.trgmSchema))}.gin_trgm_ops` : sql`gin_trgm_ops`;
+      const query = sql`create index ${sql.raw(concurrently ? "concurrently " : "")}${name} on ${table} using gin (${ident(step.column)} ${opclass})`;
+      return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently, ownTransaction: false }];
+    }
+    case "drop_search_index": {
+      const query = sql`drop index ${sql.raw(concurrently ? "concurrently " : "")}${indexRef(derivedName("tg", step.table, step.column))}`;
       return [{ sql: query, transactional: !concurrently, lockSensitive: !concurrently, ownTransaction: false }];
     }
     case "add_foreign_key": {

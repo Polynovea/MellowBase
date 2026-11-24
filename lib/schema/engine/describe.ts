@@ -81,6 +81,10 @@ export function describeStep(step: PlanStep, context: DescribeContext): string {
         : `Indexes ${label(step.column)} for faster filtering and sorting`;
     case "drop_index":
       return step.unique ? `Allows duplicate values in ${label(step.column)}` : `Removes the filter index on ${label(step.column)}`;
+    case "add_search_index":
+      return `Indexes ${label(step.column)} for search`;
+    case "drop_search_index":
+      return `Removes the search index on ${label(step.column)}`;
     case "add_foreign_key":
       return `Checks that ${label(step.column)} links to an existing entry (deleting a linked entry ${step.onDelete === "set_null" ? "clears the link" : "is blocked"})`;
     case "drop_foreign_key":

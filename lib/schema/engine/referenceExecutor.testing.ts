@@ -12,7 +12,7 @@ import { confirmationPrompt } from "@/lib/schema/engine/describe";
 import { SchemaEngineError } from "@/lib/schema/engine/errors";
 import type { SchemaLimits } from "@/lib/schema/engine/limits";
 import type { MigrationPlan, PlanStage } from "@/lib/schema/engine/plan";
-import { renderStep } from "@/lib/schema/engine/render";
+import { renderStep, trigramSchema } from "@/lib/schema/engine/render";
 
 /** Per-statement lock wait in the reference executor. */
 const DDL_LOCK_TIMEOUT = "3s";
@@ -29,8 +29,9 @@ const stageBaseHash = (plan: MigrationPlan, stage: PlanStage) => (stage === "exp
  */
 async function runStage(trx: Transaction<DB>, plan: MigrationPlan, stage: PlanStage): Promise<void> {
   await sql`select set_config('lock_timeout', ${DDL_LOCK_TIMEOUT}, true)`.execute(trx);
+  const trgmSchema = (await trigramSchema(trx)) ?? undefined;
   for (const step of stageSteps(plan, stage)) {
-    for (const statement of renderStep(step, { concurrentIndexes: false })) await statement.sql.execute(trx);
+    for (const statement of renderStep(step, { concurrentIndexes: false, trgmSchema })) await statement.sql.execute(trx);
   }
 }
 
