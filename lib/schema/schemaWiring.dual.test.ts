@@ -8,6 +8,9 @@ import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
 import { closeTableMoveSession, runWorker } from "@/lib/content/testing/tableMove";
 import { moveModel } from "@/lib/content/contentMove";
 import { tableSource } from "@/lib/content/tableStore";
+import { modelSchemaChanges } from "@/lib/schema/schemaChanges";
+import { confirmPlanStage } from "@/lib/schema/runner/request";
+import { createEntry } from "@/lib/content/entryService";
 import type { FieldDefinition } from "@/lib/schema/fields/types";
 
 const f = (key: string, type: FieldDefinition["type"] = "text", extra: Partial<FieldDefinition> = {}): FieldDefinition =>
@@ -77,6 +80,38 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
     const rows = await ledger(backend, modelId);
     expect(rows.at(-1)).toEqual({ stage: "destructive", status: "awaiting_confirmation" });
     expect(await columns(backend, modelId)).toEqual(expect.arrayContaining(["title", "body"]));
+
+    // The model response's view: the deletion in plain words, with the values it would delete.
+    const model = (await getModel(workspaceId, modelId))!;
+    const changes = await modelSchemaChanges(getDb(), model, null);
+    const waiting = changes.find((change) => change.stage === "destructive")!;
+    expect(waiting).toMatchObject({ status: "awaiting_confirmation", confirmation: { prompt: expect.stringContaining(apiKey) } });
+    expect(waiting.plan.join(" ")).toMatch(/body/i);
+    expect(typeof waiting.confirmation!.valuesDeleted).toBe("number");
+
+    // A wrong key changes nothing; the right key lets the worker drop the column.
+    await expect(confirmPlanStage(getDb(), { ledgerId: waiting.ledgerId, confirmedBy: adminUserId, typedApiKey: "wrong" })).rejects.toMatchObject({ code: "22023" });
+    await confirmPlanStage(getDb(), { ledgerId: waiting.ledgerId, confirmedBy: adminUserId, typedApiKey: apiKey });
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    expect(await columns(backend, modelId)).not.toContain("body");
+  });
+
+  it("the deletion count reflects the values that would be deleted", async () => {
+    const { workspaceId, adminUserId } = await workspace(backend);
+    const apiKey = uniqueKey("tile");
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Tile", apiKey, fields: [f("title"), f("note")] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    await runWorker(modelId);
+    for (let i = 0; i < 3; i += 1) {
+      const entry = await createEntry({ workspaceId, modelId, data: { title: `T${i}`, note: `N${i}` }, actorAdminUserId: adminUserId });
+      if (!entry.ok) throw new Error(entry.error);
+    }
+    const changed = await applyChange({ model: (await getModel(workspaceId, modelId))!, proposedSchema: { name: "Tile", apiKey, fields: [f("title")] }, acknowledgeUnsafe: true, actorAdminUserId: adminUserId });
+    if (!changed.ok || !changed.data.applied) throw new Error("change not applied");
+    await runWorker(modelId);
+    const waiting = (await modelSchemaChanges(getDb(), (await getModel(workspaceId, modelId))!, null)).find((change) => change.stage === "destructive")!;
+    expect(waiting.confirmation!.valuesDeleted).toBe(3);
   });
 
   it("a refused request rolls the write back: no version without its ledger rows, no ledger rows without their version", async () => {
