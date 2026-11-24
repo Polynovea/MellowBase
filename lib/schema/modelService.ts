@@ -6,6 +6,10 @@
 import { logPlatformEvent } from "@/lib/platform/audit";
 import { hashModelSchema } from "@/lib/schema/engine/hash";
 import * as postgres from "@/lib/schema/modelService.postgres";
+import { withTransaction, type DbExecutor } from "@/lib/db/index";
+import { requestSchemaChange } from "@/lib/schema/runner/request";
+import { schemaLimitsFromEnv } from "@/lib/schema/engine/limits";
+import { SchemaEngineError } from "@/lib/schema/engine/errors";
 import { validateCanonicalSchema } from "@/lib/schema/canonicalSchema";
 import { computeSchemaDiff, type SchemaDiff } from "@/lib/schema/diff";
 import { resolveModelCapability, type CanonicalSchema, type ModelCapability } from "@/lib/schema/fields/types";
@@ -61,22 +65,71 @@ export async function createModel(params: {
   icon?: string;
   proposedSchema: unknown;
   createdBy: string;
-}): Promise<ServiceResult<{ model: ContentModelRow; version: ContentModelVersionRow }>> {
+}): Promise<ServiceResult<{ model: ContentModelRow; version: ContentModelVersionRow; schemaChange: QueuedSchemaChange }>> {
   const validation = validateCanonicalSchema(params.proposedSchema);
   if (!validation.valid || !validation.schema) {
     return { ok: false, error: validation.errors.join("; "), status: 400 };
   }
   const schema = validation.schema;
 
-  return postgres.createModelRecord({
-    workspaceId: params.workspaceId,
-    actorId: params.createdBy,
-    schema,
-    description: params.description ?? null,
-    icon: params.icon ?? null,
-    hash: computeSchemaHash(schema),
-    capability: resolveModelCapability(schema),
+  // The model, its first version and the request for its table commit together (or not at all).
+  return inTransactionWithSchemaChange(params.createdBy, async (trx) => {
+    const created = await postgres.createModelRecord({
+      workspaceId: params.workspaceId,
+      actorId: params.createdBy,
+      schema,
+      description: params.description ?? null,
+      icon: params.icon ?? null,
+      hash: computeSchemaHash(schema),
+      capability: resolveModelCapability(schema),
+      db: trx,
+    });
+    return created.ok
+      ? { ok: true as const, data: created.data, modelId: created.data.model.id, versionId: created.data.version.id }
+      : { ok: false as const, error: created.error, status: created.status };
   });
+}
+
+/** What a model write queued for the schema worker (Phase 3 runner; Phase 4 wiring). */
+export interface QueuedSchemaChange {
+  /** Additive steps (new table, new columns, indexes): pending, applied automatically. */
+  expandLedgerId: string | null;
+  /** Deleting steps: awaiting_confirmation until someone types the model's api key. */
+  destructiveLedgerId: string | null;
+}
+
+class RollbackWith extends Error {
+  constructor(readonly outcome: { ok: false; error: string; status: number }) {
+    super("rollback");
+  }
+}
+
+/**
+ * Runs a model write and queues its schema change (requestSchemaChange) in ONE transaction: a version
+ * never exists without its ledger rows, nor ledger rows without their version. A refusal from the
+ * schema engine (a cap, a reserved name, an invalid plan) rolls the version back and is returned as
+ * the write's error.
+ */
+type Written<D> = { ok: true; data: D; modelId: string; versionId: string } | { ok: false; error: string; status?: number };
+
+async function inTransactionWithSchemaChange<D extends object>(
+  actorId: string,
+  write: (trx: DbExecutor) => Promise<Written<D>>,
+): Promise<{ ok: true; data: D & { schemaChange: QueuedSchemaChange } } | { ok: false; error: string; status: number }> {
+  try {
+    return await withTransaction(async (trx) => {
+      const written = await write(trx);
+      if (!written.ok) throw new RollbackWith({ ok: false, error: written.error ?? "Could not save the model", status: written.status ?? 500 });
+      const { expandLedgerId, destructiveLedgerId } = await requestSchemaChange(trx, {
+        contentModelId: written.modelId, targetVersionId: written.versionId, requestedBy: actorId, limits: schemaLimitsFromEnv(),
+      });
+      return { ok: true as const, data: { ...written.data, schemaChange: { expandLedgerId, destructiveLedgerId } } };
+    });
+  } catch (error) {
+    if (error instanceof RollbackWith) return error.outcome;
+    if (error instanceof SchemaEngineError) return { ok: false, error: error.message, status: error.status };
+    throw error;
+  }
 }
 
 /** The content_fields rows a canonical schema projects to. */
@@ -156,6 +209,8 @@ export interface ApplyChangeResult {
   blockedReason?: string;
   /** A reviewed schema identical to the current version is never versioned again. */
   noChanges?: boolean;
+  /** The schema change queued with the new version (applied by the schema worker). */
+  schemaChange?: QueuedSchemaChange;
 }
 
 export async function applyChange(params: {
@@ -202,14 +257,24 @@ export async function applyChange(params: {
     metadata: { fromVersion: currentVersion.version_number, toVersion: currentVersion.version_number + 1 },
   });
 
-  const applied = await postgres.applySchemaVersion({
-    model: params.model,
-    actorId: params.actorAdminUserId,
-    schema: proposedSchema,
-    hash: computeSchemaHash(proposedSchema),
-    changeSummary: params.changeSummary ?? null,
-    capability: resolveModelCapability(proposedSchema),
+  // The new version and the request to reshape the model's table commit together (or not at all).
+  const queued = await inTransactionWithSchemaChange(params.actorAdminUserId, async (trx) => {
+    const result = await postgres.applySchemaVersion({
+      model: params.model,
+      actorId: params.actorAdminUserId,
+      schema: proposedSchema,
+      hash: computeSchemaHash(proposedSchema),
+      changeSummary: params.changeSummary ?? null,
+      capability: resolveModelCapability(proposedSchema),
+      db: trx,
+    });
+    return result.ok
+      ? { ok: true as const, data: { version: result.version }, modelId: params.model.id, versionId: result.version.id }
+      : { ok: false as const, error: result.error, status: 500 };
   });
+  const applied = queued.ok
+    ? { ok: true as const, version: queued.data.version, schemaChange: queued.data.schemaChange }
+    : { ok: false as const, error: queued.error, status: queued.status };
 
   if (!applied.ok) {
     await logPlatformEvent({
@@ -220,8 +285,8 @@ export async function applyChange(params: {
       entityId: params.model.id,
       metadata: { error: applied.error },
     });
-    return { ok: false, error: applied.error, status: 500 };
+    return { ok: false, error: applied.error, status: applied.status ?? 500 };
   }
 
-  return { ok: true, data: { applied: true, diff, version: applied.version } };
+  return { ok: true, data: { applied: true, diff, version: applied.version, schemaChange: applied.schemaChange } };
 }

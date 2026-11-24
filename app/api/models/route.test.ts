@@ -79,7 +79,7 @@ describe("GET /api/models", () => {
 describe("POST /api/models", () => {
   it("creates a model and returns 201 on success", async () => {
     mockRequirePlatformAccess.mockResolvedValue({ data: { actor, adminUser } });
-    mockCreateModel.mockResolvedValue({ ok: true, data: { model: { id: "model-1" } as never, version: { id: "v1" } as never } });
+    mockCreateModel.mockResolvedValue({ ok: true, data: { model: { id: "model-1" } as never, version: { id: "v1" } as never, schemaChange: { expandLedgerId: "l1", destructiveLedgerId: null } } });
 
     const res = await POST(postReq({ schema: { name: "Blog Post", apiKey: "blog_post", fields: [] } }));
     expect(res.status).toBe(201);
