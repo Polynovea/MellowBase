@@ -1,0 +1,22 @@
+[Unit]
+Description=Polynovea CMS upgrade agent
+Requires=docker.service var-lib-polynovea.mount
+After=docker.service var-lib-polynovea.mount network-online.target polynovea.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root: it restarts polynovea.service and edits /etc/polynovea/polynovea.env. The CMS itself never
+# gets Docker or root; it can only ask, and the agent verifies everything it is asked for.
+ExecStart=/usr/bin/python3 -I /opt/polynovea/upgrade-agent.py
+# Backup, pull and migrations can be long; the switch-back has its own 2-minute health deadline.
+TimeoutStartSec=3h
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+NoNewPrivileges=yes
+ProtectHome=yes
+# No PrivateTmp: dockerd resolves the cosign bind mounts in the host's /tmp.
+UMask=0022
+StateDirectory=polynovea-upgrade
+StateDirectoryMode=0755
