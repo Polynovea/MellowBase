@@ -75,6 +75,9 @@ type RankedRow = Awaited<ReturnType<typeof callFunction<"cms_search_content_rank
 async function searchModelTable(params: ContentSearchParams, source: TableSource, q: string): Promise<RankedRow[]> {
   const columns = Object.values(source.shape.columns).filter((column) => column.searchIndexed && column.pgType === "text");
   const table = sql.id("content", source.table);
+  const entryCol = sql.id(STORAGE_COLUMNS.entryId);
+  const variantCol = sql.id(STORAGE_COLUMNS.variant);
+  const localeCol = sql.id(STORAGE_COLUMNS.locale);
   const columnMatch = columns.length
     ? sql.join(columns.map((column) => sql`r.${sql.id(column.name)} % ${q} or r.${sql.id(column.name)} ilike '%' || ${q} || '%'`), sql` or `)
     : sql`false`;
@@ -99,7 +102,17 @@ async function searchModelTable(params: ContentSearchParams, source: TableSource
                                             and rel.source_version_id = d.version_id and rel.target_term_id = ${params.termId}::uuid)` : sql``}
        and (
          d.search_vector @@ input.tsq
-         or d.entry_id in (select r.${sql.id(STORAGE_COLUMNS.entryId)} from ${table} r where ${columnMatch})
+         -- The table row of this document's own version: same entry, the variant whose pointer is the
+         -- document's version, same locale. A draft's text never surfaces through its published
+         -- document, nor one locale's through another's.
+         or exists (
+           select 1 from ${table} r
+             join public.content_entries e on e.id = r.${entryCol} and e.workspace_id = d.workspace_id and e.content_model_id = d.content_model_id
+            where r.${entryCol} = d.entry_id
+              and r.${localeCol} is not distinct from d.locale
+              and ((r.${variantCol} = 'draft' and e.current_draft_version_id = d.version_id)
+                or (r.${variantCol} = 'published' and e.published_version_id = d.version_id))
+              and (${columnMatch}))
        )
      order by greatest(ts_rank_cd(d.search_vector, input.tsq), similarity(d.search_text, input.q)) desc, d.updated_at desc
      limit ${limit} offset ${offset}`.execute(getDb());

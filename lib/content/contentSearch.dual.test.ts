@@ -5,6 +5,7 @@
 // and cross-model search stay on content_search_documents. Each query below runs before and after the
 // switch; the results must be equal except for the query types the split is known to change, which
 // the test names and reports.
+import { randomUUID } from "node:crypto";
 import { afterAll, expect, it, vi } from "vitest";
 import { describeWithDatabase } from "@/lib/db/testing/database";
 import { getDb } from "@/lib/db/index";
@@ -89,5 +90,51 @@ describeWithDatabase("search before and after a model's reads move to its table"
     // Rolling the model back restores the previous search exactly.
     await setReadSource(getDb(), { workspaceId, modelId, source: "snapshot" });
     for (const { q } of QUERIES) expect({ q, hits: await run(q) }).toEqual({ q, hits: before.get(q) });
+  });
+
+  it("matches only the table row of the document's own version: no draft text through a published document, no other locale", async () => {
+    const { workspaceId, adminUserId } = await backend.createWorkspace();
+    await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
+    const model = await createModel({
+      workspaceId, createdBy: adminUserId, proposedSchema: {
+        name: "Page", apiKey: uniqueKey("page"), fields: [{ key: "title", label: "Title", type: "text", required: true }],
+      },
+    });
+    if (!model.ok) throw new Error(model.error);
+    const modelId = model.data.model.id;
+    // Each entry: a published version in English and a newer draft; its search document is the
+    // published version (status published). The draft holds a word the published text does not.
+    const entries = [
+      { id: randomUUID(), published: "Alpha harbour", draft: "Alpha zygomorphic", draftLocale: "en" },
+      { id: randomUUID(), published: "Beta lighthouse", draft: "Beta quixotry", draftLocale: "hi" },
+      { id: randomUUID(), published: "Gamma zygomorphic", draft: "Gamma", draftLocale: "en" },
+    ];
+    for (const entry of entries) {
+      const publishedId = randomUUID();
+      const draftId = randomUUID();
+      await backend.query("insert into content_entries (id, workspace_id, content_model_id, status) values ($1, $2, $3, 'published')", [entry.id, workspaceId, modelId]);
+      await backend.query(
+        `insert into content_entry_versions (id, entry_id, model_schema_version, version_number, data_jsonb, locale, state)
+         values ($1, $3, 1, 1, $4, 'en', 'published'), ($2, $3, 1, 2, $5, $6, 'draft')`,
+        [publishedId, draftId, entry.id, JSON.stringify({ title: entry.published }), JSON.stringify({ title: entry.draft }), entry.draftLocale]);
+      await backend.query("update content_entries set published_version_id = $1, current_draft_version_id = $2 where id = $3", [publishedId, draftId, entry.id]);
+      await backend.query(
+        `insert into content_search_documents (entry_id, workspace_id, version_id, content_model_id, locale, status, search_text)
+         values ($1, $2, $3, $4, 'en', 'published', $5)`,
+        [entry.id, workspaceId, publishedId, modelId, entry.published]);
+    }
+    expect((await bringModelTableUp({ workspaceId, modelId, actor: adminUserId, switchReads: true })).verify.matched).toBe(true);
+    const hits = async (q: string, locale?: string) =>
+      (await searchContent({ workspaceId, query: q, modelId, locale })).map((hit: { entry_id: string | null }) => String(hit.entry_id)).sort();
+
+    // A word only in a draft: found through the published document whose own text has it, never
+    // through another entry's draft row.
+    expect(await hits("zygomorphic")).toEqual([entries[2].id]);
+    expect(await hits("zygomorph")).toEqual([entries[2].id]);
+    // A word only in a draft in another locale: not found, with or without a locale filter.
+    expect(await hits("quixotry")).toEqual([]);
+    expect(await hits("quixotr", "en")).toEqual([]);
+    // The published text itself is still found by substring and trigram on the table.
+    expect(await hits("lighthous")).toEqual([entries[1].id]);
   });
 });
