@@ -3,7 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const auth = { requestId: "req-1", workspaceId: "ws", tokenId: "tok", tokenName: "t", actorAdminUserId: null, scopes: ["schema.read"], allowedModels: [], rateLimit: { limit: 10, remaining: 9, resetAt: "2026-11-24T00:00:00Z" }, agentIdentityId: null, agentToolName: null, roleId: null };
 
 vi.mock("@/lib/developer/apiAuth", () => ({ requireDeveloperApi: vi.fn(async () => ({ data: auth })) }));
-vi.mock("@/lib/db/index", () => ({ getDb: () => ({}) }));
+const dbState: { schema: unknown; calls: number } = { schema: null, calls: 0 };
+vi.mock("@/lib/db/index", () => ({
+  getDb: () => {
+    const chain: Record<string, unknown> = {};
+    for (const method of ["selectFrom", "innerJoin", "select", "where", "orderBy", "limit"]) chain[method] = () => chain;
+    chain.executeTakeFirst = async () => { dbState.calls += 1; return dbState.schema ? { schema_json: dbState.schema } : undefined; };
+    return chain;
+  },
+}));
 vi.mock("@/lib/developer/items/principal", () => ({ principalForToken: vi.fn(async () => ({})), previewScope: vi.fn(async () => null) }));
 vi.mock("@/lib/developer/items/openapiInputs", () => ({ loadItemsOpenApiInputs: vi.fn(async () => ({ models: [], schemaHash: "h" })) }));
 vi.mock("@/lib/developer/openapiService", () => ({ buildWorkspaceOpenApi: vi.fn(async () => ({ openapi: "3.1.0" })) }));
@@ -64,5 +72,39 @@ describe("bound-agent tokens: the items routes are governed tools", async () => 
     expect(tool("DELETE", "/api/v1/models/article/items/x")).toBe("cms.delete");
     expect(tool("PUT", "/api/v1/models/article/items/x")).toBeNull();
     expect(tool("GET", "/api/v1/models/article")).toBe("cms.schema.get");
+  });
+});
+
+describe("schema drift headers on item reads (W2's classifier)", async () => {
+  const { driftHeaders } = await import("@/lib/developer/items/http");
+  const { ARTICLE_SCHEMA, FIXTURE_HASHES } = await import("@/lib/developer/items/testing/fixtureModels");
+  const readable = new Set(ARTICLE_SCHEMA.fields.map((f) => f.key).filter((k) => k !== "secret"));
+  const view = { modelId: "m1", current: { apiKey: "article", name: "Article", schema: ARTICLE_SCHEMA, schemaHash: FIXTURE_HASHES.article, readable, writable: readable, canWrite: true, canDelete: true } };
+  const req = (hash?: string) => new Request("https://cms.example.test/api/v1/models/article/items", { headers: hash ? { "x-polynovea-schema-hash": hash } : {} });
+
+  it("nothing when no hash is sent or the hash is current", async () => {
+    expect(await driftHeaders(req(), "ws", view)).toEqual({});
+    expect(await driftHeaders(req(FIXTURE_HASHES.article), "ws", view)).toEqual({});
+  });
+
+  it("a readable field whose type changed is major; the field list (for the SDK's removal check) never names hidden fields", async () => {
+    dbState.schema = { ...ARTICLE_SCHEMA, fields: ARTICLE_SCHEMA.fields.map((f) => (f.key === "rating" ? { ...f, type: "text", validation: undefined } : f)) };
+    const headers = await driftHeaders(req("c".repeat(64)), "ws", view);
+    expect(headers["x-polynovea-schema-change"]).toBe("major");
+    expect(headers["x-polynovea-schema-fields"].split(",")).not.toContain("secret");
+    expect(headers["x-polynovea-schema-fields"].split(",")).toContain("title");
+    expect(dbState.calls).toBe(1);
+    // Memoised: the same caller view and hash costs no second lookup.
+    await driftHeaders(req("c".repeat(64)), "ws", view);
+    expect(dbState.calls).toBe(1);
+  });
+
+  it("an unknown hash is unknown", async () => {
+    dbState.schema = null;
+    expect((await driftHeaders(req("d".repeat(64)), "ws", view))["x-polynovea-schema-change"]).toBe("unknown");
+  });
+
+  it("every items response varies by the schema hash it was asked with", () => {
+    expect(itemsOk({ data: [] }, { requestId: "r" }, "h").headers.get("vary")).toContain("x-polynovea-schema-hash");
   });
 });

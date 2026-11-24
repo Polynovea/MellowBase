@@ -20,6 +20,7 @@ import { decodeCursor, encodeCursor, sortSpecHash } from "@/lib/developer/items/
 import { ItemsApiError } from "@/lib/developer/items/errors";
 import { checkJoins, parseExpand, parseFields, parseFilter, parseSort, type ExpandNode, type FieldLookup, type ResolvedField } from "@/lib/developer/items/filter";
 import { DEFAULT_SORT, runItemsQuery, type ItemRow, type QueryModel, type SortSpec } from "@/lib/developer/items/query";
+import type { OpenApiModelInput } from "@/lib/developer/items/openapi";
 import { SEARCHABLE_TYPES, SEARCH_TERM, type ItemRecord, type Variant } from "@/lib/developer/items/types";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -144,11 +145,26 @@ async function expandItems(trx: Kysely<DB>, ctx: ItemsContext, loaded: Loaded, i
   }
 }
 
+/** The caller's view of the model, as the OpenAPI document and the drift check see it. */
+export interface ModelView {
+  modelId: string;
+  current: OpenApiModelInput;
+}
+
+function viewOf(loaded: Loaded, access: ModelAccess): ModelView {
+  const model = loaded.root;
+  return {
+    modelId: model.id,
+    current: { apiKey: model.apiKey, name: model.schema.name, schema: model.schema, schemaHash: model.schemaHash, readable: access.readable, writable: access.writable, canWrite: access.canWrite, canDelete: access.canDelete },
+  };
+}
+
 export interface ListResult {
   items: ItemRecord[];
   nextCursor: string | null;
   limit: number;
   schemaHash: string;
+  view: ModelView;
 }
 
 /** GET /items. `params` are the request's query parameters. */
@@ -209,11 +225,11 @@ export async function listItems(ctx: ItemsContext, apiKey: string, params: URLSe
   const nextCursor = rows.found.length > limit && last
     ? encodeCursor({ s: specHash, k: last.sortValues, id: last.entryId, l: last.locale }, ctx.callerId)
     : null;
-  return { items: rows.items, nextCursor, limit, schemaHash: loaded.root.schemaHash };
+  return { items: rows.items, nextCursor, limit, schemaHash: loaded.root.schemaHash, view: viewOf(loaded, access) };
 }
 
 /** GET /items/{id}: one entry (its row for `locale`, or its first locale). */
-export async function getItem(ctx: ItemsContext, apiKey: string, id: string, params: URLSearchParams): Promise<{ item: ItemRecord; schemaHash: string }> {
+export async function getItem(ctx: ItemsContext, apiKey: string, id: string, params: URLSearchParams): Promise<{ item: ItemRecord; schemaHash: string; view: ModelView }> {
   const db = ctx.db ?? getDb();
   const loaded = await load(ctx, apiKey);
   const access = rootAccess(loaded);
@@ -232,7 +248,7 @@ export async function getItem(ctx: ItemsContext, apiKey: string, id: string, par
     return record;
   });
   if (!item) throw new ItemsApiError("ITEM_NOT_FOUND", "Item not found");
-  return { item, schemaHash: loaded.root.schemaHash };
+  return { item, schemaHash: loaded.root.schemaHash, view: viewOf(loaded, access) };
 }
 
 function writeAccess(loaded: Loaded, need: "write" | "delete"): ModelAccess {
@@ -256,7 +272,7 @@ function writeError(access: ModelAccess, result: { error: string; status: number
 const writeCtx = (ctx: ItemsContext): ItemsContext => ({ ...ctx, drafts: { allowed: true, entryIds: null } });
 
 /** POST /items: a new draft entry. Required fields the caller cannot write are refused up front. */
-export async function createItem(ctx: ItemsContext, apiKey: string, body: unknown, locale?: string): Promise<{ item: ItemRecord; schemaHash: string }> {
+export async function createItem(ctx: ItemsContext, apiKey: string, body: unknown, locale?: string): Promise<{ item: ItemRecord; schemaHash: string; view: ModelView }> {
   const loaded = await load(ctx, apiKey);
   const access = writeAccess(loaded, "write");
   const actor = requireActor(ctx);
@@ -275,7 +291,7 @@ export async function createItem(ctx: ItemsContext, apiKey: string, body: unknow
  * PATCH /items/{id}: a new draft version = the current content with the given fields replaced. Fields
  * the caller cannot read are carried over untouched (they are never sent back, never dropped).
  */
-export async function updateItem(ctx: ItemsContext, apiKey: string, id: string, body: unknown): Promise<{ item: ItemRecord; schemaHash: string }> {
+export async function updateItem(ctx: ItemsContext, apiKey: string, id: string, body: unknown): Promise<{ item: ItemRecord; schemaHash: string; view: ModelView }> {
   const db = ctx.db ?? getDb();
   const loaded = await load(ctx, apiKey);
   const access = writeAccess(loaded, "write");

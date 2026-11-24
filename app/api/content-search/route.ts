@@ -12,13 +12,15 @@ async function searchFieldScope(workspaceId: string, adminUserId: string): Promi
   const models = (await listModels(workspaceId)).filter((model) => model.status === "active");
   const accesses = await adminAccesses(getDb(), workspaceId, adminUserId, "admin", models.map((model) => model.api_key));
   const restricted = new Map<string, ReadonlySet<string>>();
+  const readable = new Map<string, ReadonlySet<string>>();
   const readableModelIds: string[] = [];
   for (const access of accesses?.values() ?? []) {
     if (!access.canRead) continue;
     readableModelIds.push(access.model.id);
+    readable.set(access.model.id, access.readable);
     if (access.restricted) restricted.set(access.model.id, access.readable);
   }
-  return { restricted, readableModelIds };
+  return { restricted, readableModelIds, readable };
 }
 
 export async function GET(req: Request) {

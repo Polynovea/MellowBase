@@ -1,5 +1,5 @@
 // The generated items API: one item of one model (Phase 4). See lib/developer/items.
-import { itemsError, itemsOk, itemsRequest } from "@/lib/developer/items/http";
+import { driftHeaders, itemsError, itemsOk, itemsRequest } from "@/lib/developer/items/http";
 import { deleteItem, getItem, updateItem } from "@/lib/developer/items/service";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +12,7 @@ export async function GET(req: Request, { params }: Params) {
   if (error) return error;
   try {
     const result = await getItem(ctx!, model, id, new URL(req.url).searchParams);
-    return itemsOk({ data: result.item }, api!, result.schemaHash);
+    return itemsOk({ data: result.item }, api!, result.schemaHash, 200, await driftHeaders(req, api!.workspaceId, result.view));
   } catch (failure) {
     return itemsError(failure, api!);
   }
