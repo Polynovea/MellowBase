@@ -237,9 +237,19 @@ wait_state running 0.4.1+bbbbbbb && ok "B is serving (/api/health reports 0.4.1+
 docker exec "$AGENT" grep -q "POLYNOVEA_IMAGE_REF=$REF_B" /etc/polynovea/polynovea.env && ok "the pin is B's digest"
 docker exec "$AGENT" python3 -I -B /opt/polynovea/upgrade-agent.py && ok "the same request is not run twice"
 
+step "The worker's own restore test after setup's first backup"
+# The wizard leaves restore-test-due; the worker starts a restore test by itself. Wait for it to finish.
+for _ in $(seq 1 150); do
+  [ "$(psql_cms "select count(*) from public.system_restore_tests where status = 'running'")" = 0 ] && break
+  sleep 4
+done
+WORKER_TEST="$(psql_cms "select reason || ' ' || status || ' ' || coalesce(error_code, '') from public.system_restore_tests where reason = 'first_backup' order by started_at limit 1")"
+echo "worker's restore test: ${WORKER_TEST:-none recorded}"
+case "$WORKER_TEST" in "first_backup passed"*) ok "the worker ran the first-backup restore test by itself, and it passed" ;; *) fail "worker restore test: ${WORKER_TEST:-none}" ;; esac
+
 step "Restore test on a healthy backup"
-docker exec -w /app "$CMS" node scripts/polynovea-cms.mjs system restore-test --reason manual || fail "restore test failed on a healthy backup"
-[ "$(psql_cms "select status from public.system_restore_tests order by started_at desc limit 1")" = passed ] && ok "restore test passed and recorded"
+docker exec -w /app "$CMS" node scripts/polynovea-cms.mjs system restore-test --reason manual || fail "restore test did not pass on a healthy backup"
+[ "$(psql_cms "select status from public.system_restore_tests order by started_at desc limit 1")" = passed ] && ok "restore test passed and recorded" || fail "the newest restore test row is not passed"
 psql_cms "select checks_json->'ledger' from public.system_restore_tests order by started_at desc limit 1"
 [ -z "$(docker exec "$CMS" sh -c 'ls -A /var/lib/polynovea/restore-test 2>/dev/null')" ] && ok "temporary restore folder removed"
 
@@ -252,7 +262,11 @@ docker exec "$CMS" sh -ec '
     size=$(stat -c %s "$f"); printf "\377\377\377\377" | dd of="$f" bs=1 seek=$((size / 2)) conv=notrunc 2>/dev/null
   done
   echo "corrupted files in backup $full"'
-if docker exec -w /app "$CMS" node scripts/polynovea-cms.mjs system restore-test --reason manual; then fail "restore test passed on a corrupted backup"; fi
+set +e
+docker exec -w /app "$CMS" node scripts/polynovea-cms.mjs system restore-test --reason manual
+CODE_CORRUPT=$?
+set -e
+[ "$CODE_CORRUPT" = 1 ] || fail "restore test on a corrupted backup exited $CODE_CORRUPT (expected 1: failed)"
 ROW="$(psql_cms "select status || ' ' || coalesce(error_code, '') from public.system_restore_tests order by started_at desc limit 1")"
 [ "$ROW" = "failed RESTORE_FAILED" ] && ok "restore test recorded as failed (RESTORE_FAILED): a blocking Doctor finding and a System page banner" || fail "unexpected restore test row: $ROW"
 [ "$(psql_cms "select count(*) from public.platform_audit_events where action = 'system.restore_test.failed'")" -ge 0 ] && echo "audit events: $(psql_cms "select string_agg(action, ', ' order by created_at) from public.platform_audit_events where action like 'system.%'")"

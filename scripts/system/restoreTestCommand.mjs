@@ -1,7 +1,8 @@
 // One restore test of the bundled database's newest backup (lib/system/restoreTest.mjs), recorded in
 // system_restore_tests and the audit log: `polynovea-cms system restore-test --reason <reason>`. The
 // delivery worker starts it at low CPU and IO priority (nice -n 19, ionice -c 3).
-// Returns 0: passed or skipped; 1: failed; 3: not applicable here (no bundled database).
+// Returns 0: passed or skipped; 1: failed; 3: not applicable here (no bundled database); 4: another
+// restore test is running (nothing was done).
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -52,7 +53,7 @@ export async function restoreTestCommand(args) {
     );
     if (!begun?.id) {
       console.log("[restore-test] Another restore test is running.");
-      exitCode = 0;
+      exitCode = 4;
     } else {
       const host = {
         pgbackrest: async (args) => {
