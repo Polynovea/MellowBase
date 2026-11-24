@@ -115,7 +115,8 @@ When you choose **On this server** in the wizard:
   - `polynovea_owner` and `polynovea_app`: the `polynovea` database only, from `127.0.0.1` only, with SCRAM passwords that the wizard generates and keeps in `config.enc`.
   - everything else is rejected.
 - Backups: pgBackRest, encrypted, to your S3 bucket, Azure container or the data disk (see [setup/database.md](setup/database.md)). Its settings are in `/var/lib/polynovea/etc/pgbackrest.conf`, and its logs and the database's logs are in `/var/lib/polynovea/log` (database logs are kept for a week).
-- For S3 or Azure backups, the container uses the server's instance role or managed identity. On AWS that needs the instance's metadata hop limit set to 2; our VM image and templates do that.
+- For S3 or Azure backups, the container uses the server's instance role or managed identity. On AWS that needs the instance's metadata hop limit set to 2; our VM image and templates do that. A hop limit of 2 means any container on that VM, including ones on a bridge network, can obtain the instance role's credentials, so run only the CMS (and Caddy) there; see [vm-images.md](vm-images.md#instance-metadata-and-credentials-aws).
+- PostgreSQL 16, pgBackRest and Node.js inside the image get security fixes only through new Polynovea release images, not from the host's updates. Upgrade when a release is out.
 
 ## Running the operator commands
 

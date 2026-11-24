@@ -12,6 +12,7 @@ The VM images are Ubuntu 24.04 LTS with Docker and one signed Polynovea CMS rele
 ## What is on the image
 
 - **Automatic security updates** (`unattended-upgrades`): security updates every day, a reboot at 04:00 server time when one needs it (kernel, libc). Docker comes from Ubuntu's own archive, so it is updated the same way. The CMS and its database come back with the VM.
+  - These cover the VM itself: Ubuntu, its kernel and Docker. **They do not reach inside the CMS container.** Node.js, PostgreSQL 16 and pgBackRest in the container are fixed only by a new Polynovea release image (rebuilt on the patched, digest-pinned base, signed, and installed with an upgrade). Keep releases current; the System page shows when one is available.
 - **Docker**, logging to the system journal, kept for 14 days.
 - **The CMS image**, pulled by digest when the VM image was built (`/etc/polynovea/image.env` records which one), and the Caddy image, also by digest.
 - Systemd units:
@@ -19,6 +20,16 @@ The VM images are Ubuntu 24.04 LTS with Docker and one signed Polynovea CMS rele
   - `polynovea.service`: runs the CMS (`/opt/polynovea/run-cms.sh`) with host networking, on `127.0.0.1:3000`;
   - `polynovea-caddy.service`: runs Caddy for HTTPS, only when a domain is set;
   - `polynovea-console-code.service`: copies the one-time setup code (that line only) to the serial console while the CMS is in setup mode, so the owner can read it from the cloud console without SSH. It writes nothing once setup is finished, or when the CMS does not answer. Until setup is finished, anyone in the cloud account who can read console output can see the code.
+
+## Instance metadata and credentials (AWS)
+
+IMDSv2 is required, so a request needs a session token first. That blocks the classic attack where a server-side request forgery (SSRF) bug reads credentials with a single GET. The hop limit is **2**, not the tightest setting of 1. A hop limit of 1 would stop any container on a Docker bridge network from reaching the metadata service. With 2, **every container on the VM, including ones on a bridge network, can obtain the instance role's credentials.** We accept this because:
+
+- the CMS container needs those credentials for pgBackRest's S3 backups;
+- the image runs only our signed containers (the CMS and Caddy), and verify-images.sh refuses anything else;
+- the instance role allows only reading one secret and writing to one bucket (the templates).
+
+Don't run other people's containers on this VM. If you do, give them a separate VM or a hop limit of 1 and your own credentials.
 
 ## Every start checks the images first
 

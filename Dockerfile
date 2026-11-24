@@ -73,12 +73,12 @@ RUN set -eux \
  && echo "create_main_cluster = false" > /etc/postgresql-common/createcluster.d/polynovea.conf \
  && apt-get update \
  && apt-get install -y --no-install-recommends postgresql-16 pgbackrest \
- && apt-get purge -y --auto-remove \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/apt /var/log/dpkg.log \
  && groupadd --gid 10001 polynovea \
  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /var/lib/polynovea --shell /usr/sbin/nologin polynovea \
  && install -d -o 10001 -g 10001 -m 0700 /var/lib/polynovea \
  && install -d -o 10001 -g 10001 -m 0700 /var/run/postgresql \
+ && chmod g-s /var/run/postgresql \
  && rm -f /etc/pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
 
 WORKDIR /app
