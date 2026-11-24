@@ -108,6 +108,7 @@ export function classifyItemsSchemaChange(previous: CanonicalSchema, current: Op
 
 const HASH = /^[0-9a-f]{64}$/;
 const MEMO_LIMIT = 500;
+export const MAX_FIELDS_HEADER_BYTES = 4096;
 const memo = new Map<string, SchemaChangeSignal>();
 
 function remember(key: string, value: SchemaChangeSignal) {
@@ -143,6 +144,8 @@ export async function schemaChangeHeaders(input: SchemaChangeInput): Promise<Rec
   const sent = input.requestHash?.trim().toLowerCase() ?? "";
   if (!sent || sent === input.current.schemaHash) return {};
   const fields = input.current.schema.fields.filter((field) => input.current.readable.has(field.key)).map((field) => field.key).join(",");
+  // Too many fields for a header: say `major` with no list, so the SDK tells the user to re-pull.
+  if (Buffer.byteLength(fields) > MAX_FIELDS_HEADER_BYTES) return { [SCHEMA_CHANGE_HEADER]: "major" };
   const headers = (signal: SchemaChangeSignal) => ({ [SCHEMA_CHANGE_HEADER]: signal, [SCHEMA_FIELDS_HEADER]: fields });
   if (!HASH.test(sent)) return headers("unknown");
 

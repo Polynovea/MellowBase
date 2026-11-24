@@ -18,7 +18,7 @@ const req = () => new Request("http://localhost/api/v1/types.ts", { headers: { a
 
 describe("GET /api/v1/types.ts", () => {
   it("serves the caller's types file as private, unsniffable text", async () => {
-    const GET = createTypesHandler({ auth: async () => ({ data: ctx }), load: async () => ({ models: models(), schemaHash: WORKSPACE_HASH }) });
+    const GET = createTypesHandler({ auth: async () => ({ data: ctx }), load: async () => ({ models: models(), schemaHash: WORKSPACE_HASH }), now: () => new Date(Date.UTC(2026, 10, 24, 9, 30)) });
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
@@ -27,7 +27,8 @@ describe("GET /api/v1/types.ts", () => {
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("x-polynovea-schema-hash")).toBe(WORKSPACE_HASH);
     const body = await res.text();
-    expect(body).toBe(emitItemsTypes(buildItemsOpenApi(models()), { schemaHash: WORKSPACE_HASH }));
+    expect(body).toBe(emitItemsTypes(buildItemsOpenApi(models()), { schemaHash: WORKSPACE_HASH, generatedAt: "2026-11-24T09:30:00.000Z" }));
+    expect(body.split("\n").slice(0, 2)).toEqual([`// schema-hash: ${WORKSPACE_HASH}`, "// generated-at: 2026-11-24T09:30:00.000Z"]);
     expect(body).not.toContain("secret");
   });
 

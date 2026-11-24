@@ -59,6 +59,42 @@ describe("polynovea-cms types pull", () => {
     expect(missing.err).toContain("does not exist");
   });
 
+  it("--check ignores the generation time, but not a permission-only change (same hashes)", async () => {
+    writeFileSync(join(dir, "time.ts"), FIXTURE);
+    const later = FIXTURE.replace(/^\/\/ generated-at: .*$/m, "// generated-at: 2027-01-01T12:00:00.000Z");
+    expect(later).not.toBe(FIXTURE);
+    expect((await run({ out: "time.ts", check: true }, serve(later), dir)).code).toBe(0);
+
+    const fieldHidden = later.replace("  /** rating (integer) */\n  rating?: number;\n", "");
+    const result = await run({ out: "time.ts", check: true }, serve(fieldHidden), dir);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain("field access or formatting changed");
+  });
+
+  it("a failed check prints only status, error code and a short message: never the token or the body", async () => {
+    writeFileSync(join(dir, "f.ts"), FIXTURE);
+    const longMessage = `Token ${TOKEN} is not valid here. ${"x".repeat(500)}`;
+    const json = JSON.stringify({ error: { code: "INVALID_TOKEN", message: longMessage, details: { secretDetail: "internal-db-host:5432" } }, meta: { requestId: "r" } });
+    const denied = await run({ out: "f.ts", check: true }, serve(json, 401, "application/json"), dir);
+    expect(denied.code).toBe(2);
+    expect(denied.err.split("\n")).toHaveLength(1);
+    expect(denied.err).toMatch(/^types: could not check: HTTP 401 INVALID_TOKEN: Token \[token\] is not valid here\. x+\.\.\.$/);
+    expect(denied.err.length).toBeLessThan(240);
+    expect(denied.err).not.toContain(TOKEN);
+    expect(denied.err).not.toContain("secretDetail");
+
+    const html = `<html><body>Login required for ${TOKEN}<script>alert(1)</script></body></html>`;
+    const page = await run({ out: "f.ts", check: true }, serve(html, 403, "text/html"), dir);
+    expect(page.err).toBe("types: could not check: HTTP 403");
+
+    const notTypes = await run({ out: "f.ts", check: true }, serve(html), dir);
+    expect(notTypes.err).toBe("types: could not check: HTTP 200: the response is not a Polynovea types file");
+
+    const odd = JSON.stringify({ error: { code: "bad code; rm -rf /", message: "line1\nline2\u001b[31m" } });
+    const weird = await run({ out: "f.ts", check: true }, serve(odd, 500, "application/json"), dir);
+    expect(weird.err).toBe("types: could not check: HTTP 500: line1 line2 [31m");
+  });
+
   it("--check names added and removed models", async () => {
     writeFileSync(join(dir, "models.ts"), FIXTURE);
     const withoutPerson = FIXTURE.replace(/\n {4}person: \{ hash: "b{64}", fields: \[[^\]]*\] \},/, "");

@@ -40,6 +40,16 @@ function readToken({ flags, env, cwd }) {
 }
 
 const normalise = (text) => text.replace(/\r\n/g, "\n");
+/** What `--check` compares: everything except the generation time, so a re-pull with no change is not drift. */
+export const comparable = (text) => normalise(text).replace(/^\/\/ generated-at: [^\n]*\n/m, "");
+
+/** One short line of server text: printable, at most 160 characters, never the token. */
+function shortText(value, token) {
+  let text = typeof value === "string" ? value : "";
+  if (token) text = text.split(token).join("[token]");
+  text = text.replace(/[^\x20-\x7e]/g, " ").replace(/\s+/g, " ").trim();
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+}
 
 /** model -> hash, from a types file's `schema` constant. */
 export function modelHashes(text) {
@@ -66,16 +76,22 @@ async function fetchTypes({ base, token, fetchImpl }) {
   try {
     response = await fetchImpl(`${base}/api/v1/types.ts`, { headers: { authorization: `Bearer ${token}`, accept: "text/plain" }, redirect: "error" });
   } catch (error) {
-    throw new UsageError(`Could not reach ${base}: ${error?.cause?.code ?? error?.message ?? "network error"}`);
+    throw new UsageError(`could not reach ${base} (${shortText(error?.cause?.code ?? error?.name ?? "network error", token)})`);
   }
   const text = await response.text();
   if (!response.ok) {
-    let message = `HTTP ${response.status}`;
-    try { const body = JSON.parse(text); if (body?.error?.message) message = `${body.error.code ?? response.status}: ${body.error.message}`; } catch { /* not JSON */ }
-    throw new UsageError(`${base} refused the types request (${message})`);
+    // Status, error code and a short message only: never the body itself.
+    let code = "";
+    let message = "";
+    try {
+      const body = JSON.parse(text);
+      code = /^[A-Z][A-Z0-9_]{0,63}$/.test(body?.error?.code ?? "") ? body.error.code : "";
+      message = shortText(body?.error?.message, token);
+    } catch { /* not JSON: status only */ }
+    throw new UsageError(`HTTP ${response.status}${code ? ` ${code}` : ""}${message ? `: ${message}` : ""}`);
   }
   const types = normalise(text);
-  if (!MARKER.test(types)) throw new UsageError(`${base} did not return a Polynovea types file`);
+  if (!MARKER.test(types)) throw new UsageError(`HTTP ${response.status}: the response is not a Polynovea types file`);
   return types;
 }
 
@@ -99,7 +115,7 @@ export async function typesPull({ flags, env = process.env, cwd = process.cwd(),
         error(`types: ${out} does not exist. Run \`polynovea-cms types pull\` to create it.`);
         return 1;
       }
-      if (local === remote) {
+      if (comparable(local) === comparable(remote)) {
         log(`types: ${out} is up to date (${models} model${models === 1 ? "" : "s"}).`);
         return 0;
       }
@@ -112,7 +128,8 @@ export async function typesPull({ flags, env = process.env, cwd = process.cwd(),
     log(`types: wrote ${out} (${models} model${models === 1 ? "" : "s"}, schema ${remote.slice(16, 28)}).`);
     return 0;
   } catch (e) {
-    error(`types: ${e instanceof Error ? e.message : String(e)}`);
+    const message = e instanceof UsageError ? e.message : "unexpected error";
+    error(`types: could not ${flags.check ? "check" : "pull"}: ${message}`);
     return 2;
   }
 }

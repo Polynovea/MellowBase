@@ -14,7 +14,13 @@ type Json = Record<string, unknown>;
 export interface EmitTypesOptions {
   /** Workspace-level hash of the listed models (the OpenAPI info `x-polynovea-schema-hash`). */
   schemaHash: string;
+  /** Generation time, UTC ISO-8601 (`Date#toISOString`). On its own header line, which `--check` ignores. */
+  generatedAt: string;
 }
+
+/** The header line holding the generation time. Drift checks compare everything except this line. */
+export const GENERATED_AT_LINE = /^\/\/ generated-at: .*$/m;
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/;
 
 export interface EmittedModel {
   apiKey: string;
@@ -161,9 +167,10 @@ export interface ItemBase {
 /** The types file for one caller's document. */
 export function emitItemsTypes(doc: ItemsOpenApi, options: EmitTypesOptions): string {
   if (!HASH.test(options.schemaHash)) throw new Error("schemaHash must be 64 lowercase hex characters");
+  if (!ISO_UTC.test(options.generatedAt)) throw new Error("generatedAt must be a UTC ISO-8601 time");
   const models = modelsOf(doc);
   const listed = new Map(models.map((m) => [m.apiKey, m.component]));
-  const parts: string[] = [`// schema-hash: ${options.schemaHash}\n`, HEADER];
+  const parts: string[] = [`// schema-hash: ${options.schemaHash}\n// generated-at: ${options.generatedAt}\n`, HEADER];
   const mapEntries: string[] = [];
 
   for (const model of models) {

@@ -14,6 +14,8 @@ export type ItemsOpenApiLoader = (ctx: DeveloperApiContext) => Promise<{ models:
 export interface TypesHandlerDeps {
   auth: (req: Request) => Promise<{ data?: DeveloperApiContext; error?: Response }>;
   load: ItemsOpenApiLoader;
+  /** Clock for the generated-at header line (tests). */
+  now?: () => Date;
 }
 
 /** Per caller, never cached by a shared cache, never sniffed as script. */
@@ -34,7 +36,7 @@ export function createTypesHandler(deps: TypesHandlerDeps) {
     try {
       const input = await deps.load(ctx);
       schemaHash = input.schemaHash;
-      body = emitItemsTypes(buildItemsOpenApi(input.models), { schemaHash });
+      body = emitItemsTypes(buildItemsOpenApi(input.models), { schemaHash, generatedAt: (deps.now?.() ?? new Date()).toISOString() });
     } catch {
       return apiError("TYPES_BUILD_FAILED", "The types file could not be generated", 500, { requestId: ctx.requestId, rateLimit: ctx.rateLimit });
     }

@@ -146,6 +146,14 @@ describe("schemaChangeHeaders", () => {
     expect(schemaChangeMemoSize()).toBeLessThanOrEqual(500);
   });
 
+  it("a field list over 4 KB is not sent: the change is major, so the SDK says re-pull", async () => {
+    const many = withFields(Array.from({ length: 400 }, (_, i) => field(`a_rather_long_field_name_${i}`, "text")));
+    const big = editor(many);
+    const loadPrevious = vi.fn(async () => many);
+    expect(await schemaChangeHeaders({ scope: scope(), requestHash: OLD, current: big, loadPrevious })).toEqual({ [SCHEMA_CHANGE_HEADER]: "major" });
+    expect(await schemaChangeHeaders({ scope: scope(), requestHash: NEW, current: big, loadPrevious })).toEqual({});
+  });
+
   it("a failed lookup is unknown and not cached", async () => {
     const s = scope();
     const loadPrevious = vi.fn(async () => { throw new Error("db down"); });

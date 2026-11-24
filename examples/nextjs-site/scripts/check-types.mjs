@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 
 const site = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const local = resolve(site, "polynovea-cms.ts");
-const normalise = (text) => text.replace(/\r\n/g, "\n");
+// Everything except the generation time (as `types pull --check` compares).
+const normalise = (text) => text.replace(/\r\n/g, "\n").replace(/^\/\/ generated-at: [^\n]*\n/m, "");
 
 if (process.env.POLYNOVEA_CMS_URL) {
   const cli = resolve(site, "../../packages/cms-cli/bin/polynovea-cms.mjs");
