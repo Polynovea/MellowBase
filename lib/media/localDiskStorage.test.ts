@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { buffer } from "node:stream/consumers";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   inFlightUploadBytes,
   keySegments,
@@ -141,8 +141,8 @@ describe("local disk objects", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const slow = new Readable({ read() {} });
     const writing = writeLocalObject(root, key, slow, { expectedBytes: 5000, env: noReserve });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(inFlightUploadBytes()).toBe(5000);
+    // Wait for the reservation itself, not a fixed delay (a fixed 20 ms flaked under full-suite load).
+    await vi.waitFor(() => expect(inFlightUploadBytes()).toBe(5000), { timeout: 5_000, interval: 10 });
     // A second upload is checked against free space minus the 5000 bytes already promised.
     const info = await statfs(root);
     const available = Number(info.bavail) * Number(info.bsize);
