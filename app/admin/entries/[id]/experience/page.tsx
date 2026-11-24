@@ -10,7 +10,7 @@ import {
   createDefaultBlock,
 } from "@/lib/experience/blockRegistry";
 import type { ExperienceDocument } from "@/lib/experience/types";
-import StudioShell, { type ConflictState } from "@/components/admin/experience/StudioShell";
+import StudioShell, { useStudioTitle, type ConflictState } from "@/components/admin/experience/StudioShell";
 import { getAuthHeaders } from "@/lib/admin/authCheck";
 import {
   isModelVisualEligible,
@@ -39,6 +39,8 @@ type Version = {
 };
 
 export default function EntryExperienceStudioPage() {
+  // Named here, not only in the shell: the tab title must hold while loading and on a refusal too.
+  useStudioTitle();
   const { id } = useParams<{ id: string }>();
   const pathname = usePathname();
   const router = useRouter();
