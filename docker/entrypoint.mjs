@@ -3,8 +3,9 @@
  * The Polynovea server image's main process (run under tini as PID 1).
  *
  * 1. Checks the data disk at /var/lib/polynovea is there and writable by this user.
- * 2. Starts the bundled PostgreSQL only if "On this server" already created it (installs on a managed
- *    database never run it; the setup wizard starts it the first time).
+ * 2. Starts the bundled PostgreSQL only if config.enc says this install uses "On this server" (written
+ *    only after the wizard's backups passed). Installs on a managed database never run it, and a
+ *    cluster left by a failed attempt stays stopped; the setup wizard starts it the first time.
  * 3. Runs the CMS (Next.js standalone server.js). If it stops, the container stops, so the restart
  *    policy (systemd or Docker) brings everything back cleanly.
  * 4. Runs the delivery worker once the install has a database. The worker exits with code 3 while
@@ -19,6 +20,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { bundledDatabaseDecision } from "./entrypoint-lib.mjs";
 
 const APP_DIR = process.env.POLYNOVEA_APP_DIR || "/app";
 // Fixed, like lib/setup/database/localServerImage.ts and local-db.sh: no override.
@@ -47,9 +50,17 @@ if (statSync(DATA_ROOT).dev === statSync("/").dev) {
   log(`WARNING: ${DATA_ROOT} is not a separate disk or volume. The master key and settings would be lost with this container. Mount a volume there.`);
 }
 
-// 2. The bundled database, if this install uses it.
+// 2. The bundled database, only if this install's saved settings say it uses it (entrypoint-lib.mjs).
 let localDbStarted = false;
-if (existsSync(LOCAL_DB) && spawnSync(LOCAL_DB, ["exists"]).status === 0) {
+const clusterExists = existsSync(LOCAL_DB) && spawnSync(LOCAL_DB, ["exists"]).status === 0;
+let readConfig = () => null;
+if (clusterExists) {
+  const { readInstallConfigSync } = await import(pathToFileURL(path.join(APP_DIR, "lib", "setup", "configStore.mjs")).href);
+  readConfig = () => readInstallConfigSync();
+}
+const decision = bundledDatabaseDecision({ clusterExists, readConfig });
+if (clusterExists) log(decision.reason);
+if (decision.start) {
   const started = spawnSync(LOCAL_DB, ["start"], { stdio: "inherit", timeout: 120_000 });
   if (started.status !== 0) fail("The bundled database did not start. Its log is in " + path.join(DATA_ROOT, "log", "postgresql"));
   localDbStarted = true;

@@ -91,6 +91,7 @@ COPY --from=sharp --chown=0:0 /sharp/node_modules/sharp ./node_modules/sharp
 COPY --from=sharp --chown=0:0 /sharp/node_modules/@img ./node_modules/@img
 COPY --chown=0:0 --chmod=0755 docker/local-db.sh /opt/polynovea/bin/local-db.sh
 COPY --chown=0:0 --chmod=0755 docker/entrypoint.mjs /opt/polynovea/bin/entrypoint.mjs
+COPY --chown=0:0 --chmod=0644 docker/entrypoint-lib.mjs /opt/polynovea/bin/entrypoint-lib.mjs
 # Files checked out on Windows may have CRLF endings; the shell script must not.
 RUN sed -i 's/\r$//' /opt/polynovea/bin/local-db.sh
 

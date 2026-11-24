@@ -124,6 +124,16 @@ docker run -d --name "$PREFIX-public" -e HOSTNAME=0.0.0.0 -p 127.0.0.1:38080:300
 wait_healthy "$PREFIX-public"
 smoke "$PREFIX-public" -e STEPS=health,refused
 
+step "A cluster left by an unfinished On this server attempt stays stopped after a restart"
+docker exec "$PREFIX-public" /opt/polynovea/bin/local-db.sh start >/dev/null 2>&1
+docker restart -t 90 "$PREFIX-public" >/dev/null
+wait_healthy "$PREFIX-public"
+if docker exec "$PREFIX-public" /opt/polynovea/bin/local-db.sh status; then
+  echo "FAIL  the entrypoint started a bundled cluster that no saved setup uses"; exit 1
+fi
+docker logs "$PREFIX-public" 2>&1 | grep -q "setup has not saved a database yet; leaving the bundled cluster stopped" \
+  && echo "ok    leftover cluster not started (no config.enc says local); the entrypoint logged why"
+
 step "Proxy route: HTTPS through Caddy; the CMS joins Caddy's network namespace (as in compose)"
 docker volume create "$PREFIX-data3" >/dev/null
 CADDY_IMAGE="$(sed -n 's/^ *image: \(caddy:.*\)$/\1/p' docker/compose.yaml)"
