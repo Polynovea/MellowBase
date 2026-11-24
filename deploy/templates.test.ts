@@ -449,13 +449,13 @@ describe("review item 1: a link can't swap in someone else's images", () => {
   const cfnPattern = (param: string) => {
     const block = cfnResource(param);
     const yaml = /AllowedPattern: "(.+)"/.exec(block)![1];
-    return new RegExp(yaml.replaceAll("\\\\", "\\")); // YAML "\\." is the pattern \.
+    return new RegExp(yaml.replaceAll("\\\\", "\\")); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- test helper: the AllowedPattern from our own CloudFormation file (YAML "\\." is the pattern \.)
   };
   const tfPattern = (text: string, variable: string) => {
     const marker = `var.${variable} == "" || can(regex("`;
     const start = text.indexOf(marker) + marker.length;
     const hcl = text.slice(start, text.indexOf(`", var.${variable}))`, start));
-    return new RegExp(hcl.replaceAll("\\\\", "\\")); // HCL "\\." is the pattern \.
+    return new RegExp(hcl.replaceAll("\\\\", "\\")); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- test helper: a validation regex from our own OpenTofu files (HCL "\\." is the pattern \.)
   };
   const genuineCms = `ghcr.io/polynovea/cms@sha256:${digest}`;
   const genuineCaddy = [`caddy@sha256:${digest}`, `docker.io/library/caddy@sha256:${digest}`];

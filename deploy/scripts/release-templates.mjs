@@ -73,7 +73,7 @@ export function loadRelease(text) {
 /** The CloudFormation template with the release's image defaults and AMI map. */
 export function renderCfn(cfn, release) {
   const setDefault = (text, param, value) => {
-    const re = new RegExp(`(\\n  ${param}:\\n    Type: String\\n    Default: )"[^"\\n]*"`);
+    const re = new RegExp(`(\\n  ${param}:\\n    Type: String\\n    Default: )"[^"\\n]*"`); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- param is one of our fixed names (ContainerImage, CaddyImage), never input
     if (!re.test(text)) throw new Error(`${CFN}: parameter ${param} not found`);
     return text.replace(re, `$1"${value}"`);
   };
@@ -118,7 +118,7 @@ export function signedReleaseGaps(release, bootstrap, signed) {
   if (signed.schema !== 1) return [`the signed release manifest has schema ${signed.schema}; this check knows schema 1`];
   const signedRef = typeof signed.ref === "string" && signed.ref.includes("@sha256:") ? signed.ref : `${signed.image}@${signed.digest}`;
   if (release.cmsImage !== signedRef) gaps.push(`cmsImage (${release.cmsImage || "blank"}) isn't the signed release's image (${signedRef})`);
-  const key = new RegExp(`cat > "\\$FILES/${RELEASE_KEY.replace(".", "\\.")}" <<'POLYNOVEA_FILE_END'\\n([\\s\\S]*?)POLYNOVEA_FILE_END`).exec(bootstrap)?.[1];
+  const key = new RegExp(`cat > "\\$FILES/${RELEASE_KEY.replace(".", "\\.")}" <<'POLYNOVEA_FILE_END'\\n([\\s\\S]*?)POLYNOVEA_FILE_END`).exec(bootstrap)?.[1]; // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- built from the constant RELEASE_KEY file name, never input
   if (!key) gaps.push(`the first-boot script has no ${RELEASE_KEY} to compare with the signed release's key`);
   else if (createHash("sha256").update(key).digest("hex") !== signed.publicKeySha256) gaps.push(`the first-boot script's ${RELEASE_KEY} isn't the key the release was signed with (publicKeySha256 differs)`);
   return gaps;

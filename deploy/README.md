@@ -79,6 +79,16 @@ The templates in the repository are a **development build**: they carry no image
 3. Run `POLYNOVEA_RELEASE=1 POLYNOVEA_SIGNED_RELEASE=dist/release/<id>/release.json bash deploy/scripts/validate.sh`. With the signed manifest given, the gate also checks that the CMS image is the signed release's and that the embedded key is the one the release was signed with (`publicKeySha256`). Its **release gate** fails until the first-boot script embeds the key and every template defaults to the release's images. Without `POLYNOVEA_RELEASE=1` the gate runs with `--not-a-release`: it lists what's missing and passes, so development and tests keep working.
 4. Upload the release's `aws/polynovea.yaml` and `azure/azuredeploy.json` to public, versioned addresses for the quick-create link and the "Deploy to Azure" button.
 
+## What isn't tested on this laptop, by design
+
+No cloud account is used during development: nothing is deployed and nothing costs money. So these are **not run locally**, on purpose:
+- cloud builds of the server images, and publishing them (public AMIs, the Azure community gallery);
+- real backups to S3 or Azure Blob;
+- real Let's Encrypt certificates;
+- the real systemd first boot on a cloud VM.
+
+The templates are checked offline instead (below), and the release package tests its first-boot files in containers. Subrojit's end-to-end Azure deployment covers the real thing later, following the checklist in [azure/README.md](azure/README.md#checklist-for-the-first-end-to-end-test).
+
 ## Validating the templates (no cloud account)
 
 ```bash
