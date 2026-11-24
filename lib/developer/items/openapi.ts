@@ -268,7 +268,7 @@ export function buildItemsOpenApi(models: readonly OpenApiModelInput[]): ItemsOp
 
     paths[itemsPath(model.apiKey)] = {
       get: {
-        ...common, summary: `List ${model.name}`, operationId: `list_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.read"],
+        ...common, summary: `List ${model.name}`, operationId: `items_list_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.read"],
         parameters: [
           { name: "filter", in: "query", content: { "application/json": { schema: { $ref: `#/components/schemas/${M}Filter` } } } },
           { name: "sort", in: "query", schema: { type: "string" }, description: `Comma-separated ${M}SortKey values, up to ${HARD_LIMITS.sortKeys}`, "x-polynovea-sort-key": { $ref: `#/components/schemas/${M}SortKey` } },
@@ -278,7 +278,7 @@ export function buildItemsOpenApi(models: readonly OpenApiModelInput[]): ItemsOp
       },
       ...(model.canWrite ? {
         post: {
-          ...common, summary: `Create a draft ${model.name}`, operationId: `create_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.write"],
+          ...common, summary: `Create a draft ${model.name}`, operationId: `items_create_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.write"],
           requestBody: json(`${M}Create`),
           responses: { "201": oneOk(`The new draft ${model.name}`), ...errorRefs("BadRequest", "Unauthorized", "Forbidden", "NotFound", "RateLimited") },
         },
@@ -286,20 +286,20 @@ export function buildItemsOpenApi(models: readonly OpenApiModelInput[]): ItemsOp
     };
     paths[itemPath(model.apiKey, "{id}")] = {
       get: {
-        ...common, summary: `Get one ${model.name}`, operationId: `get_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.read"],
+        ...common, summary: `Get one ${model.name}`, operationId: `items_get_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.read"],
         parameters: [p("ItemId"), p("Expand"), p("Fields"), p("Locale"), p("Variant"), p("PreviewToken")],
         responses: { "200": oneOk(model.name), ...errorRefs("BadRequest", "Unauthorized", "Forbidden", "NotFound", "RateLimited", "Unavailable") },
       },
       ...(model.canWrite ? {
         patch: {
-          ...common, summary: `Update a ${model.name} (new draft version)`, operationId: `update_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.write"],
+          ...common, summary: `Update a ${model.name} (new draft version)`, operationId: `items_update_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.write"],
           parameters: [p("ItemId")], requestBody: json(`${M}Patch`),
           responses: { "200": oneOk(`The updated draft ${model.name}`), ...errorRefs("BadRequest", "Unauthorized", "Forbidden", "NotFound", "RateLimited") },
         },
       } : {}),
       ...(model.canDelete ? {
         delete: {
-          ...common, summary: `Delete a ${model.name}`, operationId: `delete_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.delete"],
+          ...common, summary: `Delete a ${model.name}`, operationId: `items_delete_${M}`, security: [{ bearerAuth: [] }], "x-polynovea-scopes": ["content.delete"],
           parameters: [p("ItemId")],
           responses: { "204": { description: "Deleted" }, ...errorRefs("Unauthorized", "Forbidden", "NotFound", "RateLimited") },
         },

@@ -7,7 +7,7 @@
           "Article"
         ],
         "summary": "List Article",
-        "operationId": "list_Article",
+        "operationId": "items_list_Article",
         "security": [
           {
             "bearerAuth": []
@@ -124,7 +124,7 @@
           "Article"
         ],
         "summary": "Create a draft Article",
-        "operationId": "create_Article",
+        "operationId": "items_create_Article",
         "security": [
           {
             "bearerAuth": []
@@ -199,7 +199,7 @@
           "Article"
         ],
         "summary": "Get one Article",
-        "operationId": "get_Article",
+        "operationId": "items_get_Article",
         "security": [
           {
             "bearerAuth": []
@@ -285,7 +285,7 @@
           "Article"
         ],
         "summary": "Update a Article (new draft version)",
-        "operationId": "update_Article",
+        "operationId": "items_update_Article",
         "security": [
           {
             "bearerAuth": []
@@ -363,7 +363,7 @@
           "Article"
         ],
         "summary": "Delete a Article",
-        "operationId": "delete_Article",
+        "operationId": "items_delete_Article",
         "security": [
           {
             "bearerAuth": []
@@ -403,7 +403,7 @@
           "Person"
         ],
         "summary": "List Person",
-        "operationId": "list_Person",
+        "operationId": "items_list_Person",
         "security": [
           {
             "bearerAuth": []
@@ -522,7 +522,7 @@
           "Person"
         ],
         "summary": "Get one Person",
-        "operationId": "get_Person",
+        "operationId": "items_get_Person",
         "security": [
           {
             "bearerAuth": []
