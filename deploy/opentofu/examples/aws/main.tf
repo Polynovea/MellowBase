@@ -1,6 +1,7 @@
 # Example root module: Polynovea CMS on AWS with OpenTofu.
 #
-# State encryption is REQUIRED, not optional: state holds the generated database password. Every
+# State encryption is REQUIRED, not optional. The database password never reaches state or plans
+# (ephemeral and write-only), but state still describes the whole install. Every
 # state and plan file is encrypted with AES-GCM under a data key from your own AWS KMS key, and
 # `enforced = true` makes OpenTofu refuse to write either unencrypted. State lives in your own S3
 # bucket; nothing goes to Polynovea.
@@ -10,7 +11,7 @@
 #   tofu apply polynovea.plan
 
 terraform {
-  required_version = ">= 1.10.0"
+  required_version = ">= 1.11.0"
 
   backend "s3" {
     bucket       = var.state_bucket

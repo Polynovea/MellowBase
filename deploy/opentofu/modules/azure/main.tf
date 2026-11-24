@@ -1,5 +1,6 @@
 # Polynovea CMS on Azure: the same resources as deploy/azure/main.bicep, for teams that use OpenTofu.
-# State holds the generated database password, so the root module MUST enable state encryption
+# The database password is ephemeral: generated during each run and passed only to write-only
+# arguments, so it never reaches state or plan files. The root module still MUST enable state encryption
 # (see deploy/opentofu/examples/azure). The provider must set storage_use_azuread = true, because the
 # storage account accepts Microsoft Entra ID only (no shared keys).
 
@@ -228,9 +229,10 @@ resource "azurerm_private_dns_zone_virtual_network_link" "database" {
   registration_enabled  = false
 }
 
-# Upper, lower and digits (three of Flexible Server's four classes); letters and digits only, so it
-# never needs escaping. Kept only in Key Vault and the (encrypted) state.
-resource "random_password" "database_admin" {
+# Ephemeral: generated in each run, sent once to the server and Key Vault through write-only
+# arguments, never stored in state or plans. Upper, lower and digits (three of Flexible Server's four
+# classes), letters and digits only. To set a new password, bump both *_wo_version values together.
+ephemeral "random_password" "database_admin" {
   count       = local.managed ? 1 : 0
   length      = 40
   special     = false
@@ -240,22 +242,23 @@ resource "random_password" "database_admin" {
 }
 
 resource "azurerm_postgresql_flexible_server" "main" {
-  count                         = local.managed ? 1 : 0
-  name                          = "${var.name}-db-${local.suffix}"
-  location                      = var.location
-  resource_group_name           = var.resource_group_name
-  version                       = "16"
-  sku_name                      = var.database_sku
-  storage_mb                    = var.database_storage_mb
-  auto_grow_enabled             = true
-  backup_retention_days         = 7
-  geo_redundant_backup_enabled  = false
-  public_network_access_enabled = false
-  delegated_subnet_id           = azurerm_subnet.database[0].id
-  private_dns_zone_id           = azurerm_private_dns_zone.database[0].id
-  administrator_login           = local.admin_user
-  administrator_password        = random_password.database_admin[0].result
-  tags                          = local.tags
+  count                             = local.managed ? 1 : 0
+  name                              = "${var.name}-db-${local.suffix}"
+  location                          = var.location
+  resource_group_name               = var.resource_group_name
+  version                           = "16"
+  sku_name                          = var.database_sku
+  storage_mb                        = var.database_storage_mb
+  auto_grow_enabled                 = true
+  backup_retention_days             = 7
+  geo_redundant_backup_enabled      = false
+  public_network_access_enabled     = false
+  delegated_subnet_id               = azurerm_subnet.database[0].id
+  private_dns_zone_id               = azurerm_private_dns_zone.database[0].id
+  administrator_login               = local.admin_user
+  administrator_password_wo         = ephemeral.random_password.database_admin[0].result
+  administrator_password_wo_version = 1
+  tags                              = local.tags
 
   authentication {
     password_auth_enabled         = true
@@ -328,16 +331,17 @@ resource "azurerm_role_assignment" "operator_writes_secret" {
 
 # The shape the setup wizard reads (lib/setup/database/createdForYou.ts).
 resource "azurerm_key_vault_secret" "database" {
-  count        = local.managed ? 1 : 0
-  name         = local.secret_name
-  key_vault_id = azurerm_key_vault.main[0].id
-  content_type = "application/json"
-  value = jsonencode({
+  count            = local.managed ? 1 : 0
+  name             = local.secret_name
+  key_vault_id     = azurerm_key_vault.main[0].id
+  content_type     = "application/json"
+  value_wo_version = 1
+  value_wo = jsonencode({
     engine   = "postgres"
     host     = azurerm_postgresql_flexible_server.main[0].fqdn
     port     = 5432
     username = local.admin_user
-    password = random_password.database_admin[0].result
+    password = ephemeral.random_password.database_admin[0].result
     dbname   = local.database_name
   })
 

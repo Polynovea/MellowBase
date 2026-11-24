@@ -1,5 +1,6 @@
 # Polynovea CMS on AWS: the same resources as deploy/aws/polynovea.yaml, for teams that use OpenTofu.
-# State holds the generated database password, so the root module MUST enable state encryption
+# The database password is ephemeral: generated during each run and passed only to write-only
+# arguments, so it never reaches state or plan files. The root module still MUST enable state encryption
 # (see deploy/opentofu/examples/aws).
 
 locals {
@@ -173,9 +174,10 @@ resource "aws_vpc_security_group_ingress_rule" "database_from_server" {
 
 # ------------------------------------------------------------------ database ("Created for you")
 
-# Generated here and kept only in Secrets Manager and in the (encrypted) state. Letters and digits
-# only, so it never needs escaping in a connection string.
-resource "random_password" "database_admin" {
+# Ephemeral: generated in each run, sent once to RDS and Secrets Manager through write-only
+# arguments, never stored in state or plans. Letters and digits only, so it never needs escaping.
+# To set a new password, bump both *_wo_version values below together.
+ephemeral "random_password" "database_admin" {
   count   = local.managed ? 1 : 0
   length  = 40
   special = false
@@ -206,7 +208,8 @@ resource "aws_db_instance" "database" {
   instance_class             = var.database_instance_class
   db_name                    = "polynovea"
   username                   = "polynovea_admin"
-  password                   = random_password.database_admin[0].result
+  password_wo                = ephemeral.random_password.database_admin[0].result
+  password_wo_version        = 1
   allocated_storage          = var.database_storage_gb
   max_allocated_storage      = 200
   storage_type               = "gp3"
@@ -233,14 +236,15 @@ resource "aws_db_instance" "database" {
 # The shape the setup wizard reads (lib/setup/database/createdForYou.ts): the same JSON an RDS
 # secret attached to its instance holds.
 resource "aws_secretsmanager_secret_version" "database" {
-  count     = local.managed ? 1 : 0
-  secret_id = aws_secretsmanager_secret.database[0].id
-  secret_string = jsonencode({
+  count                    = local.managed ? 1 : 0
+  secret_id                = aws_secretsmanager_secret.database[0].id
+  secret_string_wo_version = 1
+  secret_string_wo = jsonencode({
     engine               = "postgres"
     host                 = aws_db_instance.database[0].address
     port                 = aws_db_instance.database[0].port
     username             = aws_db_instance.database[0].username
-    password             = random_password.database_admin[0].result
+    password             = ephemeral.random_password.database_admin[0].result
     dbname               = aws_db_instance.database[0].db_name
     dbInstanceIdentifier = aws_db_instance.database[0].identifier
   })
