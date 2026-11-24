@@ -3,7 +3,7 @@
 # console (AWS "Get system log", Azure serial console) without SSH. polynovea-console-code.service
 # feeds it the CMS's log lines:
 #
-#   journalctl --follow --lines=0 --output=cat SYSLOG_IDENTIFIER=polynovea | console-code.sh
+#   journalctl --follow --lines=0 --output=cat _SYSTEMD_UNIT=docker.service CONTAINER_NAME=polynovea | console-code.sh
 #
 # Limits (owner's decision, Phase 5):
 # - only the setup-code line, nothing else from the log, and no other secret;
