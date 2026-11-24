@@ -19,8 +19,9 @@ skip-check:
   - CKV_AWS_118   # paid extra: RDS enhanced monitoring: paid, needs another role
   - CKV_AWS_353   # paid extra: RDS Performance Insights: not needed for a small site
   - CKV2_AWS_11   # paid extra: VPC flow logs: CloudWatch ingestion cost
-  - CKV_AWS_129   # paid extra: RDS log export to CloudWatch: ingestion cost; logs stay on RDS
   - CKV2_AWS_30   # paid extra: RDS query logging: cost and noise
+  - CKV_AWS_158   # paid extra: CloudWatch log group CMK: the database log is encrypted with CloudWatch's own key
+  - CKV_AWS_338   # by design: Log retention under a year: the database log is kept 14 days, for support, at a few cents a month
   - CKV_AWS_18    # paid extra: S3 access logging: needs a second bucket
   - CKV2_AWS_62   # paid extra: S3 event notifications: nothing consumes them
   - CKV_AZURE_33  # paid extra: Storage Queue logging: the account has no queues
@@ -40,4 +41,5 @@ skip-check:
   - CKV_AZURE_97  # by design: Encryption at host needs a per-subscription feature registration, which would break the one-click deploy; disks are still encrypted at rest
   - CKV_AZURE_151 # by design: false positive, a Windows-only check flagged on this Linux VM
   - CKV_AWS_23    # by design: false positive, every security group rule has a Description; checkov can't read the conditional (Fn::If) ones
+  - CKV_AZURE_36  # by design: Storage "trusted Microsoft services" bypass is off: no Azure service needs the account (the VM uses its subnet; the container is made through Resource Manager)
   - CKV_AZURE_43  # by design: Storage account naming: false positive, the name is computed (prefix + hash, 3-24 lowercase)

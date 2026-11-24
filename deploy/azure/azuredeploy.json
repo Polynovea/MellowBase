@@ -563,7 +563,7 @@
         "publicNetworkAccess": "Enabled",
         "networkAcls": {
           "defaultAction": "Deny",
-          "bypass": "AzureServices",
+          "bypass": "None",
           "virtualNetworkRules": [
             {
               "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', format('{0}-vnet', variables('prefix')), 'vm')]",
