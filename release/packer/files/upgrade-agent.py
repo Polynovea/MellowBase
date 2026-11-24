@@ -76,7 +76,8 @@ DEFAULTS = {
     "CONTAINER": "polynovea",
     "PUBKEY": "/etc/polynovea/release.pub",
     "CHANNEL_URL": "",
-    "ENV_FILE": "/etc/polynovea/polynovea.env",  # systemd: POLYNOVEA_IMAGE_REF lives here
+    "ENV_FILE": "/etc/polynovea/polynovea.env",  # systemd: the agent pins POLYNOVEA_IMAGE_REF here
+    "IMAGE_FILE": "/etc/polynovea/image.env",  # systemd: provision.sh's pin, used while ENV_FILE has none
     "IMAGE_KEY": "POLYNOVEA_IMAGE_REF",  # compose: POLYNOVEA_IMAGE in the compose folder's .env
     "SERVICE": "polynovea",  # systemd unit, or the compose service
     "COMPOSE_DIR": "",
@@ -331,7 +332,10 @@ class Runtime:
             self.ref_key = config["IMAGE_KEY"]
 
     def current_ref(self) -> str | None:
+        # The same order as run-cms.sh and verify-images.sh: polynovea.env wins over image.env.
         ref = env_value(self.ref_file, self.ref_key)
+        if not ref and self.kind == "systemd":
+            ref = env_value(self.config["IMAGE_FILE"], self.ref_key)
         return ref if ref and PINNED.match(ref) else None
 
     def set_ref(self, ref: str) -> None:
@@ -652,6 +656,12 @@ def run_restore(config: dict, image_ref: str, label: str) -> bool:
 def main(argv: list[str]) -> int:
     config = load_config(os.environ.get("POLYNOVEA_UPGRADE_CONFIG", "/etc/polynovea/upgrade.env"))
     folder = StatusDir(config["STATUS_DIR"])
+    if argv == ["--mark"]:
+        # Tells the CMS an agent is installed (it offers upgrades only then). Run by provision.sh, or
+        # once by hand on a compose host.
+        Runtime(config)  # validates RUNTIME and COMPOSE_DIR
+        folder.write_json("agent.json", {"schema": 1, "runtime": config["RUNTIME"], "at": now()})
+        return 0
     lock = folder.lock()
     try:
         try:

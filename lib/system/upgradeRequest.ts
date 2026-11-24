@@ -44,10 +44,14 @@ export function upgradePaths(env: Env = process.env) {
   };
 }
 
-/** True when an upgrade agent can be reached: its status folder is mounted into this container. */
+/**
+ * True when an upgrade agent is installed: its status folder is mounted into this container and holds
+ * the agent's marker (`upgrade-agent.py --mark`, run by provision.sh). An empty folder, which Docker
+ * creates for a missing bind-mount source, does not count.
+ */
 export async function upgradeAgentPresent(env: Env = process.env): Promise<boolean> {
   try {
-    return (await fs.stat(upgradePaths(env).statusDir)).isDirectory();
+    return (await fs.stat(path.join(upgradePaths(env).statusDir, "agent.json"))).isFile();
   } catch {
     return false;
   }
