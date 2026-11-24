@@ -10,12 +10,14 @@ import { requireDeveloperApi, type DeveloperApiContext } from "@/lib/developer/a
 import type { DeveloperApiScope } from "@/lib/developer/apiTokenService";
 import { ItemsApiError } from "@/lib/developer/items/errors";
 import { principalForToken, previewScope } from "@/lib/developer/items/principal";
-import type { ItemsContext } from "@/lib/developer/items/service";
+import type { ItemsContext, ModelView } from "@/lib/developer/items/service";
+import { schemaChangeHeaders } from "@/lib/developer/sdkTypes/drift";
+import type { CanonicalSchema } from "@/lib/schema/fields/types";
 import { PREVIEW_SCOPE, PREVIEW_TOKEN_HEADER, SCHEMA_HASH_HEADER, type RateLimitMeta } from "@/lib/developer/items/types";
 
 export const PRIVATE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   "cache-control": "private, no-store",
-  vary: `Authorization, ${PREVIEW_TOKEN_HEADER}`,
+  vary: `Authorization, ${PREVIEW_TOKEN_HEADER}, ${SCHEMA_HASH_HEADER}`,
 });
 
 function headers(requestId: string, rateLimit?: RateLimitMeta, schemaHash?: string): Headers {
@@ -29,10 +31,38 @@ function headers(requestId: string, rateLimit?: RateLimitMeta, schemaHash?: stri
   return h;
 }
 
-export function itemsOk(body: { data: unknown; meta?: Record<string, unknown> }, ctx: { requestId: string; rateLimit?: RateLimitMeta }, schemaHash: string, status = 200): Response {
+export function itemsOk(body: { data: unknown; meta?: Record<string, unknown> }, ctx: { requestId: string; rateLimit?: RateLimitMeta }, schemaHash: string, status = 200, extra: Record<string, string> = {}): Response {
   if (status === 204) return new Response(null, { status, headers: headers(ctx.requestId, ctx.rateLimit) });
   const meta = { requestId: ctx.requestId, timestamp: new Date().toISOString(), schemaHash, ...(ctx.rateLimit ? { rateLimit: ctx.rateLimit } : {}), ...body.meta };
-  return new Response(JSON.stringify({ data: body.data, meta }), { status, headers: headers(ctx.requestId, ctx.rateLimit, schemaHash) });
+  const h = headers(ctx.requestId, ctx.rateLimit, schemaHash);
+  for (const [key, value] of Object.entries(extra)) h.set(key, value);
+  return new Response(JSON.stringify({ data: body.data, meta }), { status, headers: h });
+}
+
+/**
+ * Schema drift for the typed SDK (W2's classifier, lib/developer/sdkTypes/drift.ts): when the request
+ * sends the model hash its types were pulled from and it is not current, the response says whether
+ * the change is minor, major or unknown for THIS caller's view. The old schema is looked up only among
+ * this workspace's versions of this model. Never fails the request.
+ */
+export async function driftHeaders(req: Request, workspaceId: string, view: ModelView): Promise<Record<string, string>> {
+  try {
+    return await schemaChangeHeaders({
+      scope: `${workspaceId}:${view.modelId}`,
+      requestHash: req.headers.get(SCHEMA_HASH_HEADER),
+      current: view.current,
+      loadPrevious: async (hash) => {
+        const row = await getDb().selectFrom("content_model_versions as v")
+          .innerJoin("content_models as m", "m.id", "v.content_model_id")
+          .select("v.schema_json")
+          .where("v.content_model_id", "=", view.modelId).where("m.workspace_id", "=", workspaceId).where("v.schema_hash", "=", hash)
+          .orderBy("v.version_number", "desc").limit(1).executeTakeFirst();
+        return row ? (row.schema_json as unknown as CanonicalSchema) : null;
+      },
+    });
+  } catch {
+    return {};
+  }
 }
 
 export function itemsError(error: unknown, ctx: { requestId: string; rateLimit?: RateLimitMeta }): Response {

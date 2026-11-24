@@ -1,6 +1,6 @@
 // The generated items API: list and create items of one model (Phase 4). Generic handlers driven by
 // the model's metadata; see lib/developer/items.
-import { itemsError, itemsOk, itemsRequest } from "@/lib/developer/items/http";
+import { driftHeaders, itemsError, itemsOk, itemsRequest } from "@/lib/developer/items/http";
 import { createItem, listItems } from "@/lib/developer/items/service";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +13,7 @@ export async function GET(req: Request, { params }: Params) {
   if (error) return error;
   try {
     const result = await listItems(ctx!, model, new URL(req.url).searchParams);
-    return itemsOk({ data: result.items, meta: { page: { limit: result.limit, nextCursor: result.nextCursor } } }, api!, result.schemaHash);
+    return itemsOk({ data: result.items, meta: { page: { limit: result.limit, nextCursor: result.nextCursor } } }, api!, result.schemaHash, 200, await driftHeaders(req, api!.workspaceId, result.view));
   } catch (failure) {
     return itemsError(failure, api!);
   }
