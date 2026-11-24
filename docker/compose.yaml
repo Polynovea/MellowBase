@@ -34,11 +34,6 @@ x-cms: &cms
     - ALL
   volumes:
     - polynovea-data:/var/lib/polynovea
-    # Read-only: the release key, so the System page can verify releases, and the upgrade agent's status
-    # folder (docs/self-hosting/upgrades.md). Without an agent Docker creates an empty folder, and the
-    # System page offers no upgrade button.
-    - ${POLYNOVEA_RELEASE_PUBKEY:-./release.pub}:/etc/polynovea/release.pub:ro
-    - ${POLYNOVEA_UPGRADE_STATUS_DIR:-./upgrade-status}:/var/lib/polynovea-upgrade:ro
   env_file:
     - path: ./polynovea.env
       required: false

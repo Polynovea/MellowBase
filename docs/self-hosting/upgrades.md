@@ -25,31 +25,52 @@ release only after `release.json`'s signature verifies with the installed releas
 
 ## What an upgrade does
 
-The CMS has no Docker access. When an admin clicks **Upgrade**, it writes
-`/var/lib/polynovea/upgrade-requests/request.json`. The systemd path unit `polynovea-upgrade.path` starts
-the root agent `/opt/polynovea/upgrade-agent.py`, which reads only the release ID from that file:
+The CMS has no Docker access. When an admin clicks **Upgrade** (after a fresh second-factor check), it
+writes `/var/lib/polynovea/upgrade-requests/request.json`. The systemd path unit `polynovea-upgrade.path`
+starts the root agent `/opt/polynovea/upgrade-agent.py`, which reads only the release ID from that file.
 
-1. **Verify**: fetch `release.json` from the channel itself, check its signature and the image's signature with
-   the pinned cosign image and the installed key. A release that is not newer than the running one is refused.
-2. **Backup**: on the bundled database, a pgBackRest incremental backup. On a managed database, a `pg_dump` to
-   `/var/lib/polynovea/backups/pre-upgrade/` (the last two are kept).
-3. **Pull** the image by digest.
-4. **Migrate**: a one-shot container of the new image applies pending migrations while the old release keeps serving.
-5. **Start**: pin the new digest (`POLYNOVEA_IMAGE_REF`) and restart `polynovea.service`. `verify-images.sh` checks it again.
-6. **Health**: `/api/health` must report `"state":"running"` and the new release within 2 minutes.
+1. **Verify**: fetch `release.json` from the channel itself and check its signature and the image's signature
+   with the pinned cosign image and the installed key. The running release comes from root-side sources
+   only (the pinned image's `io.polynovea.release-id` label, the agent's last good release, then
+   `image.env`); a release that is not newer, or a running release that can't be established, is refused.
+   A release that failed three times needs `upgrade-agent.py --reset-failures` first.
+2. **Pull** the image by digest (no downtime).
+3. **Wait** for a restore test in progress (at most 15 minutes).
+4. Then, depending on what `release.json` declares:
+   - `"rollback": "compatible"` (the previous release runs on the new schema): **back up** while the old
+     release keeps serving, then **migrate** from a one-shot container of the new image.
+   - otherwise (a failure means a restore): the CMS **stops taking changes**. The agent stops it and starts
+     only its database. It then **backs up**, records the database's **exact position** (WAL LSN, archived),
+     makes the app's database login **read-only** for the new release's trial, and **migrates**.
+5. **Start**: pin the new digest (`POLYNOVEA_IMAGE_REF`) and restart `polynovea.service`
+   (`verify-images.sh` checks it again).
+6. **Health**: `/api/health` must report `"state":"running"` and the new release within 2 minutes. Changes
+   resume (read-only is lifted) only after that.
 7. **Switch**: the new release stays; it is recorded as the last good one.
 
-If step 6 fails, the agent switches back to the previous digest. If the release did not declare
-compatible migrations, it first restores the pre-upgrade pgBackRest backup (bundled database). On a
-managed database it cannot do that, so the status is "restore needed": restore the pre-upgrade dump or
-the cloud's point-in-time backup from just before the upgrade.
+If anything fails after the first change, the agent switches back to the previous digest. In the second
+case it restores the bundled database to the recorded position, so every change committed before the
+migrations comes back, and the read-only setting with it. Changes in between were refused, never
+accepted and then dropped: the CMS was stopped, then read-only (callers get "An upgrade is in
+progress"). On a managed database the agent can't restore, so the status is "restore needed": restore
+the pre-upgrade dump or the cloud's point-in-time backup.
+
+Every failure ends in a final status. An unexpected error switches back like a failed health check. If the
+agent itself is stopped mid-upgrade (a reboot, a timeout), `polynovea-upgrade-recover.service` finishes the
+switch-back at the next boot, before the CMS starts. The CMS closes an upgrade that has reported nothing
+for 4 hours.
 
 Every step is written to `/var/lib/polynovea-upgrade/status.json` (root-owned, read-only for the CMS)
 and copied into the audit log (`system.upgrade.*` events).
 
+**Docker Compose.** In-app upgrades need the agent on the host and the opt-in overlay
+`docker/compose.upgrades.yaml` (see its header: four host paths that must exist before `up`). Without
+them, `compose.yaml` alone runs as before and the System page offers no upgrade button.
+
 **Known limits.** The switch stops the old release before starting the new one, because the bundled
-PostgreSQL lives inside the CMS container. The CMS is unavailable for about 20–40 seconds. Zero-downtime
-switching for managed-database installs is a later improvement.
+PostgreSQL lives inside the CMS container. The CMS is unavailable for that switch (measured at about
+5 seconds), and for the backup and migrations as well when the release isn't declared compatible.
+Zero-downtime switching for managed-database installs is a later improvement.
 
 ## Health checks (System Doctor)
 
