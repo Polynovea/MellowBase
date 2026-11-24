@@ -537,7 +537,7 @@ class AgentTest(unittest.TestCase):
 
     def _interrupted(self, pin, inflight):
         os.makedirs(self.status, exist_ok=True)
-        os.chmod(self.status, 0o755)
+        os.chmod(self.status, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions (test fixture: the agent requires exactly this mode)
         self.write("etc/polynovea.env", f"POLYNOVEA_IMAGE_REF={pin}\n")
         self.write("status/status.json", json.dumps({"schema": 1, "releaseId": RELEASE_B, "fromRelease": RELEASE_A, "status": "running",
                                                      "startedAt": "2026-11-24T00:00:00Z", "steps": [{"step": "start", "outcome": "started", "at": "t"}]}))
