@@ -500,7 +500,12 @@ describe("review item 1: a link can't swap in someone else's images", () => {
     expect(bicep).toContain("param caddyImage string = loadJsonContent('../release-images.json').caddyImage");
     expect(bicep).toContain("containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || isPolynoveaImage(containerImage)");
     expect(bicep).toContain("caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || isDigestRef(caddyImage, ['caddy', 'docker.io/library/caddy'])");
-    expect(bicep).toMatch(/parameters: toObject\(items\(inputRules\), rule => rule\.key, rule => \{ type: 'bool', allowedValues: \[true\] \}\)/);
+    // Each rule in inputRules has a parameter in the nested check template that accepts only true.
+    const ruleBlock = bicep.slice(bicep.indexOf("var inputRules = {"), bicep.indexOf("\n}\n", bicep.indexOf("var inputRules = {")));
+    const ruleNames = [...ruleBlock.matchAll(/^  (\w+): /gm)].map((m) => m[1]);
+    expect(ruleNames.length).toBe(7);
+    for (const rule of ruleNames) expect(bicep).toContain(`        ${rule}: { type: 'bool', allowedValues: [true] }`);
+    expect(bicep).toContain("parameters: toObject(items(inputRules), rule => rule.key, rule => { value: rule.value })");
     // Every resource with no other dependency waits for the checks.
     for (const name of ["vmNsg", "dbNsg", "databaseDns", "storage", "publicIp", "dataDisk", "budget"]) {
       const start = bicep.indexOf(`resource ${name} '`);

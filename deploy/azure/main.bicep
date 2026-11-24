@@ -158,10 +158,21 @@ resource inputChecks 'Microsoft.Resources/deployments@2022-09-01' = {
   name: 'polynovea-input-checks'
   properties: {
     mode: 'Incremental'
+    expressionEvaluationOptions: { scope: 'inner' }
+    // The nested template can't see this template's variables, so its parameter list is written out
+    // here, one per rule in inputRules (a unit test keeps the two in step).
     template: {
       '$schema': 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'
       contentVersion: '1.0.0.0'
-      parameters: toObject(items(inputRules), rule => rule.key, rule => { type: 'bool', allowedValues: [true] })
+      parameters: {
+        containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: { type: 'bool', allowedValues: [true] }
+        caddyImageMustBeCaddysOfficialImagePinnedByDigest: { type: 'bool', allowedValues: [true] }
+        adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32: { type: 'bool', allowedValues: [true] }
+        domainMustBeBlankOrALowercaseDomainNameSuchAsCmsExampleCom: { type: 'bool', allowedValues: [true] }
+        acmeEmailMustBeBlankOrAnEmailAddress: { type: 'bool', allowedValues: [true] }
+        budgetEmailMustBeAnEmailAddress: { type: 'bool', allowedValues: [true] }
+        setADomainOrAnAdminCidrOtherwiseNobodyCanReachTheSetupWizard: { type: 'bool', allowedValues: [true] }
+      }
       resources: []
     }
     parameters: toObject(items(inputRules), rule => rule.key, rule => { value: rule.value })
