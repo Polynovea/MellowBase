@@ -24,8 +24,13 @@ async function reviewAndApply(page: Page, expectUnsafe?: boolean): Promise<void>
   await apply.click();
 }
 
-/** Waits for the schema worker to finish applying (the page refreshes the status by itself). */
+/**
+ * Waits for the schema worker to finish applying (the page refreshes the status by itself). First the
+ * page must have reloaded the model after the save, or "not applying" could be read off the old state.
+ */
 async function waitForWorker(page: Page): Promise<void> {
+  await expect(page.getByRole("heading", { level: 1, name: MODEL.name })).toBeVisible();
+  await expect(page.locator(".animate-spin")).toHaveCount(0);
   await expect(page.getByText("Applying your changes to the database")).toBeHidden({ timeout: 60_000 });
 }
 
@@ -106,8 +111,11 @@ test("add a field, rename it, delete it, restore it by re-adding, and delete ano
   await expect(waiting).toBeVisible();
 
   // Restore: re-adding the same key cancels the waiting deletion and keeps the values.
+  const groups = page.getByRole("group", { name: /^Field: / });
+  await expect(groups).toHaveCount(3);
   await page.getByRole("button", { name: "Add field" }).click();
-  const readded = field(page, String(await page.getByRole("group", { name: /^Field: / }).count()));
+  await expect(groups).toHaveCount(4);
+  const readded = field(page, "4");
   await readded.getByLabel("Field label").fill("Strapline");
   await readded.getByLabel("Field key").fill("subtitle");
   await reviewAndApply(page);

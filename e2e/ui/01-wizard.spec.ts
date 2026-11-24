@@ -131,6 +131,8 @@ test("a fresh install reaches a signed-in owner through the wizard, by keyboard"
 
   // Step 4b: the keys to keep (only those this install has).
   await press(page, "Show my keys");
+  // The keys form is drawn once the keys arrive; only then is it known which tails it asks for.
+  await expect(page.getByRole("button", { name: /I've saved them|Continue/ })).toBeVisible();
   await auditScreen(page, "wizard-7-keys");
   for (const [field, testId] of [["Last 6 characters of the master key", "master-key"], ["Last 6 characters of the backup password", "backup-password"]] as const) {
     if (await page.getByLabel(field).count()) {

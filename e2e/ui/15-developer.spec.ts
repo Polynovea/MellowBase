@@ -30,8 +30,8 @@ test("a token limited to one model: a bad rate limit is refused, then it is crea
   await page.getByRole("button", { name: "Create token" }).click();
   const secretBox = page.locator(".ui-alert-warning code");
   await expect(page.getByText("New API secret — copy it now")).toBeVisible();
+  await expect(secretBox).toHaveText(/^pnv_/);
   const secret = (await secretBox.textContent())!.trim();
-  expect(secret).toMatch(/^pnv_/);
   await expect(page.getByRole("button", { name: "Copy the secret" })).toBeVisible();
   await expect(page.getByRole("row").filter({ hasText: "UI test website" })).toContainText(modelApiKey!);
   await auditScreen(page, "developer");
