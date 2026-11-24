@@ -115,7 +115,7 @@ Parameters:
     Type: String
     Default: ""
     Description: An existing EC2 key pair in this region, needed only for SSH. Leave blank for none.
-  # Images come only from the release (deploy/release.json, baked in by
+  # Images come only from the release (deploy/release-images.json, baked in by
   # deploy/scripts/release-templates.mjs). The patterns stop a quick-create link from swapping in
   # anyone else's image: the CMS only from ghcr.io/polynovea/, the proxy only Caddy's official image,
   # both pinned by digest. The CMS image's signature is checked again on the server before every start.

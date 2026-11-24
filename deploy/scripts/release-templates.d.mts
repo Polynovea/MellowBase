@@ -15,4 +15,6 @@ export interface Release {
 }
 export function loadRelease(text: string): Release;
 export function renderCfn(cfn: string, release: Release): string;
-export function releaseGaps(release: Release, bootstrap: string, cfn: string, arm: unknown): string[];
+export interface SignedRelease { schema: number; image?: string; digest?: string; ref?: string; publicKeySha256?: string }
+export function releaseGaps(release: Release, bootstrap: string, cfn: string, arm: unknown, signed?: SignedRelease | null): string[];
+export function signedReleaseGaps(release: Release, bootstrap: string, signed: SignedRelease): string[];

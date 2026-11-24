@@ -1,11 +1,11 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { parseDatabaseSecret, parseSecretRef, SECRET_MALFORMED } from "@/lib/setup/database/createdForYou";
-import { AWS_REGIONS, loadRelease, releaseGaps, renderCfn } from "./scripts/release-templates.mjs";
+import { AWS_REGIONS, loadRelease, releaseGaps, renderCfn, signedReleaseGaps } from "./scripts/release-templates.mjs";
 import { checkReleaseKey, COPIES, expectedOutputs, findSources, RELEASE_KEY, renderBootstrap, START_COMMAND, VM_FILES } from "./scripts/sync-vm-bootstrap.mjs";
 
 /**
@@ -430,7 +430,7 @@ describe("first boot fails closed", () => {
 
 describe("Azure server images", () => {
   it("uses the release's gallery image or Ubuntu, with Trusted Launch on x64", () => {
-    expect(bicep).toContain("var galleryImage = loadJsonContent('../release.json').azure.galleryImages[architecture]");
+    expect(bicep).toContain("var galleryImage = loadJsonContent('../release-images.json').azure.galleryImages[architecture]");
     expect(bicep).toContain("imageReference: empty(galleryImage) ? ubuntuImage : { communityGalleryImageId: galleryImage }");
     expect(bicep).toContain("securityProfile: architecture == 'x64'");
     expect(bicep).not.toMatch(/param customImageId/);
@@ -488,7 +488,7 @@ describe("review item 1: a link can't swap in someone else's images", () => {
     expect(() => loadRelease(JSON.stringify({ ...base, aws: { amis: { "eu-west-1": { arm64: "attacker" } } } }))).toThrow(/AMI/);
     expect(() => loadRelease(JSON.stringify({ ...base, azure: { galleryImages: { x64: "/subscriptions/x/resourceGroups/y/providers/Microsoft.Compute/images/z" } } }))).toThrow(/gallery/);
     // The committed release file is valid and the template is in step with it.
-    const release = loadRelease(read("release.json"));
+    const release = loadRelease(read("release-images.json"));
     expect(renderCfn(cfn, release)).toBe(cfn);
     const published = renderCfn(cfn, { ...release, cmsImage: genuineCms, caddyImage: genuineCaddy[0], aws: { amis: { "eu-west-1": { arm64: "ami-0123456789abcdef0", amd64: "" } } } });
     expect(published).toContain(`\n  ContainerImage:\n    Type: String\n    Default: "${genuineCms}"`);
@@ -496,8 +496,8 @@ describe("review item 1: a link can't swap in someone else's images", () => {
   });
 
   it("Bicep checks the images before creating anything, and has no free image parameter", () => {
-    expect(bicep).toContain("param containerImage string = loadJsonContent('../release.json').cmsImage");
-    expect(bicep).toContain("param caddyImage string = loadJsonContent('../release.json').caddyImage");
+    expect(bicep).toContain("param containerImage string = loadJsonContent('../release-images.json').cmsImage");
+    expect(bicep).toContain("param caddyImage string = loadJsonContent('../release-images.json').caddyImage");
     expect(bicep).toContain("containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest: empty(containerImage) || isPolynoveaImage(containerImage)");
     expect(bicep).toContain("caddyImageMustBeCaddysOfficialImagePinnedByDigest: empty(caddyImage) || isDigestRef(caddyImage, ['caddy', 'docker.io/library/caddy'])");
     expect(bicep).toMatch(/parameters: toObject\(items\(inputRules\), rule => rule\.key, rule => \{ type: 'bool', allowedValues: \[true\] \}\)/);
@@ -689,5 +689,32 @@ describe("review nits 9 and 10: operator clean-up and costs that outlive the ser
       expect(text, file).toMatch(/snapshot|kept/i);
       expect(text, file).toMatch(/grows automatically/);
     }
+  });
+});
+
+describe("the release gate compares with the signed release manifest", () => {
+  const digest = "c".repeat(64);
+  const stand = Object.fromEntries(VM_FILES.map((name) => [name, `# ${name}\n`]));
+  const key = generateKeyPairSync("ec", { namedCurve: "P-256" }).publicKey.export({ type: "spki", format: "pem" }).toString();
+  const keySha = createHash("sha256").update(key).digest("hex");
+  const release = { release: true, cmsImage: `ghcr.io/polynovea/cms@sha256:${digest}`, caddyImage: `caddy@sha256:${digest}`, aws: { amis: {} }, azure: { galleryImages: {} } };
+  const signed = { schema: 1, image: "ghcr.io/polynovea/cms", digest: `sha256:${digest}`, ref: `ghcr.io/polynovea/cms@sha256:${digest}`, publicKeySha256: keySha };
+
+  it("passes when the CMS image and the embedded key are the signed release's", () => {
+    expect(signedReleaseGaps(release, renderBootstrap({ ...stand, [RELEASE_KEY]: key }), signed)).toEqual([]);
+  });
+
+  it("fails on another image or another key", () => {
+    const bootstrapWithKey = renderBootstrap({ ...stand, [RELEASE_KEY]: key });
+    expect(signedReleaseGaps({ ...release, cmsImage: `ghcr.io/polynovea/cms@sha256:${"d".repeat(64)}` }, bootstrapWithKey, signed).join("\n")).toMatch(/isn't the signed release's image/);
+    const otherKey = generateKeyPairSync("ec", { namedCurve: "P-256" }).publicKey.export({ type: "spki", format: "pem" }).toString();
+    expect(signedReleaseGaps(release, renderBootstrap({ ...stand, [RELEASE_KEY]: otherKey }), signed).join("\n")).toMatch(/isn't the key the release was signed with/);
+    expect(signedReleaseGaps(release, renderBootstrap(stand), signed).join("\n")).toMatch(/has no polynovea-release\.pub/);
+    expect(signedReleaseGaps(release, bootstrapWithKey, { ...signed, schema: 2 }).join("\n")).toMatch(/schema 2/);
+  });
+
+  it("is named apart from the signed manifest, and says where its values come from", () => {
+    expect(existsSync(path.join(DEPLOY, "release.json"))).toBe(false);
+    expect(JSON.parse(read("release-images.json"))._comment).toMatch(/signed release manifest[\s\S]+Not hand-edited/);
   });
 });

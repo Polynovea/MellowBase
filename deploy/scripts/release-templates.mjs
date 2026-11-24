@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Bakes a release's images into the cloud templates, so a quick-create or "Deploy to Azure" link
-// can't point a server at someone else's image. deploy/release.json is the single source:
+// can't point a server at someone else's image. deploy/release-images.json is the single source:
 //
 //   {
 //     "release": true,                                   // false = development build (see --release-check)
@@ -13,17 +13,19 @@
 //   node deploy/scripts/release-templates.mjs                  # write the CloudFormation defaults and AMI map
 //   node deploy/scripts/release-templates.mjs --check          # exit 1 if the template is out of step
 //   node deploy/scripts/release-templates.mjs --release-check  # exit 1 unless this is a complete release
+//       [--signed-release dist/release/<id>/release.json]      # and, given the signed manifest, its digests match
 //   node deploy/scripts/release-templates.mjs --release-check --not-a-release
 //                                                              # development: report what's missing, exit 0
 //
-// Bicep reads deploy/release.json itself (loadJsonContent); rebuild azuredeploy.json after a change.
+// Bicep reads deploy/release-images.json itself (loadJsonContent); rebuild azuredeploy.json after a change.
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { RELEASE_KEY } from "./sync-vm-bootstrap.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-export const RELEASE_FILE = "deploy/release.json";
+export const RELEASE_FILE = "deploy/release-images.json";
 export const CFN = "deploy/aws/polynovea.yaml";
 export const BOOTSTRAP = "deploy/scripts/vm-bootstrap.sh";
 
@@ -47,7 +49,7 @@ export const AWS_REGIONS = [
 const BEGIN = "# BEGIN GENERATED release-amis";
 const END = "# END GENERATED release-amis";
 
-/** Reads and checks deploy/release.json. Throws on anything that isn't a Polynovea or Caddy image. */
+/** Reads and checks deploy/release-images.json. Throws on anything that isn't a Polynovea or Caddy image. */
 export function loadRelease(text) {
   const r = JSON.parse(text);
   const fail = (m) => { throw new Error(`${RELEASE_FILE}: ${m}`); };
@@ -89,7 +91,7 @@ export function renderCfn(cfn, release) {
 }
 
 /** What a complete release still lacks (empty = ready to publish). */
-export function releaseGaps(release, bootstrap, cfn, arm) {
+export function releaseGaps(release, bootstrap, cfn, arm, signed = null) {
   const gaps = [];
   if (!release.release) gaps.push(`${RELEASE_FILE} says "release": false`);
   if (!release.cmsImage) gaps.push("no CMS image digest (cmsImage)");
@@ -102,6 +104,23 @@ export function releaseGaps(release, bootstrap, cfn, arm) {
     if (release.cmsImage && !json.includes(release.cmsImage)) gaps.push("azuredeploy.json doesn't carry the CMS image: run deploy/scripts/build-azure.sh");
     if (release.caddyImage && !json.includes(release.caddyImage)) gaps.push("azuredeploy.json doesn't carry the Caddy image: run deploy/scripts/build-azure.sh");
   }
+  if (signed) gaps.push(...signedReleaseGaps(release, bootstrap, signed));
+  return gaps;
+}
+
+/**
+ * Checks against the signed release manifest (release.json from scripts/release/build-and-sign.mjs,
+ * schema 1): the CMS image must be its `ref` (or `image@digest`), and the key the first-boot script
+ * carries must hash to its `publicKeySha256`. Caddy isn't in the manifest (it isn't our image).
+ */
+export function signedReleaseGaps(release, bootstrap, signed) {
+  const gaps = [];
+  if (signed.schema !== 1) return [`the signed release manifest has schema ${signed.schema}; this check knows schema 1`];
+  const signedRef = typeof signed.ref === "string" && signed.ref.includes("@sha256:") ? signed.ref : `${signed.image}@${signed.digest}`;
+  if (release.cmsImage !== signedRef) gaps.push(`cmsImage (${release.cmsImage || "blank"}) isn't the signed release's image (${signedRef})`);
+  const key = new RegExp(`cat > "\\$FILES/${RELEASE_KEY.replace(".", "\\.")}" <<'POLYNOVEA_FILE_END'\\n([\\s\\S]*?)POLYNOVEA_FILE_END`).exec(bootstrap)?.[1];
+  if (!key) gaps.push(`the first-boot script has no ${RELEASE_KEY} to compare with the signed release's key`);
+  else if (createHash("sha256").update(key).digest("hex") !== signed.publicKeySha256) gaps.push(`the first-boot script's ${RELEASE_KEY} isn't the key the release was signed with (publicKeySha256 differs)`);
   return gaps;
 }
 
@@ -113,7 +132,11 @@ function main(argv) {
   if (argv.includes("--release-check")) {
     const armPath = path.join(ROOT, "deploy/azure/azuredeploy.json");
     const arm = existsSync(armPath) ? JSON.parse(readFileSync(armPath, "utf8")) : null;
-    const gaps = releaseGaps(release, readFileSync(path.join(ROOT, BOOTSTRAP), "utf8"), cfn, arm);
+    // The signed release manifest, when there is one: --signed-release <file> or POLYNOVEA_SIGNED_RELEASE.
+    const signedPath = argv.includes("--signed-release") ? argv[argv.indexOf("--signed-release") + 1] : process.env.POLYNOVEA_SIGNED_RELEASE;
+    const signed = signedPath ? JSON.parse(readFileSync(path.resolve(signedPath), "utf8")) : null;
+    const gaps = releaseGaps(release, readFileSync(path.join(ROOT, BOOTSTRAP), "utf8"), cfn, arm, signed);
+    if (!signed) console.log("release check: no signed release manifest given (--signed-release <file> or POLYNOVEA_SIGNED_RELEASE); digests not compared with it");
     if (expected !== cfn) gaps.push(`${CFN} is out of step with ${RELEASE_FILE}: run node deploy/scripts/release-templates.mjs`);
     if (gaps.length === 0) { console.log("release check: ready"); return; }
     const notRelease = argv.includes("--not-a-release");
