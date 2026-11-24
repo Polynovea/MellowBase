@@ -533,10 +533,11 @@ async function heartbeat() {
 // right after setup's first backup (the wizard leaves <data root>/restore-test-due). It runs as a
 // separate low-priority process so deliveries keep flowing; its result goes to system_restore_tests.
 let restoreTestChild = null;
+const workerStartedAt = new Date().toISOString();
 // This worker is the only one that runs restore tests on this server, so one still "running" when it
 // starts was cut off by a restart (its leftovers are removed by the next test).
 if (inServerImage()) {
-  await client.query("select public.polynovea_system_restore_test_interrupted()").catch((error) => console.error("[delivery-worker] interrupted restore tests not closed", error.code ?? error.message));
+  await client.query("select public.polynovea_system_restore_test_interrupted($1)", [workerStartedAt]).catch((error) => console.error("[delivery-worker] interrupted restore tests not closed", error.code ?? error.message));
 }
 async function maybeStartRestoreTest() {
   if (restoreTestChild || !inServerImage()) return;

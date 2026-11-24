@@ -110,7 +110,11 @@ describeWithDatabase("system operations (migration 0077)", (db) => {
   it("a test cut off by a restart is closed as skipped (INTERRUPTED) so the next one can start", async () => {
     await db.query("update public.system_restore_tests set status = 'failed', finished_at = now() where status = 'running'");
     const id = await beginRestoreTest("first_backup");
-    const [closed] = await db.query<{ n: number }>("select public.polynovea_system_restore_test_interrupted() as n");
+    // A worker that started before the test leaves it alone (it may be that worker's own test).
+    const [kept] = await db.query<{ n: number }>("select public.polynovea_system_restore_test_interrupted(now() - interval '1 hour') as n");
+    expect(Number(kept.n)).toBe(0);
+    // A worker that started after it closes it.
+    const [closed] = await db.query<{ n: number }>("select public.polynovea_system_restore_test_interrupted(now() + interval '1 second') as n");
     expect(Number(closed.n)).toBe(1);
     expect((await listRestoreTests(50)).find((test) => test.id === id)).toMatchObject({ status: "skipped", error_code: "INTERRUPTED" });
     expect(await beginRestoreTest("first_backup")).not.toBeNull();

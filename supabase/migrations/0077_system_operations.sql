@@ -3,7 +3,7 @@
 -- Two installation-wide records the System page and the System Doctor read:
 --
 -- * system_upgrades: one row per in-app upgrade. The CMS records the request when an admin starts it;
---   the host upgrade agent (release/packer/files/upgrade.sh) runs it and writes a status file; whichever
+--   the host upgrade agent (release/packer/files/upgrade-agent.py) runs it and writes a status file; whichever
 --   CMS comes up afterwards (the new release, or the old one after a switch-back) records the agent's
 --   steps here and in platform_audit_events.
 -- * system_restore_tests: one row per restore test of the bundled database's backups (a worker job,
@@ -161,10 +161,11 @@ begin
 end;
 $$;
 
--- Run by the worker when it starts: a restore test still "running" then was cut off by a restart (only
--- the worker of this server runs them, one at a time). Recorded as skipped, not failed, and the worker runs
--- the test again; a test stuck for 6 hours with no restart is closed as failed by _begin above.
-create or replace function public.polynovea_system_restore_test_interrupted()
+-- Run by the worker when it starts, with its own start time: a restore test that began before then and
+-- is still "running" was cut off by a restart (only the worker of this server runs them, one at a time).
+-- A test that began after (started by this worker, or by hand) is left alone. Recorded as skipped, not
+-- failed, and the worker runs the test again; a test stuck for 6 hours is closed as failed by _begin.
+create or replace function public.polynovea_system_restore_test_interrupted(p_before timestamptz)
 returns integer
 language plpgsql
 security definer
@@ -176,7 +177,7 @@ begin
   update public.system_restore_tests
      set status = 'skipped', error_code = 'INTERRUPTED',
          error_message = 'The restore test stopped when the server restarted; it runs again.', finished_at = now()
-   where status = 'running';
+   where status = 'running' and started_at < p_before;
   get diagnostics v_count = row_count;
   return v_count;
 end;
@@ -323,7 +324,7 @@ revoke all on function public.polynovea_system_upgrade_request(uuid, text, text,
 revoke all on function public.polynovea_system_upgrade_record(uuid, text, jsonb, text) from public;
 revoke all on function public.polynovea_system_restore_test_begin(text) from public;
 revoke all on function public.polynovea_system_restore_test_finish(uuid, text, text, jsonb, text, text) from public;
-revoke all on function public.polynovea_system_restore_test_interrupted() from public;
+revoke all on function public.polynovea_system_restore_test_interrupted(timestamptz) from public;
 
 select public.polynovea_apply_app_access();
 
