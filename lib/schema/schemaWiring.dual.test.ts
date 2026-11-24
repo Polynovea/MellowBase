@@ -6,7 +6,6 @@ import { getDb } from "@/lib/db/index";
 import { uniqueKey } from "@/lib/schema/engine/testing";
 import { applyChange, createModel, getModel } from "@/lib/schema/modelService";
 import { closeTableMoveSession, runWorker } from "@/lib/content/testing/tableMove";
-import { moveModel } from "@/lib/content/contentMove";
 import { tableSource } from "@/lib/content/tableStore";
 import { modelSchemaChanges } from "@/lib/schema/schemaChanges";
 import { confirmPlanStage } from "@/lib/schema/runner/request";
@@ -43,6 +42,19 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
     expect(await ledger(backend, modelId)).toEqual([{ stage: "expand", status: "pending" }]);
     expect(await runWorker(modelId)).toEqual(["succeeded"]);
     expect(await columns(backend, modelId)).toEqual(expect.arrayContaining(["title"]));
+    // A new model has nothing to copy: the worker verified it and switched its reads to the table.
+    expect(await tableSource(workspaceId, modelId)).not.toBeNull();
+  });
+
+  it("a model with entries is never switched by the worker (moving content stays content:move)", async () => {
+    const { workspaceId, adminUserId } = await workspace(backend);
+    const created = await createModel({ workspaceId, createdBy: adminUserId, proposedSchema: { name: "Old", apiKey: uniqueKey("old"), fields: [f("title")] } });
+    if (!created.ok) throw new Error(created.error);
+    const modelId = created.data.model.id;
+    const entry = await createEntry({ workspaceId, modelId, data: { title: "Existing" }, actorAdminUserId: adminUserId });
+    if (!entry.ok) throw new Error(entry.error);
+    expect(await runWorker(modelId)).toEqual(["succeeded"]);
+    expect(await tableSource(workspaceId, modelId)).toBeNull();
   });
 
   it("adding a field reaches succeeded and the table serves it", async () => {
@@ -52,8 +64,7 @@ describeWithDatabase("model saves queue their schema change [postgres]", (backen
     if (!created.ok) throw new Error(created.error);
     const modelId = created.data.model.id;
     expect(await runWorker(modelId)).toEqual(["succeeded"]);
-    const moved = await moveModel(getDb(), { workspaceId, modelId, requestedBy: adminUserId, switchReads: true });
-    expect(moved.switched).toBe(true);
+    expect(await tableSource(workspaceId, modelId)).not.toBeNull(); // adopted by the worker
 
     const changed = await applyChange({ model: (await getModel(workspaceId, modelId))!, proposedSchema: { name: "Post", apiKey, fields: [f("title"), f("subtitle")] }, acknowledgeUnsafe: false, actorAdminUserId: adminUserId });
     if (!changed.ok || !changed.data.applied) throw new Error("change not applied");

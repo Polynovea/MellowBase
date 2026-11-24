@@ -431,3 +431,37 @@ export function moveErrorFields(error: unknown): { code: string; message?: strin
   if (e?.name === "SchemaEngineError" && typeof e.code === "string") return { code: `schema:${e.code}`, message: message.slice(0, 300) };
   return { code: "error", errorType: e?.constructor?.name ?? typeof error, hint: "Run again with POLYNOVEA_DEBUG=1 to print the error message." };
 }
+
+/**
+ * Models with a table that are not reading from it yet, have never been moved (no run), have no
+ * entries at all, and have no schema stage queued or running: typically a model just created in the
+ * CMS. With nothing to copy, the worker verifies the empty table and switches reads to it, so a new
+ * model is served from its table without anyone running content:move. A model WITH entries is never
+ * switched here: moving existing content stays an operator decision (content:move).
+ */
+export async function adoptEmptyModels(db: Kysely<DB>, options: { modelId?: string; log?: ResyncLog; limit?: number } = {}): Promise<number> {
+  const log: ResyncLog = options.log ?? (() => undefined);
+  const { rows } = await sql<{ content_model_id: string; workspace_id: string }>`
+    select t.content_model_id, t.workspace_id
+      from public.content_model_tables t
+      join public.content_models m on m.id = t.content_model_id and m.workspace_id = t.workspace_id and m.status <> 'archived'
+      join public.content_model_versions v on v.content_model_id = m.id and v.version_number = m.current_schema_version and v.id = t.applied_version_id
+      left join public.content_model_storage s on s.content_model_id = t.content_model_id
+     where (s.content_model_id is null or (s.read_source = 'snapshot' and s.last_run_id is null))
+       and not exists (select 1 from public.content_entries e where e.content_model_id = t.content_model_id)
+       and not exists (select 1 from public.schema_migration_ledger l where l.content_model_id = t.content_model_id and l.status in ('pending', 'running'))
+       ${options.modelId ? sql`and t.content_model_id = ${options.modelId}::uuid` : sql``}
+     order by t.content_model_id
+     limit ${Math.min(50, Math.max(1, options.limit ?? 20))}`.execute(db);
+  let adopted = 0;
+  for (const row of rows) {
+    try {
+      const moved = await moveModel(db, { workspaceId: row.workspace_id, modelId: row.content_model_id, switchReads: true });
+      if (moved.switched) adopted += 1;
+      log(moved.switched ? "content_adopted" : "content_adopt_skipped", { modelId: row.content_model_id, ...(moved.switched ? {} : { status: moved.table.status }) });
+    } catch (error) {
+      log("content_adopt_failed", { modelId: row.content_model_id, ...moveErrorFields(error) });
+    }
+  }
+  return adopted;
+}

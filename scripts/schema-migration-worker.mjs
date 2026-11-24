@@ -57,7 +57,7 @@ const { rollbackExpandTask } = await import("../lib/schema/runner/expandContract
 const { tryLockModel, unlockModel } = await import("../lib/schema/runner/ledger.ts");
 const { trigramSchema } = await import("../lib/schema/engine/render.ts");
 const { kyselyOn } = await import("../lib/schema/runner/engine.ts");
-const { resyncChangedModels } = await import("../lib/content/contentMove.ts");
+const { adoptEmptyModels, resyncChangedModels } = await import("../lib/content/contentMove.ts");
 
 const once = process.argv.includes("--once");
 // --model <id> or --model=<id>: only that model's stages; contracts then only with --contracts.
@@ -170,6 +170,8 @@ try {
       // Content tables: models whose table changed shape (a stage or a contract) or missed a save are
       // re-synced and re-verified, so their reads return to the table without a manual content:move.
       if (await resyncChangedModels(kyselyOn(client), { modelId: modelArg, log })) worked = true;
+      // New models (a table, no entries, never moved): verified and switched to their table (Phase 4).
+      if (await adoptEmptyModels(kyselyOn(client), { modelId: modelArg, log })) worked = true;
       backoffMs = 0;
     } catch (error) {
       const code = typeof error?.code === "string" && /^[0-9A-Z_]{1,40}$/.test(error.code) ? error.code : errorCode(error);
