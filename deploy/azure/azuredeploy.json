@@ -1,117 +1,14 @@
 {
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-  "languageVersion": "2.0",
   "contentVersion": "1.0.0.0",
   "metadata": {
     "_generator": {
       "name": "bicep",
       "version": "0.49.2.45890",
-      "templateHash": "16936964165514931355"
+      "templateHash": "9673315616017633438"
     },
     "description": "Polynovea CMS: one VM, PostgreSQL Flexible Server 16 or on-server PostgreSQL, Blob backups, Key Vault, budget alert. About US$56/month managed or US$39/month on-this-server (East US list prices, November 2026)."
   },
-  "functions": [
-    {
-      "namespace": "__bicep",
-      "members": {
-        "allIn": {
-          "parameters": [
-            {
-              "type": "string",
-              "name": "text"
-            },
-            {
-              "type": "string",
-              "name": "alphabet"
-            }
-          ],
-          "output": {
-            "type": "bool",
-            "value": "[empty(filter(range(0, length(parameters('text'))), lambda('i', not(contains(parameters('alphabet'), substring(parameters('text'), lambdaVariables('i'), 1))))))]"
-          }
-        },
-        "isDigestRef": {
-          "parameters": [
-            {
-              "type": "string",
-              "name": "ref"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "name": "names"
-            }
-          ],
-          "output": {
-            "type": "bool",
-            "value": "[and(and(and(equals(length(split(parameters('ref'), '@sha256:')), 2), contains(parameters('names'), first(split(parameters('ref'), '@sha256:')))), equals(length(last(split(parameters('ref'), '@sha256:'))), 64)), __bicep.allIn(last(split(parameters('ref'), '@sha256:')), '0123456789abcdef'))]"
-          }
-        },
-        "isPolynoveaImage": {
-          "parameters": [
-            {
-              "type": "string",
-              "name": "ref"
-            }
-          ],
-          "output": {
-            "type": "bool",
-            "value": "[and(and(and(and(and(equals(length(split(parameters('ref'), '@sha256:')), 2), startsWith(parameters('ref'), 'ghcr.io/polynovea/')), greater(length(first(split(parameters('ref'), '@sha256:'))), 18)), __bicep.allIn(first(split(parameters('ref'), '@sha256:')), 'abcdefghijklmnopqrstuvwxyz0123456789._/-')), equals(length(last(split(parameters('ref'), '@sha256:'))), 64)), __bicep.allIn(last(split(parameters('ref'), '@sha256:')), '0123456789abcdef'))]"
-          }
-        },
-        "isOctet": {
-          "parameters": [
-            {
-              "type": "string",
-              "name": "o"
-            }
-          ],
-          "output": {
-            "type": "bool",
-            "value": "[and(and(and(not(empty(parameters('o'))), lessOrEquals(length(parameters('o')), 3)), __bicep.allIn(parameters('o'), '0123456789')), or(less(length(parameters('o')), 3), lessOrEquals(parameters('o'), '255')))]"
-          }
-        },
-        "isIpv4Cidr": {
-          "parameters": [
-            {
-              "type": "string",
-              "name": "text"
-            }
-          ],
-          "output": {
-            "type": "bool",
-            "value": "[and(and(and(and(and(and(equals(length(split(parameters('text'), '/')), 2), equals(length(split(first(split(parameters('text'), '/')), '.')), 4)), empty(filter(split(first(split(parameters('text'), '/')), '.'), lambda('o', not(__bicep.isOctet(lambdaVariables('o'))))))), not(empty(last(split(parameters('text'), '/'))))), lessOrEquals(length(last(split(parameters('text'), '/'))), 2)), __bicep.allIn(last(split(parameters('text'), '/')), '0123456789')), or(less(length(last(split(parameters('text'), '/'))), 2), lessOrEquals(last(split(parameters('text'), '/')), '32')))]"
-          }
-        },
-        "isDomain": {
-          "parameters": [
-            {
-              "type": "string",
-              "name": "text"
-            }
-          ],
-          "output": {
-            "type": "bool",
-            "value": "[and(and(and(lessOrEquals(length(parameters('text')), 253), __bicep.allIn(parameters('text'), 'abcdefghijklmnopqrstuvwxyz0123456789.-')), contains(parameters('text'), '.')), empty(filter(split(parameters('text'), '.'), lambda('label', or(or(empty(lambdaVariables('label')), startsWith(lambdaVariables('label'), '-')), endsWith(lambdaVariables('label'), '-'))))))]"
-          }
-        },
-        "isEmail": {
-          "parameters": [
-            {
-              "type": "string",
-              "name": "text"
-            }
-          ],
-          "output": {
-            "type": "bool",
-            "value": "[and(and(and(and(and(and(equals(length(split(parameters('text'), '@')), 2), not(empty(first(split(parameters('text'), '@'))))), contains(last(split(parameters('text'), '@')), '.')), not(contains(parameters('text'), ' '))), not(contains(parameters('text'), '\n'))), not(contains(parameters('text'), '\r'))), not(contains(parameters('text'), '\t')))]"
-          }
-        }
-      }
-    }
-  ],
   "parameters": {
     "databaseMode": {
       "type": "string",
@@ -322,13 +219,29 @@
     "secretName": "polynovea-database-admin",
     "keyVaultSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6",
     "storageBlobDataContributorRoleId": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "hex": "0123456789abcdef",
+    "cmsParts": "[split(parameters('containerImage'), '@sha256:')]",
+    "cmsName": "[first(variables('cmsParts'))]",
+    "cmsDigest": "[last(variables('cmsParts'))]",
+    "containerImageOk": "[and(and(and(and(and(equals(length(variables('cmsParts')), 2), startsWith(variables('cmsName'), 'ghcr.io/polynovea/')), greater(length(variables('cmsName')), 18)), empty(filter(range(0, length(variables('cmsName'))), lambda('i', not(contains('abcdefghijklmnopqrstuvwxyz0123456789._/-', substring(variables('cmsName'), lambdaVariables('i'), 1))))))), equals(length(variables('cmsDigest')), 64)), empty(filter(range(0, length(variables('cmsDigest'))), lambda('i', not(contains(variables('hex'), substring(variables('cmsDigest'), lambdaVariables('i'), 1)))))))]",
+    "caddyParts": "[split(parameters('caddyImage'), '@sha256:')]",
+    "caddyDigest": "[last(variables('caddyParts'))]",
+    "caddyImageOk": "[and(and(and(equals(length(variables('caddyParts')), 2), contains(createArray('caddy', 'docker.io/library/caddy'), first(variables('caddyParts')))), equals(length(variables('caddyDigest')), 64)), empty(filter(range(0, length(variables('caddyDigest'))), lambda('i', not(contains(variables('hex'), substring(variables('caddyDigest'), lambdaVariables('i'), 1)))))))]",
+    "cidrParts": "[split(parameters('adminCidr'), '/')]",
+    "cidrAddress": "[first(variables('cidrParts'))]",
+    "cidrPrefix": "[last(variables('cidrParts'))]",
+    "cidrOctets": "[split(variables('cidrAddress'), '.')]",
+    "adminCidrOk": "[and(and(and(and(and(and(and(equals(length(variables('cidrParts')), 2), empty(filter(range(0, length(variables('cidrAddress'))), lambda('i', not(contains('0123456789.', substring(variables('cidrAddress'), lambdaVariables('i'), 1))))))), equals(length(variables('cidrOctets')), 4)), empty(filter(variables('cidrOctets'), lambda('o', or(or(empty(lambdaVariables('o')), greater(length(lambdaVariables('o')), 3)), and(equals(length(lambdaVariables('o')), 3), greater(lambdaVariables('o'), '255'))))))), not(empty(variables('cidrPrefix')))), lessOrEquals(length(variables('cidrPrefix')), 2)), empty(filter(range(0, length(variables('cidrPrefix'))), lambda('i', not(contains('0123456789', substring(variables('cidrPrefix'), lambdaVariables('i'), 1))))))), or(less(length(variables('cidrPrefix')), 2), lessOrEquals(variables('cidrPrefix'), '32')))]",
+    "domainOk": "[and(and(and(lessOrEquals(length(parameters('domain')), 253), contains(parameters('domain'), '.')), empty(filter(range(0, length(parameters('domain'))), lambda('i', not(contains('abcdefghijklmnopqrstuvwxyz0123456789.-', substring(parameters('domain'), lambdaVariables('i'), 1))))))), empty(filter(split(parameters('domain'), '.'), lambda('label', or(or(empty(lambdaVariables('label')), startsWith(lambdaVariables('label'), '-')), endsWith(lambdaVariables('label'), '-'))))))]",
+    "acmeEmailOk": "[and(and(and(and(and(and(equals(length(split(parameters('acmeEmail'), '@')), 2), not(empty(first(split(parameters('acmeEmail'), '@'))))), contains(last(split(parameters('acmeEmail'), '@')), '.')), not(contains(parameters('acmeEmail'), ' '))), not(contains(parameters('acmeEmail'), '\n'))), not(contains(parameters('acmeEmail'), '\r'))), not(contains(parameters('acmeEmail'), '\t')))]",
+    "budgetEmailOk": "[and(and(and(and(and(and(equals(length(split(parameters('budgetEmail'), '@')), 2), not(empty(first(split(parameters('budgetEmail'), '@'))))), contains(last(split(parameters('budgetEmail'), '@')), '.')), not(contains(parameters('budgetEmail'), ' '))), not(contains(parameters('budgetEmail'), '\n'))), not(contains(parameters('budgetEmail'), '\r'))), not(contains(parameters('budgetEmail'), '\t')))]",
     "inputRules": {
-      "containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest": "[or(empty(parameters('containerImage')), __bicep.isPolynoveaImage(parameters('containerImage')))]",
-      "caddyImageMustBeCaddysOfficialImagePinnedByDigest": "[or(empty(parameters('caddyImage')), __bicep.isDigestRef(parameters('caddyImage'), createArray('caddy', 'docker.io/library/caddy')))]",
-      "adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32": "[or(empty(parameters('adminCidr')), __bicep.isIpv4Cidr(parameters('adminCidr')))]",
-      "domainMustBeBlankOrALowercaseDomainNameSuchAsCmsExampleCom": "[or(empty(parameters('domain')), __bicep.isDomain(parameters('domain')))]",
-      "acmeEmailMustBeBlankOrAnEmailAddress": "[or(empty(parameters('acmeEmail')), __bicep.isEmail(parameters('acmeEmail')))]",
-      "budgetEmailMustBeAnEmailAddress": "[__bicep.isEmail(parameters('budgetEmail'))]",
+      "containerImageMustBeThePolynoveaImageFromGhcrPinnedByDigest": "[or(empty(parameters('containerImage')), variables('containerImageOk'))]",
+      "caddyImageMustBeCaddysOfficialImagePinnedByDigest": "[or(empty(parameters('caddyImage')), variables('caddyImageOk'))]",
+      "adminCidrMustBeBlankOrOneIpv4RangeSuchAs203_0_113_7_32": "[or(empty(parameters('adminCidr')), variables('adminCidrOk'))]",
+      "domainMustBeBlankOrALowercaseDomainNameSuchAsCmsExampleCom": "[or(empty(parameters('domain')), variables('domainOk'))]",
+      "acmeEmailMustBeBlankOrAnEmailAddress": "[or(empty(parameters('acmeEmail')), variables('acmeEmailOk'))]",
+      "budgetEmailMustBeAnEmailAddress": "[variables('budgetEmailOk')]",
       "setADomainOrAnAdminCidrOtherwiseNobodyCanReachTheSetupWizard": "[or(not(empty(parameters('domain'))), not(empty(parameters('adminCidr'))))]"
     },
     "ubuntuImage": {
@@ -338,8 +251,8 @@
       "version": "latest"
     }
   },
-  "resources": {
-    "inputChecks": {
+  "resources": [
+    {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2022-09-01",
       "name": "polynovea-input-checks",
@@ -400,7 +313,7 @@
         "parameters": "[toObject(items(variables('inputRules')), lambda('rule', lambdaVariables('rule').key), lambda('rule', createObject('value', lambdaVariables('rule').value)))]"
       }
     },
-    "vmNsg": {
+    {
       "type": "Microsoft.Network/networkSecurityGroups",
       "apiVersion": "2024-05-01",
       "name": "[format('{0}-vm-nsg', variables('prefix'))]",
@@ -409,10 +322,10 @@
         "securityRules": "[concat(if(variables('hasDomain'), createArray(createObject('name', 'allow-http', 'properties', createObject('priority', 100, 'direction', 'Inbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', 'Internet', 'sourcePortRange', '*', 'destinationAddressPrefix', variables('vmSubnetCidr'), 'destinationPortRange', '80', 'description', 'HTTP: Let''s Encrypt validation and redirect to HTTPS (Caddy)')), createObject('name', 'allow-https', 'properties', createObject('priority', 110, 'direction', 'Inbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', 'Internet', 'sourcePortRange', '*', 'destinationAddressPrefix', variables('vmSubnetCidr'), 'destinationPortRange', '443', 'description', 'Website (HTTPS, Caddy)'))), createArray()), if(variables('hasAdminCidr'), createArray(createObject('name', 'allow-ssh-from-owner', 'properties', createObject('priority', 120, 'direction', 'Inbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', parameters('adminCidr'), 'sourcePortRange', '*', 'destinationAddressPrefix', variables('vmSubnetCidr'), 'destinationPortRange', '22', 'description', 'SSH from the owner''s address only'))), createArray()), createArray(createObject('name', 'deny-other-inbound', 'properties', createObject('priority', 4000, 'direction', 'Inbound', 'access', 'Deny', 'protocol', '*', 'sourceAddressPrefix', '*', 'sourcePortRange', '*', 'destinationAddressPrefix', '*', 'destinationPortRange', '*', 'description', 'Nothing else in, including from inside the virtual network'))), if(variables('managed'), createArray(createObject('name', 'allow-postgres-to-database', 'properties', createObject('priority', 100, 'direction', 'Outbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', variables('vmSubnetCidr'), 'sourcePortRange', '*', 'destinationAddressPrefix', variables('dbSubnetCidr'), 'destinationPortRange', '5432', 'description', 'PostgreSQL to the database only'))), createArray()), createArray(createObject('name', 'allow-azure-platform', 'properties', createObject('priority', 150, 'direction', 'Outbound', 'access', 'Allow', 'protocol', '*', 'sourceAddressPrefix', '*', 'sourcePortRange', '*', 'destinationAddressPrefix', '168.63.129.16', 'destinationPortRange', '*', 'description', 'Azure platform address: DNS and the VM agent')), createObject('name', 'allow-https-out', 'properties', createObject('priority', 200, 'direction', 'Outbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', '*', 'sourcePortRange', '*', 'destinationAddressPrefix', 'Internet', 'destinationPortRange', '443', 'description', 'HTTPS: Azure APIs, image registry, updates')), createObject('name', 'allow-http-out', 'properties', createObject('priority', 210, 'direction', 'Outbound', 'access', 'Allow', 'protocol', 'Tcp', 'sourceAddressPrefix', '*', 'sourcePortRange', '*', 'destinationAddressPrefix', 'Internet', 'destinationPortRange', '80', 'description', 'Ubuntu package mirrors')), createObject('name', 'deny-other-internet-outbound', 'properties', createObject('priority', 4010, 'direction', 'Outbound', 'access', 'Deny', 'protocol', '*', 'sourceAddressPrefix', '*', 'sourcePortRange', '*', 'destinationAddressPrefix', 'Internet', 'destinationPortRange', '*', 'description', 'Out to the internet only on 443 and 80, as on AWS')), createObject('name', 'deny-other-vnet-outbound', 'properties', createObject('priority', 4000, 'direction', 'Outbound', 'access', 'Deny', 'protocol', '*', 'sourceAddressPrefix', '*', 'sourcePortRange', '*', 'destinationAddressPrefix', 'VirtualNetwork', 'destinationPortRange', '*', 'description', 'Inside the virtual network, the VM reaches the database and nothing else'))))]"
       },
       "dependsOn": [
-        "inputChecks"
+        "[resourceId('Microsoft.Resources/deployments', 'polynovea-input-checks')]"
       ]
     },
-    "dbNsg": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.Network/networkSecurityGroups",
       "apiVersion": "2024-05-01",
@@ -451,10 +364,10 @@
         ]
       },
       "dependsOn": [
-        "inputChecks"
+        "[resourceId('Microsoft.Resources/deployments', 'polynovea-input-checks')]"
       ]
     },
-    "vnet": {
+    {
       "type": "Microsoft.Network/virtualNetworks",
       "apiVersion": "2024-05-01",
       "name": "[format('{0}-vnet', variables('prefix'))]",
@@ -468,40 +381,21 @@
         "subnets": "[concat(createArray(createObject('name', 'vm', 'properties', createObject('addressPrefix', variables('vmSubnetCidr'), 'networkSecurityGroup', createObject('id', resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-vm-nsg', variables('prefix')))), 'serviceEndpoints', createArray(createObject('service', 'Microsoft.KeyVault'), createObject('service', 'Microsoft.Storage'))))), if(variables('managed'), createArray(createObject('name', 'database', 'properties', createObject('addressPrefix', variables('dbSubnetCidr'), 'networkSecurityGroup', createObject('id', resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-db-nsg', variables('prefix')))), 'delegations', createArray(createObject('name', 'postgres', 'properties', createObject('serviceName', 'Microsoft.DBforPostgreSQL/flexibleServers')))))), createArray()))]"
       },
       "dependsOn": [
-        "dbNsg",
-        "vmNsg"
+        "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-db-nsg', variables('prefix')))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-vm-nsg', variables('prefix')))]"
       ]
     },
-    "vmSubnet": {
-      "existing": true,
-      "type": "Microsoft.Network/virtualNetworks/subnets",
-      "apiVersion": "2024-05-01",
-      "name": "[format('{0}/{1}', format('{0}-vnet', variables('prefix')), 'vm')]",
-      "dependsOn": [
-        "vnet"
-      ]
-    },
-    "dbSubnet": {
-      "condition": "[variables('managed')]",
-      "existing": true,
-      "type": "Microsoft.Network/virtualNetworks/subnets",
-      "apiVersion": "2024-05-01",
-      "name": "[format('{0}/{1}', format('{0}-vnet', variables('prefix')), 'database')]",
-      "dependsOn": [
-        "vnet"
-      ]
-    },
-    "databaseDns": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.Network/privateDnsZones",
       "apiVersion": "2024-06-01",
       "name": "[format('{0}-{1}.private.postgres.database.azure.com', variables('prefix'), variables('suffix'))]",
       "location": "global",
       "dependsOn": [
-        "inputChecks"
+        "[resourceId('Microsoft.Resources/deployments', 'polynovea-input-checks')]"
       ]
     },
-    "databaseDnsLink": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
       "apiVersion": "2024-06-01",
@@ -514,11 +408,11 @@
         "registrationEnabled": false
       },
       "dependsOn": [
-        "databaseDns",
-        "vnet"
+        "[resourceId('Microsoft.Network/privateDnsZones', format('{0}-{1}.private.postgres.database.azure.com', variables('prefix'), variables('suffix')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', variables('prefix')))]"
       ]
     },
-    "database": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.DBforPostgreSQL/flexibleServers",
       "apiVersion": "2024-08-01",
@@ -554,12 +448,12 @@
         }
       },
       "dependsOn": [
-        "databaseDns",
-        "databaseDnsLink",
-        "vnet"
+        "[resourceId('Microsoft.Network/privateDnsZones', format('{0}-{1}.private.postgres.database.azure.com', variables('prefix'), variables('suffix')))]",
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', format('{0}-{1}.private.postgres.database.azure.com', variables('prefix'), variables('suffix')), 'polynovea-vnet')]",
+        "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', variables('prefix')))]"
       ]
     },
-    "databaseTls": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.DBforPostgreSQL/flexibleServers/configurations",
       "apiVersion": "2024-08-01",
@@ -569,10 +463,10 @@
         "source": "user-override"
       },
       "dependsOn": [
-        "database"
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', format('{0}-db-{1}', variables('prefix'), variables('suffix')))]"
       ]
     },
-    "databaseDb": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
       "apiVersion": "2024-08-01",
@@ -582,11 +476,11 @@
         "collation": "en_US.utf8"
       },
       "dependsOn": [
-        "database",
-        "databaseTls"
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', format('{0}-db-{1}', variables('prefix'), variables('suffix')))]",
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/configurations', format('{0}-db-{1}', variables('prefix'), variables('suffix')), 'require_secure_transport')]"
       ]
     },
-    "databaseLock": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.Authorization/locks",
       "apiVersion": "2020-05-01",
@@ -597,10 +491,10 @@
         "notes": "Holds the Polynovea CMS content. Remove this lock deliberately before deleting the database."
       },
       "dependsOn": [
-        "database"
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', format('{0}-db-{1}', variables('prefix'), variables('suffix')))]"
       ]
     },
-    "vault": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.KeyVault/vaults",
       "apiVersion": "2023-07-01",
@@ -628,10 +522,10 @@
         }
       },
       "dependsOn": [
-        "vnet"
+        "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', variables('prefix')))]"
       ]
     },
-    "databaseSecret": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.KeyVault/vaults/secrets",
       "apiVersion": "2023-07-01",
@@ -641,15 +535,15 @@
         "attributes": {
           "enabled": true
         },
-        "value": "[string(createObject('engine', 'postgres', 'host', reference('database').fullyQualifiedDomainName, 'port', 5432, 'username', variables('databaseAdminUser'), 'password', parameters('databaseAdminPassword'), 'dbname', variables('databaseName')))]"
+        "value": "[string(createObject('engine', 'postgres', 'host', reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', format('{0}-db-{1}', variables('prefix'), variables('suffix'))), '2024-08-01').fullyQualifiedDomainName, 'port', 5432, 'username', variables('databaseAdminUser'), 'password', parameters('databaseAdminPassword'), 'dbname', variables('databaseName')))]"
       },
       "dependsOn": [
-        "database",
-        "databaseDb",
-        "vault"
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', format('{0}-db-{1}', variables('prefix'), variables('suffix')))]",
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/databases', format('{0}-db-{1}', variables('prefix'), variables('suffix')), variables('databaseName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', format('pnv-{0}', uniqueString(resourceGroup().id, parameters('installId'))))]"
       ]
     },
-    "storage": {
+    {
       "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-05-01",
       "name": "[format('polynovea{0}', variables('suffix'))]",
@@ -693,11 +587,11 @@
         }
       },
       "dependsOn": [
-        "inputChecks",
-        "vnet"
+        "[resourceId('Microsoft.Resources/deployments', 'polynovea-input-checks')]",
+        "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', variables('prefix')))]"
       ]
     },
-    "blobService": {
+    {
       "type": "Microsoft.Storage/storageAccounts/blobServices",
       "apiVersion": "2023-05-01",
       "name": "[format('{0}/{1}', format('polynovea{0}', variables('suffix')), 'default')]",
@@ -712,10 +606,10 @@
         }
       },
       "dependsOn": [
-        "storage"
+        "[resourceId('Microsoft.Storage/storageAccounts', format('polynovea{0}', variables('suffix')))]"
       ]
     },
-    "container": {
+    {
       "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
       "apiVersion": "2023-05-01",
       "name": "[format('{0}/{1}/{2}', format('polynovea{0}', variables('suffix')), 'default', variables('containerName'))]",
@@ -723,10 +617,10 @@
         "publicAccess": "None"
       },
       "dependsOn": [
-        "blobService"
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', format('polynovea{0}', variables('suffix')), 'default')]"
       ]
     },
-    "storageLock": {
+    {
       "type": "Microsoft.Authorization/locks",
       "apiVersion": "2020-05-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts', format('polynovea{0}', variables('suffix')))]",
@@ -736,10 +630,10 @@
         "notes": "Holds Polynovea backups and files. Remove this lock deliberately before deleting the storage account."
       },
       "dependsOn": [
-        "storage"
+        "[resourceId('Microsoft.Storage/storageAccounts', format('polynovea{0}', variables('suffix')))]"
       ]
     },
-    "publicIp": {
+    {
       "type": "Microsoft.Network/publicIPAddresses",
       "apiVersion": "2024-05-01",
       "name": "[format('{0}-ip', variables('prefix'))]",
@@ -756,10 +650,10 @@
         }
       },
       "dependsOn": [
-        "inputChecks"
+        "[resourceId('Microsoft.Resources/deployments', 'polynovea-input-checks')]"
       ]
     },
-    "nic": {
+    {
       "type": "Microsoft.Network/networkInterfaces",
       "apiVersion": "2024-05-01",
       "name": "[format('{0}-nic', variables('prefix'))]",
@@ -781,11 +675,11 @@
         ]
       },
       "dependsOn": [
-        "publicIp",
-        "vnet"
+        "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-ip', variables('prefix')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', variables('prefix')))]"
       ]
     },
-    "dataDisk": {
+    {
       "type": "Microsoft.Compute/disks",
       "apiVersion": "2024-03-02",
       "name": "[format('{0}-data', variables('prefix'))]",
@@ -802,10 +696,10 @@
         "networkAccessPolicy": "DenyAll"
       },
       "dependsOn": [
-        "inputChecks"
+        "[resourceId('Microsoft.Resources/deployments', 'polynovea-input-checks')]"
       ]
     },
-    "dataDiskLock": {
+    {
       "type": "Microsoft.Authorization/locks",
       "apiVersion": "2020-05-01",
       "scope": "[resourceId('Microsoft.Compute/disks', format('{0}-data', variables('prefix')))]",
@@ -815,10 +709,10 @@
         "notes": "Holds the Polynovea data folder and, on-this-server, the database. Remove this lock deliberately before deleting the disk."
       },
       "dependsOn": [
-        "dataDisk"
+        "[resourceId('Microsoft.Compute/disks', format('{0}-data', variables('prefix')))]"
       ]
     },
-    "vm": {
+    {
       "type": "Microsoft.Compute/virtualMachines",
       "apiVersion": "2024-07-01",
       "name": "[format('{0}-vm', variables('prefix'))]",
@@ -834,7 +728,7 @@
         "osProfile": {
           "computerName": "polynovea",
           "adminUsername": "polynovea",
-          "customData": "[base64(join(createArray('#cloud-config', 'write_files:', '  - path: /etc/polynovea/polynovea.env', '    permissions: \"0640\"', '    encoding: b64', format('    content: {0}', base64(format('{0}\n', join(createArray('# Written by the Polynovea Azure template. Non-secret values only.', if(variables('managed'), format('POLYNOVEA_DB_SECRET_REF={0}', reference('databaseSecret').secretUri), '# POLYNOVEA_DB_SECRET_REF is not set: the database runs on this server.'), format('POLYNOVEA_BACKUP_ACCOUNT={0}', format('polynovea{0}', variables('suffix'))), format('POLYNOVEA_BACKUP_CONTAINER={0}', variables('containerName')), if(variables('hasDomain'), format('POLYNOVEA_DOMAIN={0}', parameters('domain')), '# POLYNOVEA_DOMAIN is not set: setup goes through the SSH tunnel.'), if(empty(parameters('acmeEmail')), '# POLYNOVEA_ACME_EMAIL is not set.', format('POLYNOVEA_ACME_EMAIL={0}', parameters('acmeEmail'))), if(empty(parameters('containerImage')), '# POLYNOVEA_IMAGE_REF: the server image''s own.', format('POLYNOVEA_IMAGE_REF={0}', parameters('containerImage'))), if(empty(parameters('caddyImage')), '# POLYNOVEA_CADDY_IMAGE_REF: the server image''s own.', format('POLYNOVEA_CADDY_IMAGE_REF={0}', parameters('caddyImage')))), '\n')))), '  - path: /usr/local/sbin/polynovea-bootstrap', '    permissions: \"0750\"', '    encoding: b64', format('    content: {0}', base64(variables('$fxv#3'))), 'runcmd:', '  - [systemd-run, --unit=polynovea-bootstrap, \"--description=Polynovea first boot\", /bin/sh, /usr/local/sbin/polynovea-bootstrap, azure]'), '\n'))]",
+          "customData": "[base64(join(createArray('#cloud-config', 'write_files:', '  - path: /etc/polynovea/polynovea.env', '    permissions: \"0640\"', '    encoding: b64', format('    content: {0}', base64(format('{0}\n', join(createArray('# Written by the Polynovea Azure template. Non-secret values only.', if(variables('managed'), format('POLYNOVEA_DB_SECRET_REF={0}', reference(resourceId('Microsoft.KeyVault/vaults/secrets', format('pnv-{0}', uniqueString(resourceGroup().id, parameters('installId'))), variables('secretName')), '2023-07-01').secretUri), '# POLYNOVEA_DB_SECRET_REF is not set: the database runs on this server.'), format('POLYNOVEA_BACKUP_ACCOUNT={0}', format('polynovea{0}', variables('suffix'))), format('POLYNOVEA_BACKUP_CONTAINER={0}', variables('containerName')), if(variables('hasDomain'), format('POLYNOVEA_DOMAIN={0}', parameters('domain')), '# POLYNOVEA_DOMAIN is not set: setup goes through the SSH tunnel.'), if(empty(parameters('acmeEmail')), '# POLYNOVEA_ACME_EMAIL is not set.', format('POLYNOVEA_ACME_EMAIL={0}', parameters('acmeEmail'))), if(empty(parameters('containerImage')), '# POLYNOVEA_IMAGE_REF: the server image''s own.', format('POLYNOVEA_IMAGE_REF={0}', parameters('containerImage'))), if(empty(parameters('caddyImage')), '# POLYNOVEA_CADDY_IMAGE_REF: the server image''s own.', format('POLYNOVEA_CADDY_IMAGE_REF={0}', parameters('caddyImage')))), '\n')))), '  - path: /usr/local/sbin/polynovea-bootstrap', '    permissions: \"0750\"', '    encoding: b64', format('    content: {0}', base64(variables('$fxv#3'))), 'runcmd:', '  - [systemd-run, --unit=polynovea-bootstrap, \"--description=Polynovea first boot\", /bin/sh, /usr/local/sbin/polynovea-bootstrap, azure]'), '\n'))]",
           "linuxConfiguration": {
             "disablePasswordAuthentication": true,
             "ssh": {
@@ -892,13 +786,13 @@
         }
       },
       "dependsOn": [
-        "dataDisk",
-        "databaseSecret",
-        "nic",
-        "storage"
+        "[resourceId('Microsoft.Compute/disks', format('{0}-data', variables('prefix')))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', format('pnv-{0}', uniqueString(resourceGroup().id, parameters('installId'))), variables('secretName'))]",
+        "[resourceId('Microsoft.Network/networkInterfaces', format('{0}-nic', variables('prefix')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', format('polynovea{0}', variables('suffix')))]"
       ]
     },
-    "secretReader": {
+    {
       "condition": "[variables('managed')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
@@ -906,32 +800,32 @@
       "name": "[guid(resourceId('Microsoft.KeyVault/vaults/secrets', format('pnv-{0}', uniqueString(resourceGroup().id, parameters('installId'))), variables('secretName')), resourceId('Microsoft.Compute/virtualMachines', format('{0}-vm', variables('prefix'))), variables('keyVaultSecretsUserRoleId'))]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('keyVaultSecretsUserRoleId'))]",
-        "principalId": "[reference('vm', '2024-07-01', 'full').identity.principalId]",
+        "principalId": "[reference(resourceId('Microsoft.Compute/virtualMachines', format('{0}-vm', variables('prefix'))), '2024-07-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal",
         "description": "The Polynovea VM reads this one secret: the database admin login, used once by the setup wizard."
       },
       "dependsOn": [
-        "databaseSecret",
-        "vm"
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', format('pnv-{0}', uniqueString(resourceGroup().id, parameters('installId'))), variables('secretName'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines', format('{0}-vm', variables('prefix')))]"
       ]
     },
-    "containerWriter": {
+    {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', format('polynovea{0}', variables('suffix')), 'default', variables('containerName'))]",
       "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', format('polynovea{0}', variables('suffix')), 'default', variables('containerName')), resourceId('Microsoft.Compute/virtualMachines', format('{0}-vm', variables('prefix'))), variables('storageBlobDataContributorRoleId'))]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageBlobDataContributorRoleId'))]",
-        "principalId": "[reference('vm', '2024-07-01', 'full').identity.principalId]",
+        "principalId": "[reference(resourceId('Microsoft.Compute/virtualMachines', format('{0}-vm', variables('prefix'))), '2024-07-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal",
         "description": "The Polynovea VM uses this one container: backups and files."
       },
       "dependsOn": [
-        "container",
-        "vm"
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', format('polynovea{0}', variables('suffix')), 'default', variables('containerName'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines', format('{0}-vm', variables('prefix')))]"
       ]
     },
-    "budget": {
+    {
       "type": "Microsoft.Consumption/budgets",
       "apiVersion": "2023-11-01",
       "name": "[format('polynovea-{0}', variables('suffix'))]",
@@ -964,17 +858,17 @@
         }
       },
       "dependsOn": [
-        "inputChecks"
+        "[resourceId('Microsoft.Resources/deployments', 'polynovea-input-checks')]"
       ]
     }
-  },
+  ],
   "outputs": {
     "setupAddress": {
       "type": "string",
       "metadata": {
         "description": "Where to open the setup wizard. With a domain, first point its A record at publicIp. The setup code is in the VM's log (see the README)."
       },
-      "value": "[if(variables('hasDomain'), format('https://{0}/setup (after the domain''s A record points at {1})', parameters('domain'), reference('publicIp').ipAddress), 'http://localhost:3000/setup, through the sshTunnel command')]"
+      "value": "[if(variables('hasDomain'), format('https://{0}/setup (after the domain''s A record points at {1})', parameters('domain'), reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-ip', variables('prefix'))), '2024-05-01').ipAddress), 'http://localhost:3000/setup, through the sshTunnel command')]"
     },
     "setupCode": {
       "type": "string",
@@ -988,14 +882,14 @@
       "metadata": {
         "description": "SSH from adminCidr with your key. Without a domain this is also the route into the setup wizard."
       },
-      "value": "[if(not(variables('hasAdminCidr')), '', if(variables('hasDomain'), format('ssh polynovea@{0}', reference('publicIp').ipAddress), format('ssh -L 3000:127.0.0.1:3000 polynovea@{0}', reference('publicIp').ipAddress)))]"
+      "value": "[if(not(variables('hasAdminCidr')), '', if(variables('hasDomain'), format('ssh polynovea@{0}', reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-ip', variables('prefix'))), '2024-05-01').ipAddress), format('ssh -L 3000:127.0.0.1:3000 polynovea@{0}', reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-ip', variables('prefix'))), '2024-05-01').ipAddress)))]"
     },
     "publicIp": {
       "type": "string",
       "metadata": {
         "description": "The VM's fixed public address. Point your domain's A record here."
       },
-      "value": "[reference('publicIp').ipAddress]"
+      "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-ip', variables('prefix'))), '2024-05-01').ipAddress]"
     },
     "databaseMode": {
       "type": "string",
@@ -1006,14 +900,14 @@
       "metadata": {
         "description": "Set on the VM as POLYNOVEA_DB_SECRET_REF. An address, not the secret itself."
       },
-      "value": "[if(variables('managed'), reference('databaseSecret').secretUri, '')]"
+      "value": "[if(variables('managed'), reference(resourceId('Microsoft.KeyVault/vaults/secrets', format('pnv-{0}', uniqueString(resourceGroup().id, parameters('installId'))), variables('secretName')), '2023-07-01').secretUri, '')]"
     },
     "databaseHost": {
       "type": "string",
       "metadata": {
         "description": "Private; reachable only from the Polynovea VM."
       },
-      "value": "[if(variables('managed'), reference('database').fullyQualifiedDomainName, '')]"
+      "value": "[if(variables('managed'), reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', format('{0}-db-{1}', variables('prefix'), variables('suffix'))), '2024-08-01').fullyQualifiedDomainName, '')]"
     },
     "storageAccountName": {
       "type": "string",
