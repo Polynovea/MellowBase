@@ -213,6 +213,7 @@ export interface CmsRuntimeState {
   schema_migration: string;
   singleton: Generated<boolean>;
   updated_at: Generated<string>;
+  worker_heartbeat_at: string | null;
   worker_version: string | null;
 }
 
@@ -1795,6 +1796,34 @@ export interface SystemDoctorRuns {
   workspace_id: string;
 }
 
+export interface SystemRestoreTests {
+  backup_label: string | null;
+  checks_json: Generated<Json>;
+  error_code: string | null;
+  error_message: string | null;
+  finished_at: string | null;
+  id: Generated<string>;
+  reason: string;
+  started_at: Generated<string>;
+  status: Generated<string>;
+}
+
+export interface SystemUpgrades {
+  finished_at: string | null;
+  from_release: string | null;
+  id: Generated<string>;
+  request_id: string;
+  requested_at: Generated<string>;
+  requested_by: string | null;
+  rollback_mode: string;
+  status: Generated<string>;
+  steps_json: Generated<Json>;
+  to_digest: string | null;
+  to_release: string;
+  to_version: string;
+  updated_at: Generated<string>;
+}
+
 export interface Taxonomies {
   created_at: Generated<string>;
   description: string | null;
@@ -2238,6 +2267,8 @@ export interface DB {
   roles: Roles;
   social_posts: SocialPosts;
   system_doctor_runs: SystemDoctorRuns;
+  system_restore_tests: SystemRestoreTests;
+  system_upgrades: SystemUpgrades;
   taxonomies: Taxonomies;
   taxonomy_term_aliases: TaxonomyTermAliases;
   taxonomy_term_localizations: TaxonomyTermLocalizations;
