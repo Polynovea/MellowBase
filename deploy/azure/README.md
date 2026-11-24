@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Virtual machine | `Standard_B2s` (2 vCPU, 4 GB), Ubuntu 24.04 LTS, Trusted Launch (secure boot and vTPM) on x64, SSH keys only, system-assigned managed identity; the CMS and Caddy as pinned containers | 30.37 |
 | OS disk | 30 GB Standard SSD | 2.40 |
-| Data disk | 32 GB Standard SSD at `/var/lib/polynovea`, kept if the VM is deleted | 2.40 |
+| Data disk | 32 GB Standard SSD at `/var/lib/polynovea`, kept if the VM is deleted, delete lock | 2.40 |
 | Public IP | Standard, static, with a DNS name | 3.65 |
 | PostgreSQL *(managed only)* | Flexible Server 16, Burstable `Standard_B1ms`, 32 GB (grows automatically), single zone, no public access, TLS required, 7-day backups, delete lock | 16.09 |
 | Private DNS zone *(managed only)* | For the database's private address | 0.50 |
@@ -107,7 +107,7 @@ Then open the setup wizard:
 
 The locks are there to stop accidents, so removing an install takes deliberate steps. **Deleting the database and storage account deletes your content and backups.** Export anything you need first.
 
-1. **Resource group → Settings → Locks**, delete `polynovea-keep-database` and `polynovea-keep-storage`.
+1. **Resource group → Settings → Locks**, delete `polynovea-keep-database`, `polynovea-keep-storage` and `polynovea-keep-data-disk`. The data disk holds the data folder and, with "on this server", the only copy of the database: copy off or back up anything you need before removing its lock.
 2. Delete the resource group.
 3. The Key Vault stays soft-deleted for 90 days (purge protection; it costs nothing). Its name can't be reused until then, so a new deployment into a resource group with the same ID gets a vault-name clash. Use a new resource group name.
 

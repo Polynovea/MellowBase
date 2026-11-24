@@ -457,6 +457,18 @@ resource dataDisk 'Microsoft.Compute/disks@2024-03-02' = {
   }
 }
 
+// The data disk holds settings and uploads, and with databaseMode = 'on-this-server' the only live
+// copy of the database. A delete lock stops it being removed by accident (the VM itself can still be
+// deleted: the disk is detached, not deleted). Remove the lock deliberately first (see the README).
+resource dataDiskLock 'Microsoft.Authorization/locks@2020-05-01' = {
+  name: 'polynovea-keep-data-disk'
+  scope: dataDisk
+  properties: {
+    level: 'CanNotDelete'
+    notes: 'Holds the Polynovea data folder and, on-this-server, the database. Remove this lock deliberately before deleting the disk.'
+  }
+}
+
 // Custom data is readable on the VM and kept by cloud-init, so it holds no secrets: only the secret's
 // URI, the storage names, the domain and the image digests. The keys are the release package's
 // contract; the release package sets HOSTNAME, PORT, POLYNOVEA_TRUSTED_PROXIES and POLYNOVEA_CONFIG_DIR.

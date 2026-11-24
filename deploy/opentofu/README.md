@@ -26,7 +26,7 @@ Set the example's variables in a `terraform.tfvars` file that you don't commit. 
 
 ## Protection against deletion
 
-The database, the bucket or storage account and the data disk have `prevent_destroy = true`, so `tofu destroy` stops before touching them. The AWS database also has deletion protection, and the Azure database and storage account have delete locks. To remove an install deliberately: export your content, remove the `prevent_destroy` lines, turn off deletion protection or remove the locks, then plan and apply.
+The database, the bucket or storage account and the data disk have `prevent_destroy = true`, so `tofu destroy` stops before touching them. The AWS database also has deletion protection, and the Azure database, storage account and data disk have delete locks (`polynovea-keep-database`, `polynovea-keep-storage`, `polynovea-keep-data-disk`). To remove an install deliberately: export your content, remove the `prevent_destroy` lines, turn off deletion protection or remove the locks, then plan and apply.
 
 ## Cost of a plan
 

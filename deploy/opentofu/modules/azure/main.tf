@@ -445,6 +445,15 @@ resource "azurerm_managed_disk" "data" {
   }
 }
 
+# The data disk holds settings and uploads, and on-this-server the only live database: a delete lock
+# as well as prevent_destroy. Remove it deliberately first (see the README).
+resource "azurerm_management_lock" "data_disk" {
+  name       = "polynovea-keep-data-disk"
+  scope      = azurerm_managed_disk.data.id
+  lock_level = "CanNotDelete"
+  notes      = "Holds the Polynovea data folder and, on-this-server, the database. Remove this lock deliberately before deleting the disk."
+}
+
 resource "azurerm_linux_virtual_machine" "main" {
   name                            = "${var.name}-vm"
   computer_name                   = "polynovea"
