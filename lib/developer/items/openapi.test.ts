@@ -66,3 +66,13 @@ describe("items OpenAPI", () => {
     expect(componentName("article")).toBe("Article");
   });
 });
+
+describe("workspace schema hash", async () => {
+  const { workspaceSchemaHash } = await import("@/lib/developer/items/openapiHash");
+  it("is order-independent and changes with any model's hash", () => {
+    const a = workspaceSchemaHash([{ apiKey: "a", schemaHash: "1" }, { apiKey: "b", schemaHash: "2" }]);
+    expect(workspaceSchemaHash([{ apiKey: "b", schemaHash: "2" }, { apiKey: "a", schemaHash: "1" }])).toBe(a);
+    expect(workspaceSchemaHash([{ apiKey: "a", schemaHash: "1" }, { apiKey: "b", schemaHash: "3" }])).not.toBe(a);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+  });
+});

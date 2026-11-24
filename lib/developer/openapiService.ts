@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { listModels, getVersion } from "@/lib/schema/modelService";
 import type { CanonicalSchema, FieldDefinition } from "@/lib/schema/fields/types";
 import { buildItemsOpenApi, type OpenApiModelInput } from "@/lib/developer/items/openapi";
+import { workspaceSchemaHash } from "@/lib/developer/items/openapiHash";
 
 function fieldSchema(field: FieldDefinition): Record<string, unknown> {
   const base: Record<string, unknown> = {};
@@ -113,7 +113,7 @@ export async function buildWorkspaceOpenApi(workspaceId: string, baseUrl: string
     openapi: "3.1.0",
     info: {
       title: "Polynovea CMS Developer API", version: "1.0.0", description: "Workspace-scoped stable REST API generated from canonical CMS models.",
-      ...(options.items ? { "x-polynovea-schema-hash": createHash("sha256").update(options.items.map((item) => `${item.apiKey}:${item.schemaHash}`).sort().join("|")).digest("hex") } : {}),
+      ...(options.items ? { "x-polynovea-schema-hash": workspaceSchemaHash(options.items) } : {}),
     },
     servers: [{ url: baseUrl }],
     paths,

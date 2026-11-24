@@ -5,7 +5,7 @@ const auth = { requestId: "req-1", workspaceId: "ws", tokenId: "tok", tokenName:
 vi.mock("@/lib/developer/apiAuth", () => ({ requireDeveloperApi: vi.fn(async () => ({ data: auth })) }));
 vi.mock("@/lib/db/index", () => ({ getDb: () => ({}) }));
 vi.mock("@/lib/developer/items/principal", () => ({ principalForToken: vi.fn(async () => ({})), previewScope: vi.fn(async () => null) }));
-vi.mock("@/lib/developer/items/service", () => ({ accessibleModels: vi.fn(async () => []) }));
+vi.mock("@/lib/developer/items/openapiInputs", () => ({ loadItemsOpenApiInputs: vi.fn(async () => ({ models: [], schemaHash: "h" })) }));
 vi.mock("@/lib/developer/openapiService", () => ({ buildWorkspaceOpenApi: vi.fn(async () => ({ openapi: "3.1.0" })) }));
 
 import { GET as openapi } from "@/app/api/v1/openapi.json/route";

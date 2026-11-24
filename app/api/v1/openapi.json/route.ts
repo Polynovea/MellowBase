@@ -1,31 +1,23 @@
 import { apiError } from "@/lib/developer/apiContract";
 import { requireDeveloperApi } from "@/lib/developer/apiAuth";
 import { buildWorkspaceOpenApi } from "@/lib/developer/openapiService";
-import { getDb } from "@/lib/db/index";
 import { PRIVATE_HEADERS } from "@/lib/developer/items/http";
-import { principalForToken } from "@/lib/developer/items/principal";
-import { accessibleModels } from "@/lib/developer/items/service";
+import { loadItemsOpenApiInputs } from "@/lib/developer/items/openapiInputs";
 
 export const dynamic = "force-dynamic";
 
 /**
  * The OpenAPI document for THIS token: only the models and fields it can read (so a hidden field's
- * name never appears), with the generated items API. Per caller, so it is never stored by a shared
- * cache: Cache-Control private, no-store and Vary: Authorization.
+ * name never appears), with the generated items API. Built from loadItemsOpenApiInputs, the same
+ * loader /api/v1/types.ts uses. Per caller, so it is never stored by a shared cache.
  */
 export async function GET(req: Request) {
   const auth = await requireDeveloperApi(req, { scope: "schema.read" });
   if (auth.error) return auth.error;
   const ctx = auth.data!;
   try {
-    const principal = await principalForToken(getDb(), ctx);
-    const models = await accessibleModels({ principal, callerId: ctx.tokenId, actorAdminUserId: ctx.actorAdminUserId, drafts: { allowed: false, entryIds: null } });
-    const document = await buildWorkspaceOpenApi(ctx.workspaceId, new URL(req.url).origin, {
-      items: models.map(({ model, access, name }) => ({
-        apiKey: model.apiKey, name, schema: model.schema, schemaHash: model.schemaHash,
-        readable: access.readable, writable: access.writable, canWrite: access.canWrite, canDelete: access.canDelete,
-      })),
-    });
+    const { models } = await loadItemsOpenApiInputs(ctx);
+    const document = await buildWorkspaceOpenApi(ctx.workspaceId, new URL(req.url).origin, { items: models });
     const headers = new Headers({ "content-type": "application/json", "x-request-id": ctx.requestId, ...PRIVATE_HEADERS });
     headers.set("x-ratelimit-limit", String(ctx.rateLimit.limit));
     headers.set("x-ratelimit-remaining", String(ctx.rateLimit.remaining));
