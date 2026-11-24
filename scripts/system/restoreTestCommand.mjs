@@ -70,10 +70,17 @@ export async function restoreTestCommand(args) {
             args,
             { timeoutMs: 20 * 60_000 },
           );
-          if (result.code !== 0)
+          if (result.code !== 0) {
             console.error(
               `[restore-test] pg_ctl ${args[0]} exited ${result.code}: ${scrub(result.stderr)}`,
             );
+            // The temporary server's own log is deleted with its folder: keep its last lines in the server log.
+            const logFile = args[args.indexOf("-l") + 1];
+            if (args[0] === "start" && args.includes("-l")) {
+              const tail = await fs.readFile(logFile, "utf8").catch(() => "");
+              if (tail) console.error(`[restore-test] temporary PostgreSQL log: ${scrub(tail, 12)}`);
+            }
+          }
           return result;
         },
         freeSpace,
