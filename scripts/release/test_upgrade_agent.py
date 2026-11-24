@@ -1,6 +1,6 @@
 """Tests for release/packer/files/upgrade-agent.py. Linux only (O_NOFOLLOW, fifos, fchmod).
 
-    python3 -I scripts/release/test_upgrade_agent.py      (any user; no Docker, no systemd)
+    python3 -I -B scripts/release/test_upgrade_agent.py   (any user; no Docker, no systemd)
 
 Docker, cosign, systemctl and the CMS are fakes: a shell script records every call, and a local HTTP
 server plays both the release channel and /api/health.
