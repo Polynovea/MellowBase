@@ -70,6 +70,15 @@ The templates are built for one small server at the lowest sensible cost, with s
 
 `deploy/scripts/checkov.yaml` lists each policy check these would satisfy, labelled "paid extra", next to the ones skipped "by design".
 
+## Publishing a release
+
+The templates in the repository are a **development build**: they carry no image digests and no release key, so a server made from them stops before starting the CMS (fail closed). To publish:
+
+1. Put the release's public key at `release/packer/files/polynovea-release.pub`, then run `node deploy/scripts/sync-vm-bootstrap.mjs`.
+2. Fill in `deploy/release.json`: `"release": true`, the CMS and Caddy image digests, and any published AMIs and Azure gallery images. Then run `node deploy/scripts/release-templates.mjs` and `bash deploy/scripts/build-azure.sh`.
+3. Run `POLYNOVEA_RELEASE=1 bash deploy/scripts/validate.sh`. Its **release gate** fails until the first-boot script embeds the key and every template defaults to the release's images. Without `POLYNOVEA_RELEASE=1` the gate runs with `--not-a-release`: it lists what's missing and passes, so development and tests keep working.
+4. Upload the release's `aws/polynovea.yaml` and `azure/azuredeploy.json` to public, versioned addresses for the quick-create link and the "Deploy to Azure" button.
+
 ## Validating the templates (no cloud account)
 
 ```bash

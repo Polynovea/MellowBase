@@ -4,7 +4,12 @@
 # images, OpenTofu providers and the Bicep compiler.
 #
 #   bash deploy/scripts/validate.sh            # everything
-#   bash deploy/scripts/validate.sh bicep      # one of: cfn bicep tofu shellcheck checkov
+#   bash deploy/scripts/validate.sh bicep      # one of: release cfn bicep tofu shellcheck checkov
+#
+# The "release" step is the release gate (release-templates.mjs --release-check). It fails unless the
+# templates carry the release's images and the first-boot script its public key. Before the first
+# real release it runs with --not-a-release (it reports what's missing and passes); set
+# POLYNOVEA_RELEASE=1 on the release machine to make it strict.
 #
 # On a shared laptop it takes the heavy-job lock ($LOCALAPPDATA/polynovea-heavy.lock) first and always
 # releases it, removing its containers.
@@ -15,7 +20,7 @@ DEPLOY="$ROOT/deploy"
 LANE="${POLYNOVEA_LOCK_LANE:-p5-w2}"
 PREFIX="polynovea-validate-$$"
 TOFU_VERSION="${TOFU_VERSION:-1.13.10}"
-read -r -a STEPS <<< "${*:-cfn bicep tofu shellcheck checkov}"
+read -r -a STEPS <<< "${*:-release cfn bicep tofu shellcheck checkov}"
 
 # Docker Desktop's tools may be missing from PATH in Git Bash.
 if ! command -v docker >/dev/null 2>&1 && [ -x "/c/Program Files/Docker/Docker/resources/bin/docker" ]; then
@@ -67,6 +72,16 @@ step() { # step LABEL CMD...
 
 for s in "${STEPS[@]}"; do
   case "$s" in
+    release)
+      # Plain Node, no container: the release gate.
+      GATE="$ROOT/deploy/scripts/release-templates.mjs"
+      if command -v cygpath >/dev/null 2>&1; then GATE="$(cygpath -w "$GATE")"; fi
+      if [ "${POLYNOVEA_RELEASE:-0}" = 1 ]; then
+        step "release gate (strict)" node "$GATE" --release-check
+      else
+        step "release gate (development: --not-a-release)" node "$GATE" --release-check --not-a-release
+      fi
+      ;;
     cfn)
       step "cfn-lint (CloudFormation)" run cfn python:3.12-slim sh -c \
         'pip install -q --disable-pip-version-check --root-user-action=ignore "cfn-lint>=1.20,<2" && cfn-lint --version && cfn-lint aws/polynovea.yaml'
