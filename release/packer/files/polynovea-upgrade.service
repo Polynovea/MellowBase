@@ -1,22 +1,43 @@
 [Unit]
 Description=Polynovea CMS upgrade agent
 Requires=docker.service var-lib-polynovea.mount
-After=docker.service var-lib-polynovea.mount network-online.target polynovea.service
+After=docker.service var-lib-polynovea.mount network-online.target polynovea-upgrade-recover.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 # Root: it restarts polynovea.service and edits /etc/polynovea/polynovea.env. The CMS itself never
 # gets Docker or root; it can only ask, and the agent verifies everything it is asked for.
-ExecStart=/usr/bin/python3 -I /opt/polynovea/upgrade-agent.py
+ExecStart=/usr/bin/python3 -I -B /opt/polynovea/upgrade-agent.py
 # Backup, pull and migrations can be long; the switch-back has its own 2-minute health deadline.
 TimeoutStartSec=3h
 Nice=5
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
-NoNewPrivileges=yes
-ProtectHome=yes
-# No PrivateTmp: dockerd resolves the cosign bind mounts in the host's /tmp.
 UMask=0022
 StateDirectory=polynovea-upgrade
 StateDirectoryMode=0755
+
+# Sandbox. Docker does the container work through its socket; this process only reads the CMS's request
+# and restore-test folders (CAP_DAC_READ_SEARCH: they belong to the CMS user, mode 0700), writes the image
+# pin in /etc/polynovea and its own status folder, and talks to dockerd, systemd and the release channel.
+# No PrivateTmp: dockerd binds the release files from /var/lib/polynovea-upgrade/work, not /tmp.
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+ProtectSystem=strict
+ReadWritePaths=/etc/polynovea /var/lib/polynovea-upgrade
+ProtectHome=read-only
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

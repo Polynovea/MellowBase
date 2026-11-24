@@ -1,0 +1,38 @@
+[Unit]
+Description=Polynovea CMS: finish an upgrade interrupted by a reboot
+# Before the CMS starts: if an upgrade was cut off before the new release passed its health check, put
+# the previous release's pin back (and restore its database when the upgrade needs that), so
+# polynovea.service starts a release that is known to work.
+Requires=docker.service var-lib-polynovea.mount
+After=docker.service var-lib-polynovea.mount
+Before=polynovea.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I -B /opt/polynovea/upgrade-agent.py --recover
+TimeoutStartSec=1h
+UMask=0022
+StateDirectory=polynovea-upgrade
+StateDirectoryMode=0755
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+ProtectSystem=strict
+ReadWritePaths=/etc/polynovea /var/lib/polynovea-upgrade
+ProtectHome=read-only
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

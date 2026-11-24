@@ -62,7 +62,7 @@ POLYNOVEA_CLOUD=$POLYNOVEA_CLOUD
 EOF
 chmod 0644 /etc/polynovea/image.env
 # polynovea-upgrade.service has no [Install]: polynovea-upgrade.path starts it when the CMS asks.
-UNITS="polynovea-data-disk.service var-lib-polynovea.mount polynovea-console-code.service polynovea.service polynovea-caddy.service polynovea-upgrade.path"
+UNITS="polynovea-data-disk.service var-lib-polynovea.mount polynovea-console-code.service polynovea.service polynovea-caddy.service polynovea-upgrade.path polynovea-upgrade-recover.service"
 for unit in $UNITS polynovea-upgrade.service; do
   install -m 0644 "$FILES/$unit" "/etc/systemd/system/$unit"
   sed -i 's/\r$//' "/etc/systemd/system/$unit"
