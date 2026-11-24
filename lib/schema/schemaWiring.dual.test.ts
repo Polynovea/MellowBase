@@ -1,6 +1,6 @@
 // Phase 4: saving a model in the CMS queues its schema change in the same transaction, and the
 // schema worker applies it (Phase 3 built the runner; nothing called it outside content:move).
-import { afterAll, expect, it } from "vitest";
+import { afterAll, expect, it, vi } from "vitest";
 import { describeWithDatabase, type BackendFixtures } from "@/lib/db/testing/database";
 import { getDb } from "@/lib/db/index";
 import { uniqueKey } from "@/lib/schema/engine/testing";
@@ -31,6 +31,8 @@ const columns = async (backend: BackendFixtures, modelId: string) => {
 };
 
 describeWithDatabase("model saves queue their schema change [postgres]", (backend) => {
+  // Each runWorker starts a worker process (with the loader); a test may start two or three.
+  vi.setConfig({ testTimeout: 120_000 });
   afterAll(async () => { await closeTableMoveSession(); });
 
   it("a new model gets its table automatically (no content:move)", async () => {
