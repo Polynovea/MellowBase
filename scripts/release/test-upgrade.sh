@@ -75,6 +75,8 @@ step() { printf '\n== %s\n' "$*"; }
 ok() { echo "ok    $*"; }
 diagnose() { # what the CMS and its bundled PostgreSQL said, before cleanup removes them
   echo "--- CMS log (last 60 lines)" >&2; docker logs "$CMS" 2>&1 | tail -60 >&2 || true
+  echo "--- Restore test records (newest last)" >&2
+  docker exec "$CMS" psql -h /var/run/postgresql -U postgres -d polynovea -Atc "select started_at || ' ' || reason || ' ' || status || ' ' || coalesce(error_code, '') || ' ' || coalesce(checks_json->>'startLog', '') from public.system_restore_tests order by started_at" >&2 2>/dev/null || true
   echo "--- PostgreSQL and pgBackRest logs (last 40 lines each)" >&2
   docker run --rm -v "$VMDATA:/d:ro" "$PY_IMAGE" sh -c 'for f in /d/log/postgresql/*.log /d/log/pgbackrest/*.log; do [ -f "$f" ] && { echo "## $f"; tail -40 "$f"; }; done; ls -la /d/postgresql 2>/dev/null | head -40' >&2 || true
 }

@@ -68,7 +68,15 @@ const SUPPORTED_QUEUES = ((queueArg ? queueArg.slice("--queues=".length) : null)
 let stopping = false;
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => { stopping = true; });
+  process.on(signal, () => {
+    stopping = true;
+    // A running restore test stops too (it records itself as interrupted and cleans up).
+    try {
+      restoreTestChild?.kill("SIGTERM");
+    } catch {
+      // a signal before the restore test scheduler is set up: nothing is running yet
+    }
+  });
 }
 
 async function resolveWorkerConnectionCredentials(client, workspaceId, connectionId) {

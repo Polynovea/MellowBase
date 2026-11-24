@@ -18,6 +18,7 @@ export interface RestoreHost {
   remove(dir: string): Promise<void>;
   queryRestored(socketDir: string, port: number, sql: string): Promise<Array<Record<string, unknown>>>;
   queryLive(sql: string): Promise<Array<Record<string, unknown>>>;
+  readTail?(file: string): Promise<string | null>;
 }
 
 export interface RestoreTestResult {

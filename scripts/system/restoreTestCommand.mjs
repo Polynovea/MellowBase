@@ -106,14 +106,25 @@ export async function restoreTestCommand(args) {
             async (client) => (await client.query(sql)).rows,
           ),
         queryLive: async (sql) => (await live.query(sql)).rows,
+        readTail: async (file) => scrub(await fs.readFile(file, "utf8"), 15).slice(-2000),
       };
-      const result = await runRestoreTest({
+      // The worker passes on a shutdown (an upgrade switching containers, a restart): a test cut off
+      // that way is recorded as interrupted and runs again, never as a failed backup.
+      let interrupted = false;
+      process.once("SIGTERM", () => {
+        interrupted = true;
+      });
+      const outcome = await runRestoreTest({
         host,
         id: begun.id,
         dataRoot: root,
         liveWalDir: path.posix.join(root, "postgresql", "pg_wal"),
         restoreCommand: restoreCommand(),
       });
+      const result =
+        interrupted && outcome.status === "failed"
+          ? { ...outcome, status: "skipped", errorCode: "INTERRUPTED", errorMessage: "The restore test stopped when the server restarted; it runs again." }
+          : outcome;
       await live.query(
         "select public.polynovea_system_restore_test_finish($1, $2, $3, $4::jsonb, $5, $6)",
         [

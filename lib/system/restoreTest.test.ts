@@ -77,6 +77,16 @@ describe("restore test", () => {
     expect(await run(host)).toMatchObject({ status: "passed" });
   });
 
+  it("keeps the temporary server's log tail when it does not start", async () => {
+    const { host, removed } = fakeHost({
+      pgCtl: async (args) => ({ code: args[0] === "start" ? 1 : 0 }),
+      readTail: async () => "FATAL:  hot standby is not possible because of insufficient parameter settings",
+    });
+    const result = await run(host);
+    expect(result).toMatchObject({ status: "failed", errorCode: "START_FAILED", checks: { startLog: expect.stringContaining("insufficient parameter") } });
+    expect(removed).toEqual([`/var/lib/polynovea/restore-test/${ID}`]);
+  });
+
   it("skips with a warning instead of filling the disk", async () => {
     const { host, calls, removed } = fakeHost({ freeBytes: 1e9 });
     const result = await run(host);
