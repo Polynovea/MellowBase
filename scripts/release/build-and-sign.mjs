@@ -51,6 +51,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+/**
+ * The release builder: BuildKit in its own container (Docker's built-in builder cannot push by digest).
+ * Host networking, so a registry on this machine's loopback works like a remote one. Kept between
+ * releases for its cache; `docker buildx rm polynovea-release` removes it and its cache.
+ */
+export const BUILDER = Object.freeze({
+  name: "polynovea-release",
+  image: "moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe",
+});
+
 export const TOOLS = Object.freeze({
   syft: "anchore/syft:v1.33.0@sha256:f94e5d9fce1f2278491a8e3a63bd5f6ddb81fdfdbb8bf7a1637565c1d5344357",
   cosign: "ghcr.io/sigstore/cosign/cosign:v2.6.1@sha256:68839b7f13dac5a6744a5d8818e984dd39183374e37855c19e14d623d9bc9037",
@@ -139,6 +149,15 @@ function tool(image, args, { out, keyFile, capture = false } = {}) {
   return run("docker", toolArgs(image, args, { out, keyFile, dockerConfig: dockerConfigDir }), { capture });
 }
 
+function ensureBuilder() {
+  try {
+    run("docker", ["buildx", "inspect", BUILDER.name], { capture: true });
+  } catch {
+    run("docker", ["buildx", "create", "--name", BUILDER.name, "--driver", "docker-container",
+      "--driver-opt", "network=host", "--driver-opt", `image=${BUILDER.image}`]);
+  }
+}
+
 function baseImages() {
   const text = readFileSync(path.join(ROOT, "Dockerfile"), "utf8");
   return [...new Set([...text.matchAll(/([a-z0-9./-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64})/g)].map((m) => m[1]))];
@@ -166,10 +185,12 @@ export async function main(argv = process.argv.slice(2)) {
   console.log(`release ${releaseId} -> ${options.image}, platforms ${options.platforms.join(", ")}`);
 
   step("2. Build and push");
+  ensureBuilder();
   const metadataFile = path.join(out, "build-metadata.json");
   const started = Date.now();
   run("docker", [
     "buildx", "build",
+    "--builder", BUILDER.name,
     "--platform", options.platforms.join(","),
     "--build-arg", `POLYNOVEA_RELEASE_ID=${releaseId}`,
     "--build-arg", `POLYNOVEA_VERSION=${options.version}`,

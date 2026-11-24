@@ -53,8 +53,9 @@ describe("release script options", () => {
     expect(sign.some((arg) => arg.startsWith("COSIGN_PASSWORD="))).toBe(false);
   });
 
-  it("runs syft and cosign from images pinned by digest", () => {
+  it("runs syft, cosign and the release builder from images pinned by digest", () => {
     for (const image of Object.values(TOOLS)) expect(image).toMatch(/@sha256:[0-9a-f]{64}$/);
+    expect((release.BUILDER as { image: string }).image).toMatch(/^moby\/buildkit:[\w.-]+@sha256:[0-9a-f]{64}$/);
   });
 });
 

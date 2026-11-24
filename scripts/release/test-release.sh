@@ -36,7 +36,14 @@ KEYS="$WORK/keys"; OTHER="$WORK/other-keys"; OUT="$WORK/out"
 mkdir -p "$KEYS" "$OTHER" "$OUT"
 winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
+BUILDER_EXISTED=0
+docker buildx inspect polynovea-release >/dev/null 2>&1 && BUILDER_EXISTED=1
 cleanup() {
+  # The release builder (and its cache) is removed unless it was already here before the test.
+  if [ "$BUILDER_EXISTED" = 0 ]; then
+    docker buildx rm polynovea-release >/dev/null 2>&1 || true
+    docker rmi -f "$(node -e "import('./scripts/release/build-and-sign.mjs').then(m=>console.log(m.BUILDER.image))")" >/dev/null 2>&1 || true
+  fi
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   docker volume rm "$NAME-data" >/dev/null 2>&1 || true
   docker image ls --format '{{.Repository}}:{{.Tag}}' | grep "^localhost:$PORT/" | xargs -r docker rmi -f >/dev/null 2>&1 || true

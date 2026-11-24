@@ -25,7 +25,7 @@ It stops at the first failure, and in order:
 
 Output folder (`dist/release/<release ID>/`): `release.json`, `release.json.sig`, `sbom-amd64.spdx.json`, `sbom-arm64.spdx.json`, `cosign.pub`, `build-metadata.json`. Publish them with the release.
 
-syft (`anchore/syft:v1.33.0`) and cosign (`ghcr.io/sigstore/cosign/cosign:v2.6.1`) run from their images, pinned by digest, so the release machine only needs Docker, Node.js 24 and git. `--tlog` also records the signatures in Sigstore's public transparency log (Rekor). It is off by default.
+syft (`anchore/syft:v1.33.0`) and cosign (`ghcr.io/sigstore/cosign/cosign:v2.6.1`) run from their images, pinned by digest, so the release machine only needs Docker, Node.js 24 and git. The image is built by a dedicated BuildKit builder, `polynovea-release` (`moby/buildkit:v0.34.2`, pinned by digest, host networking), because Docker's built-in builder cannot push by digest. The script creates it on first use and keeps it for its cache; `docker buildx rm polynovea-release` removes both. `--tlog` also records the signatures in Sigstore's public transparency log (Rekor). It is off by default.
 
 ## Key handling
 
