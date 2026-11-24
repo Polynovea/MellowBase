@@ -38,6 +38,10 @@ set -- "$@" -e HOSTNAME=127.0.0.1 -e PORT=3000
 if [ -n "$domain" ]; then
   set -- "$@" -e "POLYNOVEA_PUBLIC_URL=https://$domain" -e POLYNOVEA_TRUSTED_PROXIES=127.0.0.1
 fi
+# Read-only for the CMS: the release key (it verifies release.json before offering an upgrade) and the
+# upgrade agent's root-owned status folder (the CMS copies its steps into the audit log).
+[ -f /etc/polynovea/release.pub ] && set -- "$@" -v /etc/polynovea/release.pub:/etc/polynovea/release.pub:ro
+[ -d /var/lib/polynovea-upgrade ] && set -- "$@" -v /var/lib/polynovea-upgrade:/var/lib/polynovea-upgrade:ro
 
 exec docker run --rm --name polynovea \
   --network host \
