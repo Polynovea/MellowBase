@@ -1856,6 +1856,8 @@ export interface SchemaMigrationConfirmations {
 export interface SchemaMigrationLedger {
   attempts: Generated<number>;
   base_shape_hash: string | null;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
   confirmed_at: string | null;
   confirmed_by: string | null;
   content_model_id: string | null;
