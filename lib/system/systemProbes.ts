@@ -90,7 +90,7 @@ export async function probeTls(env: Env = process.env): Promise<TlsState> {
 
 export async function probeDisk(env: Env = process.env): Promise<{ usedFraction: number; freeBytes: number } | null> {
   try {
-    const stats = await fs.statfs(env.POLYNOVEA_DATA_ROOT?.trim() || imagePaths(env).dataRoot);
+    const stats = await fs.statfs(imagePaths().dataRoot);
     if (!stats.blocks) return null;
     return { usedFraction: 1 - stats.bavail / stats.blocks, freeBytes: stats.bavail * stats.bsize };
   } catch {
@@ -110,7 +110,7 @@ export async function databaseMode(): Promise<"local" | "managed" | null> {
 
 /** pgBackRest's own report of the newest backup's finish time. */
 export function pgBackRestInfo(env: Env = process.env): Promise<{ lastBackupAt: string | null; error?: boolean; sizeBytes?: number }> {
-  const paths = imagePaths(env);
+  const paths = imagePaths();
   return new Promise((resolve) => {
     execFile("pgbackrest", [`--stanza=${STANZA}`, "--output=json", "info"], { timeout: 60_000, encoding: "utf8", env: { ...imagePgBackRestEnv(paths), PATH: process.env.PATH ?? "/usr/bin:/bin" } as unknown as NodeJS.ProcessEnv }, (error, stdout) => {
       if (error) return resolve({ lastBackupAt: null, error: true });

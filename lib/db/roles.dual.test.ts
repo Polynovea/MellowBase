@@ -44,8 +44,15 @@ function catalogChecks(label: string, url: () => string | undefined) {
         where n.nspname = 'public' and c.relkind in ('r', 'p')`);
       expect(rows.length).toBeGreaterThanOrEqual(140);
       expect(rows.filter((row) => !row.can_select).map((row) => row.relname)).toEqual([]);
-      // 0077: the system tables change only through their functions. (Phase 3 adds its own tables to this list.)
-      expect(rows.filter((row) => !row.can_write).map((row) => row.relname).sort()).toEqual(["polynovea_migration_ledger", "system_restore_tests", "system_upgrades"]);
+      // Read-only for the app: Phase 3's tables (0073-0076) and 0077's system tables, each only where it
+      // exists, so this holds on a branch with either set of migrations and after both merge.
+      const readOnly = [
+        "content_model_move_runs", "content_model_storage", "content_model_tables", "polynovea_migration_ledger",
+        "schema_expand_contract_tasks", "schema_migration_confirmations", "schema_migration_ledger", "schema_migration_runs",
+        "schema_name_reservations", "system_restore_tests", "system_upgrades",
+      ];
+      const present = new Set(rows.map((row) => row.relname));
+      expect(rows.filter((row) => !row.can_write).map((row) => row.relname).sort()).toEqual(readOnly.filter((name) => present.has(name)));
     });
 
     it("polynovea_app executes every SQL function and PUBLIC executes none", async () => {

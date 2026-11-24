@@ -36,10 +36,10 @@ export class UpgradeRequestError extends Error {
   }
 }
 
+/** POLYNOVEA_UPGRADE_REQUEST_DIR / _STATUS_DIR exist for tests; installs use the defaults. */
 export function upgradePaths(env: Env = process.env) {
-  const dataRoot = env.POLYNOVEA_DATA_ROOT?.trim() || "/var/lib/polynovea";
   return {
-    requestDir: path.posix.join(dataRoot, "upgrade-requests"),
+    requestDir: env.POLYNOVEA_UPGRADE_REQUEST_DIR?.trim() || "/var/lib/polynovea/upgrade-requests",
     statusDir: env.POLYNOVEA_UPGRADE_STATUS_DIR?.trim() || DEFAULT_STATUS_DIR,
   };
 }
