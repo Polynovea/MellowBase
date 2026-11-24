@@ -9,7 +9,7 @@ vi.mock("@/lib/infrastructure/networkSafety", () => ({
     if (!url.startsWith("https://") && kind !== "local") throw new Error("Connection URL must use HTTPS");
     const file = files.get(url);
     if (!file) return new Response("missing", { status: 404 });
-    return new Response(file.body, { status: file.status ?? 200, headers: file.headers });
+    return new Response(typeof file.body === "string" ? file.body : new Uint8Array(file.body), { status: file.status ?? 200, headers: file.headers });
   }),
 }));
 

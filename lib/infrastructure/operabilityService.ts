@@ -11,6 +11,9 @@ import * as controlPlaneData from "@/lib/infrastructure/controlPlaneData";
 import * as operabilityData from "@/lib/infrastructure/operabilityData";
 import * as connectionData from "@/lib/infrastructure/connectionData";
 import { runDatabaseProvisioning } from "@/lib/infrastructure/databaseProvisioning";
+import { runSystemChecks } from "@/lib/system/systemProbes";
+import { ingestAgentStatus } from "@/lib/system/upgradeRequest";
+import { runningInServerImage } from "@/lib/setup/database/localServerImage";
 import { deploySupabaseEdgeFunctions, discoverPackagedSupabaseEdgeFunctions, edgeFunctionManifestsFromComponent, inspectSupabaseEdgeRuntime } from "@/lib/infrastructure/supabaseManagement";
 
 const canonicalJson=(value:unknown):string=>{if(value===null||typeof value!=="object")return JSON.stringify(value);if(Array.isArray(value))return `[${value.map(canonicalJson).join(",")}]`;const obj=value as Record<string,unknown>;return `{${Object.keys(obj).sort().map(key=>`${JSON.stringify(key)}:${canonicalJson(obj[key])}`).join(",")}}`;};
@@ -86,6 +89,11 @@ export async function runSystemDoctor(params:{workspaceId:string;environmentId:s
   const schemaState=await operabilityData.schemaDeploymentState(params.workspaceId,params.environmentId);
   const deployedByModel=new Map<string,any>();for(const row of schemaState.deployments)if(!deployedByModel.has(row.content_model_id))deployedByModel.set(row.content_model_id,row);
   for(const model of schemaState.models){const deployed=deployedByModel.get(model.id);if(!deployed)add(`schema.${model.id}`,"warning",`Model ${model.api_key} has no recorded deployment for this environment.`,"schema","/admin/models",{currentVersion:model.current_schema_version});else if(deployed.schema_version!==model.current_schema_version)add(`schema.${model.id}`,"warning",`Model ${model.api_key} is deployed at v${deployed.schema_version} while canonical is v${model.current_schema_version}.`,"schema","/admin/models",{deployedVersion:deployed.schema_version,currentVersion:model.current_schema_version});}
+  // Installation-wide checks of a self-hosted server (lib/system): in the server image, or when asked for.
+  if(runningInServerImage()||process.env.POLYNOVEA_SYSTEM_DOCTOR==="1"){
+    await ingestAgentStatus().catch(()=>null);
+    for(const check of await runSystemChecks()){if(check.severity==="blocking"||check.severity==="warning")add(check.key,check.severity,check.message,"system","/admin/system",check.evidence??{});}
+  }
   const blocking=findings.filter(f=>f.severity==="blocking").length,warnings=findings.filter(f=>f.severity==="warning").length;
   const status=blocking?"blocked":warnings?"warning":"healthy";
   const correlationId=randomUUID();
