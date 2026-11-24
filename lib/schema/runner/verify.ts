@@ -136,6 +136,8 @@ const planSchema = z.strictObject({
   steps: z.array(planStep).max(5_000),
   requiresConfirmation: z.boolean(),
   notes: z.array(z.string().max(1_000)).max(100),
+  // Fields a save added back while their deletion waited (informational; not in the plan hash).
+  restoredFields: z.array(key).max(1_000).optional(),
 });
 
 /** Steps that delete data: only ever in the destructive stage. */
@@ -256,6 +258,7 @@ export function verifyRowAgainstPlan(
   assertShape(plan.expandedShape, plan.expandedShapeHash, plan.table);
   assertShape(plan.targetShape, plan.targetShapeHash, plan.table);
 
+  for (const field of plan.restoredFields ?? []) assertFieldKey(field);
   for (const step of plan.steps) {
     if (step.table !== plan.table) throw new RefusedError("plan_target_mismatch");
     for (const column of stepColumnNames(step)) assertColumnName(column);
