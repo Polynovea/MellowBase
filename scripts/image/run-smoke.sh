@@ -128,7 +128,16 @@ step "Restart: PostgreSQL comes back with the container"
 docker restart -t 90 "$PREFIX-tunnel" >/dev/null
 wait_healthy "$PREFIX-tunnel"
 docker exec "$PREFIX-tunnel" sh -ec '/opt/polynovea/bin/local-db.sh status && echo "bundled PostgreSQL running after restart"'
-docker exec "$PREFIX-tunnel" node -e "fetch('http://127.0.0.1:3000/api/setup/status').then(r=>r.json()).then(s=>{console.log('after restart:',JSON.stringify(s));process.exit(s.databaseReady?0:1)})"
+# The round trip finished setup (owner, organisation, keys), so after a restart the CMS runs, /setup is gone
+# for good, and the built-in auth starts in SSH-tunnel mode (no proxy list needed on loopback).
+docker exec "$PREFIX-tunnel" node -e "Promise.all([fetch('http://127.0.0.1:3000/api/health').then(r=>r.json()),fetch('http://127.0.0.1:3000/api/setup/status').then(r=>r.status)]).then(([h,s])=>{console.log('after restart: health',JSON.stringify(h),'setup status',s);process.exit(h.state==='running'&&s===404?0:1)})" \
+  && echo "ok    after restart: the CMS is running and setup is gone (404)" \
+  || { echo "FAIL  after restart: the CMS is not running, or setup still answers"; exit 1; }
+if docker logs "$PREFIX-tunnel" 2>&1 | grep -q "auth: SSH-tunnel mode (loopback only), shared sign-in rate limit"; then
+  echo "ok    after restart: the built-in auth started in SSH-tunnel mode (no proxy list, shared sign-in limit)"
+else
+  echo "FAIL  the built-in auth did not log SSH-tunnel mode after the restart"; exit 1
+fi
 docker logs "$PREFIX-tunnel" 2>&1 | grep -E "^\[entrypoint\]|\[local-db\]|delivery-worker" | tail -8 || true
 
 step "Delivery worker: the bundle (no TypeScript loader) is running and has recorded a heartbeat"
