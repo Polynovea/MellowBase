@@ -716,6 +716,7 @@ export interface DeveloperApiTokens {
   name: string;
   rate_limit_per_minute: Generated<number>;
   revoked_at: string | null;
+  role_id: string | null;
   scopes: Generated<string[]>;
   token_hash: string;
   token_prefix: string;
@@ -1813,6 +1814,7 @@ export interface RolePermissions {
 }
 
 export interface Roles {
+  api_limits: Json | null;
   created_at: Generated<string | null>;
   description: string | null;
   id: Generated<string>;

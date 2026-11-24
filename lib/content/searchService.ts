@@ -9,7 +9,19 @@ export function searchableText(data: Record<string, unknown>) {
     .join(" ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Field permissions for search (phase 4, the items API's permission function): models where the
+ * caller cannot read every field, by model id, with the field keys it can read. Such a model matches
+ * only on its readable search-indexed columns, is never ranked by its whole-document text, and its
+ * rows carry no search_text. `readableModelIds`: every model the caller can read.
+ */
+export interface SearchFieldScope {
+  restricted: ReadonlyMap<string, ReadonlySet<string>>;
+  readableModelIds: readonly string[];
+}
+
 export interface ContentSearchParams {
+  fieldScope?: SearchFieldScope;
   workspaceId: string;
   query?: string;
   modelId?: string;

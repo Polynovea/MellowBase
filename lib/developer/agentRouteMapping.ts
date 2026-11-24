@@ -5,6 +5,15 @@ export function resolveAgentToolForApiRequest(params: { method: string; pathname
   const segments = path.split("/").filter(Boolean);
   if (segments[0] !== "api" || segments[1] !== "v1") return null;
   const resource = segments[2];
+  // The generated items API (/api/v1/models/{model}/items[/{id}]) is governed as the same tools as entries.
+  if (resource === "models" && segments[4] === "items" && segments.length <= 6) {
+    const one = segments.length === 6;
+    if (params.method === "GET") return one ? "cms.content.get" : "cms.content.search";
+    if (params.method === "POST" && !one) return "cms.draft.create";
+    if (params.method === "PATCH" && one) return "cms.draft.update";
+    if (params.method === "DELETE" && one) return "cms.delete";
+    return null;
+  }
   if (resource === "models" && params.method === "GET") return segments.length === 3 ? "cms.schema.list" : segments.length === 4 ? "cms.schema.get" : null;
   if (resource === "entries") {
     if (params.method === "GET") return segments.length === 3 ? "cms.content.search" : segments.length === 4 ? "cms.content.get" : null;

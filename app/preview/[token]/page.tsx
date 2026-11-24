@@ -128,7 +128,8 @@ export default async function PreviewPage({ params, searchParams }: Params) {
   if (preview.release_id) {
     const release = await getReleasePreview(
       preview.workspace_id,
-      preview.release_id
+      preview.release_id,
+      { adminUserId: preview.created_by ?? null }
     );
     if (!release) notFound();
     const items = (release.release_items || []) as unknown as Array<{
