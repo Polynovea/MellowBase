@@ -1,7 +1,7 @@
 import { auditScreen, tabTo } from "./support/audit";
 import { expect, test } from "./support/fixtures";
 import { readState, writeState } from "./support/state";
-import { allowSelfApproval, expectEmptyState } from "./support/ui";
+import { addRouteFromFinding, allowSelfApproval, expectEmptyState } from "./support/ui";
 
 // Entries: the empty state, a required field left empty, an entry written from the keyboard with the
 // uploaded image, an edit, a preview, then submit for review → approve → publish. Approving your own
@@ -83,6 +83,13 @@ test("edit, preview, submit for review, approve, publish", async ({ page, contex
   await page.goto(`/admin/entries/${entryId}`);
   await page.getByRole("button", { name: "Approve stage" }).click();
   await expect(page.getByRole("heading", { name: "Approved for publication" })).toBeVisible();
+
+  // Publishing needs the entry's own address (a canonical route). The readiness panel says so and
+  // links to the route form with this entry chosen.
+  await expect(page.getByText("Publication blocked")).toBeVisible();
+  await addRouteFromFinding(page, "/ui-test-entry");
+  await page.goto(`/admin/entries/${entryId}`);
+  await expect(page.getByText("Ready for publication")).toBeVisible();
 
   // Publish.
   await page.getByRole("button", { name: "Publish draft" }).click();

@@ -20,7 +20,8 @@ test("locales: empty state, a bad code refused, Hindi added", async ({ page }) =
   await code.fill("hi");
   await page.getByRole("button", { name: "Add enabled locale" }).click();
   await expect(page.locator(".ui-alert-success")).toContainText("hi locale policy saved.");
-  await expect(page.getByText("hi", { exact: true }).first()).toBeVisible();
+  // The new row's code (the fallback dropdowns also hold an "hi" option, which is never visible text).
+  await expect(page.getByText("hi", { exact: true }).filter({ visible: true }).first()).toBeVisible();
   await auditScreen(page, "localization");
 });
 

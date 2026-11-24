@@ -182,7 +182,7 @@ export default function ModelEditorPage() {
                 <div className="space-y-3">
                   {schema.fields.map((field, index) => (
                     <FieldEditor
-                      key={`${field.key}-${index}`}
+                      key={index}
                       field={field}
                       index={index}
                       total={schema.fields.length}

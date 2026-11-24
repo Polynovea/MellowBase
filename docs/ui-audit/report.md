@@ -1,8 +1,8 @@
 # Admin app UI audit
 
-Status: **draft, before the first run.** Every row below comes from reading the screens' code. The
-browser run (screenshots, axe, sideways scroll, broken links) has not happened yet; its findings are
-added here after it, and the raw numbers land in [automated-checks.md](automated-checks.md).
+Status: **in progress.** Rows B1–B3 and C1–C17 come from reading the screens' code; rows B4 and A1–A6
+come from the browser runs (screenshots, axe, sideways scroll, broken links). The raw numbers of the
+last run are in [automated-checks.md](automated-checks.md).
 
 - Branch: `payal/ui-tests` (from `payal/p4-final-review`).
 - How to run: `npm run test:ui` (`scripts/ui-test/run.mjs`): a fresh PostgreSQL 16, a production build on
@@ -20,6 +20,14 @@ misleads them or says nothing), **polish** (looks or reads worse than it should;
 | B1 | Calendar | Picking an event **Type** makes scheduling fail. The dropdown's options had no value, so the browser sent the label ("draft due") instead of the stored kind ("draft_due"), which the database refuses. Untouched, the box showed "draft due" but sent "review_due". | calendar-1440-light.jpg | Give each option its real value. | Fixed; `13-releases` schedules an event of a chosen type |
 | B2 | Media, entry editor | Keyboard users could not upload or open an image: the upload controls (Media, and the image picker in the entry form) were hidden file inputs, and the image cards only reacted to a mouse click. | media-1440-light.jpg | Keep the file input focusable but visually hidden; make each card a real button; make the details a dialog (Escape closes, focus moves in and back). | Fixed; `11-media` uploads and opens details by keyboard |
 | B3 | Developer | There is no way to create an **AI agent** or limit one to some fields. Agent identities exist in the API layer (`lib/developer/agentGovernanceService.ts`) but no screen or admin route creates them, and API tokens can be limited by model and scope, not by field. | developer-1440-light.jpg | Needs a decision: an "AI agents" section in Developer (create, limit to models and fields, bind a token), with admin routes, step-up and audit. That is a feature, not a fix. | **Open: decision for Subrojit.** `15-developer` keeps the test as `fixme` |
+
+| B4 | Every admin screen | **Busy pages signed people out.** The browser re-checked the session before nearly every API call; the server allows 100 session checks a minute per network address; and any error in that check signed the person out for good. The run lost its session on Setup & Infrastructure, and every later screen showed the sign-in page. A team behind one office connection shares that limit. | infrastructure-1440-light.jpg | Reuse a session check for 10 seconds (cleared on any sign-in, sign-out or step-up); on a failed check, retry (1, 3, 8 s) and then say what happened, never sign out. Server limit left as is (see note below). | Fixed in `lib/auth/builtinClient.ts`, `lib/admin/useAdminAccess.ts`; the audit and sign-out runs cover it |
+
+Note on B4 for the coordinator: `/api/auth/get-session` falls under Better Auth's default 100 requests a
+minute per address (`lib/auth/betterAuth/server.ts`). With the client fix one page makes a handful of
+checks, but an office of 20 behind one address could still reach it. Raising that one route's limit
+(say 600 a minute; it only reads the caller's own session) is a server-side auth decision, so it is left
+to the auth owner.
 
 ## Confusing
 
@@ -51,6 +59,21 @@ misleads them or says nothing), **polish** (looks or reads worse than it should;
 | "Authorized personnel only. Access monitored by Global Security Protocols." | "Only people invited to this workspace can sign in." |
 | "© 2026 Polynovea Executive Command. All Rights Reserved." + three dead "links" | "Polynovea CMS" |
 | "System Status: Operational" (always on) | removed; the System page shows the real health |
+
+## Found by the browser runs (axe, layout)
+
+| # | Screen | Issue | Screenshot | Fix | Status |
+|---|---|---|---|---|---|
+| A1 | Every admin screen (light theme) | Muted text, used for the whole side menu, was 4.49:1 on the menu background, under the 4.5:1 minimum (axe "serious"). | command-center-1440-light.jpg | Muted text colour #716876 → #675E6C: 4.7–5.5:1 on every light surface. | Fixed (`app/globals.css`) |
+| A2 | Command Center (both themes) | Timestamps and small lines used the "disabled" colour: 2.4:1 light, 3.2:1 dark. | command-center-1440-dark.jpg | Muted colour, as for other secondary text. | Fixed |
+| A3 | Blog, Metrics, Delivery Ops, Redirects, Developer | Tables and code blocks that scroll sideways could not be reached by keyboard (axe "serious"). | delivery-ops-390-light.jpg | They take focus (Tab), with a name for screen readers. | Fixed |
+| A4 | Content Intelligence, Delivery Ops, Operational Intelligence, Site Tree & Routes, Import | Unnamed dropdowns, an icon-only "save search" button and an icon-only back link (axe "critical"/"serious"). | content-intelligence-1440-light.jpg | Names on each. | Fixed |
+| A5 | Developer | At 390 px the page scrolled sideways: the long curl line and the OpenAPI text widened the columns. | developer-390-light.jpg | The columns may shrink; the code blocks scroll inside themselves. | Fixed |
+| A6 | Model editor | The tab title fell back to "Polynovea Admin" after "Create model" (Next.js re-applies the layout's title on some navigations). | model-editor-1440-light.jpg | The screen's title is put back whenever it is changed. | Fixed |
+
+Moderate and minor axe findings (not gated, listed in [automated-checks.md](automated-checks.md)): content
+outside landmarks ("region"), duplicate or nested `main` landmarks on a few screens, a skipped heading
+level, an empty table header. They become polish rows below once the last run confirms them.
 
 ## Polish (listed, not fixed)
 

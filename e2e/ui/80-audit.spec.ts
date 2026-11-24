@@ -41,7 +41,8 @@ const screens: Array<[name: string, url: string | (() => string)]> = [
 for (const [name, url] of screens) {
   test(`screen: ${name}`, async ({ page }) => {
     await page.goto(typeof url === "string" ? url : url());
-    await expect(page.locator("main h1, h1").first()).toBeVisible();
+    // Every screen has a heading; the visual studio's first one is not an h1 (axe lists that as moderate).
+    await expect(page.getByRole("heading").first()).toBeVisible();
     await auditScreen(page, name);
   });
 }
@@ -50,11 +51,11 @@ test("the mobile navigation opens, lists every section, and closes", async ({ pa
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/admin/cms");
   await page.getByRole("button", { name: "Open navigation" }).click();
-  await expect(page.getByRole("link", { name: "System" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "System", exact: true })).toBeVisible();
   await auditScreen(page, "mobile-navigation");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Close navigation" }).last().click();
-  await expect(page.getByRole("link", { name: "System" })).toBeHidden();
+  await expect(page.getByRole("link", { name: "System", exact: true })).toBeHidden();
 });
 
 /** Every screen this run audited (the flows' screens too), read back from test-results/ui/audit. */

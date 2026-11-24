@@ -1,7 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import AdminLayout from "@/components/admin/AdminLayout";
+import { useDialogKeyboard } from "@/components/admin/useDialogKeyboard";
+
+/** An entry the route can point to: its title (or name), else its short ID. */
+type EntryChoice = { id: string; label: string };
 import {
   GitFork,
   Plus,
@@ -45,6 +49,40 @@ export default function RoutesPage() {
   const [newNodeType, setNewNodeType] = useState<"routable_entry" | "virtual_folder" | "external_link" | "custom_path">("routable_entry");
   const [newParentId, setNewParentId] = useState<string | null>(null);
   const [collisionWarning, setCollisionWarning] = useState<string | null>(null);
+  // A routable entry's route must name its entry: publishing and releases check for "an active
+  // canonical route" of that entry. The form had no way to choose one, so that check could never pass.
+  const [entries, setEntries] = useState<EntryChoice[]>([]);
+  const [newEntryId, setNewEntryId] = useState("");
+  const createRef = useRef<HTMLDivElement>(null);
+  useDialogKeyboard(createRef, showCreateModal, () => setShowCreateModal(false));
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch("/api/entries");
+        const body = await res.json();
+        if (!res.ok) return;
+        setEntries((body.data || []).map((entry: { id: string; data?: Record<string, unknown> }) => {
+          const title = [entry.data?.title, entry.data?.name].find((value): value is string => typeof value === "string" && value.trim() !== "");
+          return { id: entry.id, label: title ? title.trim() : `entry:${entry.id.slice(0, 8)}` };
+        }));
+      } catch {
+        // The form still works for folders and custom paths.
+      }
+    })();
+  }, []);
+
+  // Arriving from a "no canonical route" readiness finding (?entry=<id>): open the form for that entry.
+  // (Read from the address directly: useSearchParams would need a Suspense boundary on this static page.)
+  useEffect(() => {
+    const entry = new URLSearchParams(window.location.search).get("entry");
+    if (!entry) return;
+    setNewEntryId(entry);
+    setNewNodeType("routable_entry");
+    setNewParentId(null);
+    setNewPath("/");
+    setShowCreateModal(true);
+  }, []);
 
   // Edit Route Modal
   const [showEditModal, setShowEditModal] = useState(false);
@@ -108,6 +146,7 @@ export default function RoutesPage() {
           locale,
           nodeType: newNodeType,
           parentRouteId: newParentId,
+          entryId: newNodeType === "routable_entry" && newEntryId ? newEntryId : undefined,
         }),
       });
       const json = await res.json();
@@ -117,6 +156,7 @@ export default function RoutesPage() {
         setNewPath("");
         setNewTitle("");
         setNewParentId(null);
+        setNewEntryId("");
         loadTree();
       } else {
         setError(json.error);
@@ -282,12 +322,13 @@ export default function RoutesPage() {
         {/* Register Route Modal */}
         {showCreateModal && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="ui-card-elevated max-w-md w-full p-6 space-y-4">
-              <h3 className="text-lg font-bold text-fg-primary">Register Canonical Route</h3>
+            <div ref={createRef} role="dialog" aria-modal="true" aria-labelledby="register-route-title" className="ui-card-elevated max-w-md w-full p-6 space-y-4">
+              <h2 id="register-route-title" className="text-lg font-bold text-fg-primary">Register Canonical Route</h2>
               <form onSubmit={handleCreateRoute} className="space-y-4">
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Path</label>
+                  <label htmlFor="route-path" className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Path</label>
                   <input
+                    id="route-path"
                     type="text"
                     required
                     value={newPath}
@@ -306,8 +347,9 @@ export default function RoutesPage() {
                   )}
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Page Title / Label</label>
+                  <label htmlFor="route-title" className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Page Title / Label</label>
                   <input
+                    id="route-title"
                     type="text"
                     value={newTitle}
                     onChange={(e) => setNewTitle(e.target.value)}
@@ -316,8 +358,9 @@ export default function RoutesPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Node Type</label>
+                  <label htmlFor="route-node-type" className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Node Type</label>
                   <select
+                    id="route-node-type"
                     value={newNodeType}
                     onChange={(e: any) => setNewNodeType(e.target.value)}
                     className="mt-1 w-full rounded-lg px-3 py-2 text-sm"
@@ -328,6 +371,23 @@ export default function RoutesPage() {
                     <option value="external_link">External Link</option>
                   </select>
                 </div>
+                {newNodeType === "routable_entry" && (
+                  <div>
+                    <label htmlFor="route-entry" className="text-[10px] font-bold uppercase tracking-wider text-fg-muted">Entry</label>
+                    <select
+                      id="route-entry"
+                      required
+                      value={newEntryId}
+                      onChange={(e) => setNewEntryId(e.target.value)}
+                      aria-describedby="route-entry-hint"
+                      className="mt-1 w-full rounded-lg px-3 py-2 text-sm"
+                    >
+                      <option value="">Choose the entry this address shows…</option>
+                      {entries.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+                    </select>
+                    <p id="route-entry-hint" className="mt-1 text-xs text-fg-muted">This becomes the entry&apos;s main (canonical) address, which publishing and releases need.</p>
+                  </div>
+                )}
                 <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"

@@ -601,7 +601,7 @@ export default function AccessPage() {
             </div>
 
             {/* Member table */}
-            <div className="relative min-h-[400px] overflow-x-auto border-y border-subtle">
+            <div tabIndex={0} role="region" aria-label="Members" className="relative min-h-[400px] overflow-x-auto border-y border-subtle">
               <div className="min-w-[640px]">
               {/* Table header */}
               <div className="relative grid grid-cols-[40px_1fr_96px_150px_100px] items-center gap-4 border-b border-subtle bg-surface-2 px-6 py-3.5">

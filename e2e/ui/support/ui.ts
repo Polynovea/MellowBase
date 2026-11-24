@@ -51,3 +51,17 @@ export async function allowSelfApproval(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Save workflow" }).click();
   await expect(page.locator(".ui-alert-success")).toBeVisible();
 }
+
+/**
+ * Follows a readiness finding's "Add a route for this entry" link (entry editor or release), registers
+ * the route in the form it opens (the entry is already chosen), and checks the success message.
+ */
+export async function addRouteFromFinding(page: Page, path: string): Promise<void> {
+  await page.getByRole("link", { name: "Add a route for this entry" }).first().click();
+  const form = page.getByRole("dialog", { name: "Register Canonical Route" });
+  await expect(form).toBeVisible();
+  await expect(form.getByLabel("Entry")).not.toHaveValue("");
+  await form.getByLabel("Path").fill(path);
+  await form.getByRole("button", { name: "Register" }).click();
+  await expect(page.locator(".ui-alert-success")).toContainText(`Route '${path}' registered successfully.`);
+}

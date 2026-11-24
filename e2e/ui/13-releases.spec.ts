@@ -1,7 +1,7 @@
 import { auditScreen } from "./support/audit";
 import { expect, test } from "./support/fixtures";
 import { readState, writeState } from "./support/state";
-import { allowSelfApproval, expectEmptyState } from "./support/ui";
+import { addRouteFromFinding, allowSelfApproval, expectEmptyState } from "./support/ui";
 
 // Releases and the calendar: the starter entry is approved, put in a release, the release is approved
 // and scheduled, and the calendar shows it. The calendar's own form gets a missing title, then an event
@@ -38,6 +38,10 @@ test("the starter entry is approved, released, scheduled, and shows in the calen
   await page.waitForURL(/\/admin\/releases\/[0-9a-f-]{36}$/);
   writeState({ releaseId: page.url().split("/").pop()!, releaseEntryId: starterEntryId });
   await expect(page.getByRole("heading", { level: 1, name: RELEASE })).toBeVisible();
+  // The starter entry has no address yet: the release is blocked, and the finding links to the fix.
+  await expect(page.getByRole("heading", { name: "Blocked" })).toBeVisible();
+  await addRouteFromFinding(page, "/welcome");
+  await page.goto(`/admin/releases/${readState().releaseId}`);
   await expect(page.getByText("Ready for controlled publication")).toBeVisible();
   await page.getByRole("button", { name: "Approve release" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Release approved." })).toBeVisible();

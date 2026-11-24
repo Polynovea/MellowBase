@@ -338,26 +338,29 @@ function Field({
         />
       </label>
     );
+  // Pickers and editors hold several controls of their own. Wrapped in a <label>, the first of them
+  // (an image's button, say) took the field's label as its name; a named group keeps each control's own.
+  const groupLabelId = `entry-field-${field.key}-label`;
   if (field.type === "media" || field.type === "file")
     return (
-      <label className="block">
-        {label}
+      <div role="group" aria-labelledby={groupLabelId} className="block">
+        <span id={groupLabelId}>{label}</span>
         <div className="mt-2">
           <AssetPicker value={value} onChange={onChange} />
         </div>
-      </label>
+      </div>
     );
   if (field.type === "rich_text")
     return (
-      <label className="block">
-        {label}
+      <div role="group" aria-labelledby={groupLabelId} className="block">
+        <span id={groupLabelId}>{label}</span>
         <div className="mt-2">
           <RichTextEditor
             value={isRichTextDocument(value) ? value : emptyRichText()}
             onChange={onChange}
           />
         </div>
-      </label>
+      </div>
     );
   if (field.type === "relation")
     return (
