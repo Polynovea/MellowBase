@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "updated": "2026-11-24",
+  "note": "Known advisories for the sign-in library, shipped with each release and checked by the System Doctor against the installed versions. Add an entry when an advisory is published; verify each entry against its primary source first. affected: space-separated comparators that must all hold.",
+  "packages": ["better-auth", "@better-auth/passkey", "@better-auth/utils"],
+  "advisories": []
+}
