@@ -591,10 +591,10 @@ end;
 $$;
 
 -- ── App access ───────────────────────────────────────────────────────────────────────────────────
--- 0074's helper, with these additions only: content_model_storage and content_model_move_runs join the
--- read_only list (the app changes them only through the functions above), read_only tables are also
--- write-protected from service_role on Supabase, and the content functions join app_only_functions
--- (EXECUTE for polynovea_app only, never service_role).
+-- 0074's helper exactly as it is now, with two additions only: content_model_storage and
+-- content_model_move_runs join the read_only list (the app changes them only through the functions
+-- above; on Supabase, service_role cannot write them either), and the content functions join
+-- app_only_functions (EXECUTE for polynovea_app only, never service_role). Keep it in step with 0074.
 create or replace function public.polynovea_apply_app_access()
 returns void
 language plpgsql
@@ -612,7 +612,7 @@ declare
     'content_model_storage', 'content_model_move_runs'];
   ledger_request_columns text := 'workspace_id, content_model_id, model_api_key, table_name, stage, plan_hash, '
     || 'base_shape_hash, target_schema_hash, plan_json, requested_by, target_version_id, renames';
-  app_only_functions text[] := array['polynovea_confirm_schema_stage', 'polynovea_retry_schema_stage',
+  app_only_functions text[] := array['polynovea_confirm_schema_stage', 'polynovea_retry_schema_stage', 'polynovea_cancel_schema_stage',
     'polynovea_content_sync_entries', 'polynovea_content_verify_model', 'polynovea_content_set_read_source',
     'polynovea_content_entries_sync'];
 begin
@@ -629,13 +629,13 @@ begin
       -- Written by migrations, the migration worker or the engine's bookkeeping (polynovea_owner).
       execute format('grant select on public.%I to polynovea_app', item.relname);
       execute format('revoke insert, update, delete, truncate on public.%I from polynovea_app', item.relname);
-      -- On Supabase, service_role must not write them either (it bypasses row-level security).
-      if has_service_role then
-        execute format('revoke insert, update, delete, truncate on public.%I from service_role', item.relname);
-      end if;
       foreach grantee in array api_roles loop
         execute format('revoke all on public.%I from %I', item.relname, grantee);
       end loop;
+      -- On Supabase, default privileges give service_role everything; the service key must not write here.
+      if has_service_role then
+        execute format('revoke insert, update, delete, truncate on public.%I from service_role', item.relname);
+      end if;
     elsif item.relname = 'schema_migration_ledger' then
       -- Requests only: insert these columns, read the rows. Status changes are the owner's.
       execute 'grant select on public.schema_migration_ledger to polynovea_app';
@@ -644,9 +644,16 @@ begin
       foreach grantee in array api_roles loop
         execute format('revoke all on public.schema_migration_ledger from %I', grantee);
       end loop;
+      if has_service_role then
+        -- At most SELECT: requests come through polynovea_app's column INSERT only.
+        execute 'revoke insert, update, delete, truncate on public.schema_migration_ledger from service_role';
+      end if;
     elsif item.relname = 'content_model_versions' then
       execute 'grant select, insert on public.content_model_versions to polynovea_app';
       execute 'revoke update, delete, truncate on public.content_model_versions from polynovea_app';
+      if has_service_role then
+        execute 'revoke update, delete, truncate on public.content_model_versions from service_role';
+      end if;
     elsif item.relname = 'installation' then
       -- Read, and insert once at the end of setup. Never change or delete (0072).
       execute 'grant select, insert on public.installation to polynovea_app';
