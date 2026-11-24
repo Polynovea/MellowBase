@@ -73,6 +73,8 @@ export default function MediaPage() {
   const [colSlug, setColSlug] = useState("");
   const [colDesc, setColDesc] = useState("");
   const detailsRef = useRef<HTMLDivElement>(null);
+  /** Distinct entries (or menus, routes) using the selected asset; each of their versions is listed below. */
+  const usedIn = new Set(assetUsage.map((usage) => usage.entryId)).size;
   const collectionRef = useRef<HTMLDivElement>(null);
   useDialogKeyboard(detailsRef, selectedAsset !== null, () => setSelectedAsset(null));
   useDialogKeyboard(collectionRef, showCreateColModal, () => setShowCreateColModal(false));
@@ -401,7 +403,7 @@ export default function MediaPage() {
               {/* Where-Used Section */}
               <div className="border-t border-subtle pt-3 space-y-2">
                 <h3 className="text-[10px] font-bold uppercase tracking-widest text-fg-muted">
-                  {loadingUsage ? "Where it is used" : assetUsage.length === 0 ? "Not used yet" : `Used in ${assetUsage.length} ${assetUsage.length === 1 ? "entry" : "entries"}`}
+                  {loadingUsage ? "Where it is used" : usedIn === 0 ? "Not used yet" : `Used in ${usedIn} ${usedIn === 1 ? "entry" : "entries"}${assetUsage.length > usedIn ? ` (${assetUsage.length} versions or places)` : ""}`}
                 </h3>
                 {loadingUsage ? (
                   <div className="text-xs text-fg-muted py-2">Loading references...</div>

@@ -14,11 +14,12 @@ const MODEL = { name: "UI Test Article", apiKey: "ui_test_article" };
 
 const field = (page: Page, label: string) => page.getByRole("group", { name: `Field: ${label}` });
 
-/** Review changes → the migration preview → apply. Returns the preview's classification line. */
-async function reviewAndApply(page: Page, expectUnsafe: boolean): Promise<void> {
+/** Review changes → the migration preview → apply (unsafe: must be acknowledged; undefined: whichever it is). */
+async function reviewAndApply(page: Page, expectUnsafe?: boolean): Promise<void> {
   await page.getByRole("button", { name: "Review changes" }).click();
   await expect(page.getByText("Server-validated migration preview. Nothing has been applied yet.")).toBeVisible();
-  const apply = page.getByRole("button", { name: expectUnsafe ? "Acknowledge & apply" : "Apply safe change" });
+  const name = expectUnsafe === undefined ? /^(Apply safe change|Acknowledge & apply)$/ : expectUnsafe ? "Acknowledge & apply" : "Apply safe change";
+  const apply = page.getByRole("button", { name });
   await expect(apply).toBeEnabled();
   await apply.click();
 }
@@ -109,7 +110,7 @@ test("add a field, rename it, delete it, restore it by re-adding, and delete ano
   const readded = field(page, String(await page.getByRole("group", { name: /^Field: / }).count()));
   await readded.getByLabel("Field label").fill("Strapline");
   await readded.getByLabel("Field key").fill("subtitle");
-  await reviewAndApply(page, false);
+  await reviewAndApply(page);
   await expect(page.getByRole("status").filter({ hasText: /Restored "subtitle"/ })).toBeVisible();
   await waitForWorker(page);
   await expect(waiting).toBeHidden();

@@ -23,6 +23,8 @@ test("an image is uploaded from the keyboard and its details say where it is use
   await page.goto("/admin/media");
   const upload = page.getByLabel("Upload asset");
   await tabTo(page, upload);
+  // The input itself is visually hidden; its button shows the focus ring.
+  await expect(page.locator("label", { has: upload })).toHaveCSS("outline-style", "solid");
   const [response] = await Promise.all([
     page.waitForResponse((r) => new URL(r.url()).pathname === "/api/assets" && r.request().method() === "POST"),
     upload.setInputFiles({ name: FILE, mimeType: "image/png", buffer: PNG_1X1 }),

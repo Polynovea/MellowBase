@@ -99,6 +99,6 @@ test("the image's details now list the entry that uses it", async ({ page }) => 
   await page.goto("/admin/media");
   await page.getByRole("button", { name: new RegExp(`^Open ${assetFilename!.replace(".", "\\.")}`) }).click();
   const details = page.getByRole("dialog", { name: assetFilename! });
-  await expect(details.getByText("Used in 1 entry")).toBeVisible();
-  await expect(details.getByText(`${TITLE} (edited)`)).toBeVisible();
+  await expect(details.getByText(/^Used in 1 entry/)).toBeVisible();
+  await expect(details.getByText(`${TITLE} (edited)`).first()).toBeVisible();
 });

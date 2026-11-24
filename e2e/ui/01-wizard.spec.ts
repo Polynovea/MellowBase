@@ -56,7 +56,7 @@ test("a fresh install reaches a signed-in owner through the wizard, by keyboard"
   await codeBox.fill("");
   await page.keyboard.type(setupCode!.toLowerCase());
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("status")).toContainText("Code accepted");
+  await expect(page.getByRole("status").filter({ hasText: "Code accepted" })).toBeVisible();
   // The database is configured and migrated already, so the wizard skips its database step.
   await page.waitForURL("**/setup/owner");
 
@@ -141,7 +141,7 @@ test("a fresh install reaches a signed-in owner through the wizard, by keyboard"
   await expect(page.getByRole("heading", { name: "Finish setup" })).toBeVisible();
   await auditScreen(page, "wizard-8-finish");
   await press(page, "Finish setup");
-  await expect(page.getByRole("status")).toContainText("Setup is finished");
+  await expect(page.getByRole("status").filter({ hasText: "Setup is finished" })).toBeVisible();
   await page.waitForURL("**/admin");
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   expect((await page.context().cookies()).some((cookie) => cookie.name === "__Host-polynovea-setup")).toBe(false);
