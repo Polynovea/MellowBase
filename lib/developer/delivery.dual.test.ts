@@ -20,7 +20,15 @@ async function published(backend: BackendFixtures, workspaceId: string, modelId:
 
 async function setup(backend: BackendFixtures) {
   const { workspaceId, adminUserId } = await backend.createWorkspace();
+  // As in a real install: the admin who creates API tokens is an active member, and every active model
+  // has its current schema version (the v1 routes filter fields through it since phase 4).
+  await backend.query("insert into workspace_members (workspace_id, admin_user_id, status) values ($1, $2, 'active')", [workspaceId, adminUserId]);
   const [model] = await backend.query<{ id: string }>("insert into content_models (workspace_id, name, api_key, status) values ($1, 'Article', 'article', 'active') returning id", [workspaceId]);
+  await backend.query(
+    "insert into content_model_versions (content_model_id, version_number, schema_json, schema_hash) values ($1, 1, $2::jsonb, $3)",
+    [model.id, JSON.stringify({ name: "Article", apiKey: "article", fields: [{ key: "title", label: "Title", type: "text", required: false, localized: false, unique: false }] }), "c".repeat(64)],
+  );
+  await backend.query("update content_models set current_schema_version = 1 where id = $1", [model.id]);
   const first = await published(backend, workspaceId, model.id, { title: "First" }, "en", "2026-01-01T00:00:00Z");
   const second = await published(backend, workspaceId, model.id, { title: "Second" }, "en", "2026-02-01T00:00:00Z");
   const french = await published(backend, workspaceId, model.id, { title: "Premier" }, "fr", "2026-03-01T00:00:00Z");
