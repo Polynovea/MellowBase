@@ -8,6 +8,7 @@ export const LOCAL_DB_SCRIPT: string;
 export const DATA_ROOT: string;
 export function dataRoot(): string;
 export function pgBackRestEnv(): Record<string, string>;
+export function restoreCommand(): string;
 export function inServerImage(env?: Env): boolean;
 export function installDatabase(env?: Env): { local: boolean; connection: (role: "owner" | "app") => pg.ClientConfig; config: unknown } | null;
 export function runProgram(file: string, args: string[], options?: { env?: Record<string, string>; timeoutMs?: number }): Promise<{ code: number; stdout: string; stderr: string }>;

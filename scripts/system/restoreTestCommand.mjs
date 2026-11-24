@@ -15,6 +15,7 @@ import {
   installDatabase,
   PG_BIN,
   pgbackrest,
+  restoreCommand,
   runProgram,
   scrub,
   withClient,
@@ -103,6 +104,7 @@ export async function restoreTestCommand(args) {
         id: begun.id,
         dataRoot: root,
         liveWalDir: path.posix.join(root, "postgresql", "pg_wal"),
+        restoreCommand: restoreCommand(),
       });
       await live.query(
         "select public.polynovea_system_restore_test_finish($1, $2, $3, $4::jsonb, $5, $6)",

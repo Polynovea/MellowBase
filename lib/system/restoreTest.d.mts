@@ -31,5 +31,5 @@ export interface RestoreTestResult {
 export function restoreRoot(dataRoot: string): string;
 export function cleanLeftovers(host: RestoreHost, root: string): Promise<number>;
 export function newestBackup(host: RestoreHost): Promise<{ label: string; sizeBytes: number; stoppedAt: string | null }>;
-export function runRestoreTest(options: { host: RestoreHost; id: string; dataRoot: string; liveWalDir: string }): Promise<RestoreTestResult>;
+export function runRestoreTest(options: { host: RestoreHost; id: string; dataRoot: string; liveWalDir: string; restoreCommand?: string | null }): Promise<RestoreTestResult>;
 export function restoreTestDue(state: { lastPassedAt: string | null; lastAttemptAt: string | null; dueMarker: boolean; now?: number }): "first_backup" | "monthly" | null;

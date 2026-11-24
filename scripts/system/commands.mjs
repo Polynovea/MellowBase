@@ -15,7 +15,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { certificateAuthoritiesFor } from "../../lib/setup/database/caBundles.mjs";
-import { dataRoot, freeSpace, inServerImage, installDatabase, pgbackrest, runProgram, scrub, withClient } from "../../lib/system/serverHost.mjs";
+import { dataRoot, freeSpace, inServerImage, installDatabase, pgbackrest, restoreCommand, runProgram, scrub, withClient } from "../../lib/system/serverHost.mjs";
 import { listMigrationFiles, runMigrations } from "../run-migrations.mjs";
 
 const LABEL = /^[0-9A-Za-z_-]{1,64}$/;
@@ -99,7 +99,7 @@ async function restoreBackup(database, args) {
     // stopped, as required
   }
   // The spool folder: /var/spool/pgbackrest belongs to root in the image; a restore only needs an empty one.
-  const run = await pgbackrest([`--set=${label}`, "--delta", "--type=immediate", "--target-action=promote", "--spool-path=/tmp/pgbackrest-spool", "restore"]);
+  const run = await pgbackrest([`--set=${label}`, "--delta", "--type=immediate", "--target-action=promote", "--spool-path=/tmp/pgbackrest-spool", `--recovery-option=restore_command=${restoreCommand()}`, "restore"]);
   if (run.code !== 0) return fail(`pgbackrest restore exited ${run.code}: ${scrub(run.stderr || run.stdout)}`);
   console.log(JSON.stringify({ restored: label }));
   return 0;
