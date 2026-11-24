@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { callFunction, withTransaction, type DbExecutor } from "@/lib/db/index";
 import type { PlatformAuditPayload } from "@/lib/platform/audit";
+import { webhookPayloadFor } from "@/lib/developer/items/webhooks";
 
 export async function recordPlatformEvent(executor: DbExecutor, payload: PlatformAuditPayload): Promise<void> {
   const metadata = payload.metadata ?? {};
@@ -62,7 +63,7 @@ export async function queueWebhookEventDirect(
 ): Promise<void> {
   const subscriptions = await executor
     .selectFrom("webhook_subscriptions")
-    .select(["id", "event_filters"])
+    .select(["id", "event_filters", "created_by"])
     .where("workspace_id", "=", params.workspaceId)
     .where("active", "=", true)
     .execute();
@@ -78,7 +79,8 @@ export async function queueWebhookEventDirect(
         subscription_id: subscription.id,
         event_type: params.eventType,
         event_id: params.eventId,
-        payload_json: JSON.stringify(params.payload),
+        // Phase 4: per subscription, through the items API's permission function (its owner's access).
+        payload_json: JSON.stringify(await webhookPayloadFor(executor, params.workspaceId, subscription.created_by, params.payload)),
       })
       .onConflict((conflict) => conflict.columns(["subscription_id", "event_id"]).doNothing())
       .returning("id")

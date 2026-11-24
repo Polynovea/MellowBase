@@ -3,6 +3,25 @@ import { requirePlatformAccess } from "@/lib/platform/permissions";
 import { searchContent } from "@/lib/content/searchService";
 import { getModel, listModels } from "@/lib/schema/modelService";
 import { canActorOperateModel } from "@/lib/schema/modelAccess";
+import { getDb } from "@/lib/db/index";
+import { adminAccesses } from "@/lib/developer/items/sideChannels";
+import type { SearchFieldScope } from "@/lib/content/searchService";
+
+/** Field permissions for search: the one permission function, for this admin (phase 4). */
+async function searchFieldScope(workspaceId: string, adminUserId: string): Promise<SearchFieldScope> {
+  const models = (await listModels(workspaceId)).filter((model) => model.status === "active");
+  const accesses = await adminAccesses(getDb(), workspaceId, adminUserId, "admin", models.map((model) => model.api_key));
+  const restricted = new Map<string, ReadonlySet<string>>();
+  const readable = new Map<string, ReadonlySet<string>>();
+  const readableModelIds: string[] = [];
+  for (const access of accesses?.values() ?? []) {
+    if (!access.canRead) continue;
+    readableModelIds.push(access.model.id);
+    readable.set(access.model.id, access.readable);
+    if (access.restricted) restricted.set(access.model.id, access.readable);
+  }
+  return { restricted, readableModelIds, readable };
+}
 
 export async function GET(req: Request) {
   const auth = await requirePlatformAccess(req, { permission: "content.entry.read" });
@@ -19,7 +38,9 @@ export async function GET(req: Request) {
   const offset = q.get("offset") ? Number(q.get("offset")) : undefined;
   const sortRaw = q.get("sort");
   const sort = sortRaw === "updated_asc" ? "updated_asc" : sortRaw === "updated_desc" ? "updated_desc" : "relevance";
+  const fieldScope = await searchFieldScope(auth.data!.actor.workspaceId, auth.data!.actor.adminUserId);
   const documents = await searchContent({
+    fieldScope,
     workspaceId: auth.data!.actor.workspaceId,
     query: q.get("q") ?? undefined,
     modelId,

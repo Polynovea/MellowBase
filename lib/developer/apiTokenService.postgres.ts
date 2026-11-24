@@ -19,7 +19,7 @@ const isUuid = (value: string) => UUID.test(value);
 export async function listDeveloperApiTokens(workspaceId: string) {
   return getDb()
     .selectFrom("developer_api_tokens")
-    .select(["id", "name", "token_prefix", "scopes", "allowed_models", "rate_limit_per_minute", "expires_at", "last_used_at", "revoked_at", "created_by", "created_at", "updated_at"])
+    .select(["id", "name", "token_prefix", "scopes", "allowed_models", "rate_limit_per_minute", "expires_at", "last_used_at", "revoked_at", "created_by", "created_at", "updated_at", "role_id"])
     .where("workspace_id", "=", workspaceId)
     .orderBy("created_at", "desc")
     .orderBy("id", "desc")
@@ -42,8 +42,9 @@ export async function insertDeveloperApiToken(params: { workspaceId: string; act
         rate_limit_per_minute: token.rateLimit,
         expires_at: token.expiresAt,
         created_by: params.actorId,
+        role_id: token.roleId,
       })
-      .returning(["id", "name", "token_prefix", "scopes", "allowed_models", "rate_limit_per_minute", "expires_at", "created_at"])
+      .returning(["id", "name", "token_prefix", "scopes", "allowed_models", "rate_limit_per_minute", "expires_at", "created_at", "role_id"])
       .execute(), "Could not create API token");
 
     await recordPlatformEvent(trx, {
@@ -52,7 +53,7 @@ export async function insertDeveloperApiToken(params: { workspaceId: string; act
       action: "developer.api_token.created",
       entityType: "developer_api_token",
       entityId: data.id,
-      metadata: { name: token.name, scopes: token.scopes, allowedModels: token.allowedModels, rateLimitPerMinute: token.rateLimit, expiresAt: token.expiresAt },
+      metadata: { name: token.name, scopes: token.scopes, allowedModels: token.allowedModels, rateLimitPerMinute: token.rateLimit, expiresAt: token.expiresAt, roleId: token.roleId },
     });
     return data;
   });
@@ -95,7 +96,7 @@ export async function revokeDeveloperApiToken(params: { workspaceId: string; act
 export async function findDeveloperApiTokenByHash(tokenHash: string) {
   return maybeOne(await getDb()
     .selectFrom("developer_api_tokens")
-    .select(["id", "workspace_id", "name", "token_prefix", "scopes", "allowed_models", "rate_limit_per_minute", "expires_at", "last_used_at", "revoked_at", "created_by", "agent_identity_id"])
+    .select(["id", "workspace_id", "name", "token_prefix", "scopes", "allowed_models", "rate_limit_per_minute", "expires_at", "last_used_at", "revoked_at", "created_by", "agent_identity_id", "role_id"])
     .where("token_hash", "=", tokenHash)
     .execute());
 }

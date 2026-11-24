@@ -12,7 +12,7 @@ import { tableSource, type TableSource } from "@/lib/content/tableStore";
 import { STORAGE_COLUMNS } from "@/lib/schema/engine/names";
 import { trigramSchema } from "@/lib/schema/engine/render";
 import type { ContentEntryRow, ContentEntryVersionRow } from "@/lib/content/entryService";
-import { searchableText, type ContentSearchParams } from "@/lib/content/searchService";
+import { searchableText, type ContentSearchParams, type SearchFieldScope } from "@/lib/content/searchService";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value: string) => UUID.test(value);
@@ -42,6 +42,69 @@ export async function searchContent(params: ContentSearchParams) {
   for (const id of [params.modelId, params.authorId, params.termId]) {
     if (id && !isUuid(id)) return [];
   }
+  const scope = params.fieldScope;
+  if (!scope) return unscopedSearch(params);
+  const rows = scope.restricted.size ? await scopedSearch(params, scope) : await unscopedSearch(params);
+  return readableSnippets(params.workspaceId, rows, scope);
+}
+
+/**
+ * search_text is built from every string field of the version (and may hold text of fields deleted
+ * since). With a field scope it is never returned as stored: each row's text is rebuilt from its
+ * version's data restricted to the fields the caller can read, or is empty.
+ */
+async function readableSnippets<T extends { content_model_id: string | null; version_id?: string | null; search_text?: string | null }>(workspaceId: string, rows: T[], scope: SearchFieldScope): Promise<T[]> {
+  const versionIds = [...new Set(rows.map((row) => row.version_id).filter((id): id is string => typeof id === "string" && isUuid(id)))];
+  const versions = versionIds.length
+    ? await getDb().selectFrom("content_entry_versions as v").innerJoin("content_entries as e", "e.id", "v.entry_id")
+      .select(["v.id", "v.data_jsonb"]).where("e.workspace_id", "=", workspaceId).where("v.id", "in", versionIds).execute()
+    : [];
+  const dataById = new Map(versions.map((version) => [version.id, version.data_jsonb as unknown]));
+  return rows.map((row) => {
+    const readable = row.content_model_id ? scope.readable.get(row.content_model_id) : undefined;
+    const data = row.version_id ? dataById.get(row.version_id) : undefined;
+    if (!readable || !data || typeof data !== "object" || Array.isArray(data)) return { ...row, search_text: "" };
+    const visible = Object.fromEntries(Object.entries(data as Record<string, unknown>).filter(([key]) => readable.has(key)));
+    return { ...row, search_text: searchableText(visible) };
+  });
+}
+
+/**
+ * Search for a caller with hidden fields. Without a query nothing is matched or ranked, so only the
+ * text is blanked. With one: unrestricted models keep the ranked search (one call per model, merged by
+ * rank: exact for the requested window); restricted models match only on readable columns of their
+ * table, unranked, after the ranked rows. A term that is only in a hidden field changes neither the
+ * rows nor their order. A restricted model without a ready table is left out (fail closed).
+ */
+async function scopedSearch(params: ContentSearchParams, scope: SearchFieldScope) {
+  const query = params.query?.trim() || null;
+  if (!query) return unscopedSearch(params);
+  const limit = Math.min(200, Math.max(1, params.limit ?? 50));
+  const offset = Math.max(0, params.offset ?? 0);
+  const models = params.modelId ? [params.modelId] : [...scope.readableModelIds];
+  const window = { ...params, limit: Math.min(200, offset + limit), offset: 0 };
+  const ranked: RankedRow[] = [];
+  const unranked: RankedRow[] = [];
+  for (const modelId of models) {
+    const readable = scope.restricted.get(modelId);
+    if (!readable) {
+      ranked.push(...await unscopedSearch({ ...window, modelId, sort: "relevance" }));
+      continue;
+    }
+    const source = await tableSource(params.workspaceId, modelId);
+    if (source) unranked.push(...await searchModelTable({ ...window, modelId }, source, query, readable));
+  }
+  const byRank = (a: RankedRow, b: RankedRow) =>
+    Math.max(Number(b.rank ?? 0), Number(b.similarity ?? 0)) - Math.max(Number(a.rank ?? 0), Number(a.similarity ?? 0))
+    || new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime();
+  const byUpdated = (a: RankedRow, b: RankedRow) => new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime();
+  let rows = [...ranked.sort(byRank), ...unranked.sort(byUpdated)];
+  if (params.sort === "updated_asc") rows = rows.sort((a, b) => -byUpdated(a, b));
+  if (params.sort === "updated_desc") rows = rows.sort(byUpdated);
+  return rows.slice(offset, offset + limit);
+}
+
+async function unscopedSearch(params: ContentSearchParams) {
   const query = params.query?.trim() || null;
   const source = params.modelId && query ? await tableSource(params.workspaceId, params.modelId) : null;
   const rows = source ? await searchModelTable(params, source, query!) : await callFunction("cms_search_content_ranked", {
@@ -86,8 +149,12 @@ function trgmSchema(): Promise<string | null> {
 /** A substring pattern for ILIKE: the query's own % and _ (and the escape character) match literally. */
 export const likeSubstring = (q: string) => `%${q.replace(/[\\%_]/g, "\\$&")}%`;
 
-async function searchModelTable(params: ContentSearchParams, source: TableSource, q: string): Promise<RankedRow[]> {
-  const columns = Object.values(source.shape.columns).filter((column) => column.searchIndexed && column.pgType === "text");
+/**
+ * `readable`: for a caller with hidden fields, only these fields' columns match, and neither the
+ * whole-document full-text match nor its ranking is used (rank and similarity are 0).
+ */
+async function searchModelTable(params: ContentSearchParams, source: TableSource, q: string, readable?: ReadonlySet<string>): Promise<RankedRow[]> {
+  const columns = Object.values(source.shape.columns).filter((column) => column.searchIndexed && column.pgType === "text" && (!readable || readable.has(column.field)));
   const table = sql.id("content", source.table);
   const entryCol = sql.id(STORAGE_COLUMNS.entryId);
   const variantCol = sql.id(STORAGE_COLUMNS.variant);
@@ -107,8 +174,8 @@ async function searchModelTable(params: ContentSearchParams, source: TableSource
   const { rows } = await sql<RankedRow>`
     with input as (select ${q}::text as q, websearch_to_tsquery('simple', ${q}) as tsq)
     select d.entry_id, d.workspace_id, d.version_id, d.content_model_id, d.locale, d.status, d.author_id, d.search_text, d.updated_at,
-           ts_rank_cd(d.search_vector, input.tsq)::real as rank,
-           ${similar(sql`d.search_text`)}::real as similarity
+           ${readable ? sql`0::real` : sql`ts_rank_cd(d.search_vector, input.tsq)::real`} as rank,
+           ${readable ? sql`0::real` : similar(sql`d.search_text`)}::real as similarity
       from public.content_search_documents d
      cross join input
      where d.workspace_id = ${params.workspaceId}
@@ -122,7 +189,7 @@ async function searchModelTable(params: ContentSearchParams, source: TableSource
                                           where rel.workspace_id = ${params.workspaceId} and rel.source_entry_id = d.entry_id
                                             and rel.source_version_id = d.version_id and rel.target_term_id = ${params.termId}::uuid)` : sql``}
        and (
-         d.search_vector @@ input.tsq
+         ${readable ? sql`false` : sql`d.search_vector @@ input.tsq`}
          -- The table row of this document's own version: same entry, the variant whose pointer is the
          -- document's version, same locale. A draft's text never surfaces through its published
          -- document, nor one locale's through another's.
@@ -135,7 +202,7 @@ async function searchModelTable(params: ContentSearchParams, source: TableSource
                 or (r.${variantCol} = 'published' and e.published_version_id = d.version_id))
               and (${columnMatch}))
        )
-     order by greatest(ts_rank_cd(d.search_vector, input.tsq), ${similar(sql`d.search_text`)}) desc, d.updated_at desc
+     order by ${readable ? sql`d.updated_at desc` : sql`greatest(ts_rank_cd(d.search_vector, input.tsq), ${similar(sql`d.search_text`)}) desc, d.updated_at desc`}
      limit ${limit} offset ${offset}`.execute(getDb());
   return rows;
 }

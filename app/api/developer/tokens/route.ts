@@ -28,6 +28,8 @@ export async function POST(req: Request) {
       allowedModels: Array.isArray(body.allowedModels) ? body.allowedModels.map(String) : [],
       expiresAt: body.expiresAt ? String(body.expiresAt) : null,
       rateLimitPerMinute: body.rateLimitPerMinute === undefined ? undefined : Number(body.rateLimitPerMinute),
+      // The database refuses a role of another workspace (composite foreign key, migration 0078).
+      roleId: typeof body.roleId === "string" && body.roleId ? body.roleId : null,
     });
     return respond(true, result, null, 201);
   } catch (error) {

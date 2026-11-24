@@ -46,6 +46,24 @@ describeWithDatabase("developer content delivery (published content, entry list)
     expect((await getPublishedContent({ workspaceId, modelApiKey: "article", entryId: "not-a-uuid" })).record).toBeNull();
   });
 
+  it("phase 4: a published entry with a pending draft keeps serving its published data; archiving takes it off", async () => {
+    const { workspaceId, first } = await setup(backend);
+    const [draft] = await backend.query<{ id: string }>(
+      "insert into content_entry_versions (entry_id, model_schema_version, version_number, data_jsonb, locale, state) values ($1, 1, 2, $2, 'en', 'draft') returning id",
+      [first.entryId, JSON.stringify({ title: "First, edited" })],
+    );
+    // What saving a draft does (cms_save_entry_draft): status 'draft', the published version stays.
+    await backend.query("update content_entries set status = 'draft', current_draft_version_id = $2 where id = $1", [first.entryId, draft.id]);
+    const listed = await listPublishedContent({ workspaceId, modelApiKey: "article" });
+    expect(listed.records.find((record) => record.id === first.entryId)?.data).toEqual({ title: "First" });
+    expect((await getPublishedContent({ workspaceId, modelApiKey: "article", entryId: first.entryId })).record?.data).toEqual({ title: "First" });
+
+    // Archive (the CMS's only way to take an entry off the live site): gone from both reads.
+    await backend.query("update content_entries set status = 'archived', status_before_archive = 'draft', archived_at = now() where id = $1", [first.entryId]);
+    expect((await listPublishedContent({ workspaceId, modelApiKey: "article" })).records.map((record) => record.id)).not.toContain(first.entryId);
+    expect((await getPublishedContent({ workspaceId, modelApiKey: "article", entryId: first.entryId })).record).toBeNull();
+  });
+
   it("lists developer entries with their current version", async () => {
     const { workspaceId, draftId, first } = await setup(backend);
     const listed = await listDeveloperEntries({ workspaceId, modelApiKey: "article" });

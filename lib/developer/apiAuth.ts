@@ -15,6 +15,8 @@ export interface DeveloperApiContext {
   rateLimit: NonNullable<ApiMeta["rateLimit"]>;
   agentIdentityId: string | null;
   agentToolName: string | null;
+  /** The token's role for field permissions (items API); null = its creator's roles. */
+  roleId: string | null;
 }
 
 export async function requireDeveloperApi(
@@ -75,6 +77,7 @@ export async function requireDeveloperApi(
     rateLimit,
     agentIdentityId,
     agentToolName,
+    roleId: token.role_id ?? null,
   } };
 }
 
