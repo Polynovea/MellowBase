@@ -25,6 +25,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import pg from "pg";
 import { bootstrapInstallRoles } from "../../lib/db/roles.mjs";
+import { retryOnRestart, waitForStableDatabase } from "./waitForDatabase.mjs";
 
 const root = process.cwd();
 const envFile = path.join(root, ".env.test.local");
@@ -177,10 +178,29 @@ async function withClient(url, fn) {
   }
 }
 
+// A healthy container can still be the image's temporary init server, which then stops and hands over
+// to the real one. Wait until the server answers several queries in a row, and repeat a setup step
+// (each is safe to repeat) if its connection is cut by that restart anyway.
+async function probe(url) {
+  const client = new pg.Client({ connectionString: url, ssl: false });
+  try {
+    await client.connect();
+    await client.query("select 1");
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+const waitForPlain = () => waitForStableDatabase(() => probe(adminUrl));
+const retryPlain = (step) => retryOnRestart(step, {
+  waitAgain: waitForPlain,
+  onRetry: (attempt) => console.log(`The test database restarted during setup; retrying (attempt ${attempt + 1} of 3).`),
+});
+await waitForPlain();
+
 // Plain PostgreSQL. The image's superuser only creates polynovea_installer, a non-superuser with
 // CREATEROLE and CREATEDB that owns the database: exactly what RDS and Azure hand an installer. The
 // installer then runs the real install step, so these tests fail if it needs a superuser anywhere.
-await withClient(adminUrl, async (client) => {
+await retryPlain(() => withClient(adminUrl, async (client) => {
   const password = client.escapeLiteral(env.POLYNOVEA_DEV_INSTALLER_PASSWORD);
   await client.query(`do $$ begin
     if not exists (select 1 from pg_roles where rolname = 'polynovea_installer') then
@@ -197,27 +217,29 @@ await withClient(adminUrl, async (client) => {
     const { rows } = await client.query("select 1 from pg_roles where rolname = $1", [role]);
     if (rows.length) await client.query(`grant ${role} to polynovea_installer with admin true, inherit false, set false`);
   }
-});
+}));
 
 // Plain PostgreSQL, as the installer: create polynovea_owner (not a superuser; owns schema public,
 // runs migrations) and polynovea_app (rows and functions only), plus the Supabase role names the
 // historical migrations grant to. Migration 0067 then gives polynovea_app its grants and a
 // row-level security policy on every table, so tests hit the same rules as RDS or Azure.
-await withClient(installerUrl, (client) => bootstrapInstallRoles(client, {
+await retryPlain(() => withClient(installerUrl, (client) => bootstrapInstallRoles(client, {
   database: "polynovea",
   ownerPassword: env.POLYNOVEA_DEV_OWNER_PASSWORD,
   appPassword: env.POLYNOVEA_DEV_APP_PASSWORD,
-}));
+})));
 runMigrations(ownerUrl);
 
 // Supabase compatibility services (--with-supabase): PostgREST logs in as `authenticator` and GoTrue
 // as `supabase_auth_admin` (only supabase_admin may set their passwords).
 if (withSupabase) {
-  await withClient(supabaseAdminUrl, async (client) => {
+  const waitForSupabase = () => waitForStableDatabase(() => probe(supabaseAdminUrl));
+  await waitForSupabase();
+  await retryOnRestart(() => withClient(supabaseAdminUrl, async (client) => {
     const password = env.POLYNOVEA_DEV_SUPABASE_DB_PASSWORD.replace(/'/g, "''");
     await client.query(`alter role authenticator with login password '${password}'`);
     await client.query(`alter role supabase_auth_admin with login password '${password}'`);
-  });
+  }), { waitAgain: waitForSupabase });
   runMigrations(supabaseDbUrl);
   await withClient(supabaseDbUrl, (client) => client.query("notify pgrst, 'reload schema'"));
   composeAll("restart", "postgrest", "gotrue", "rest-gateway");
