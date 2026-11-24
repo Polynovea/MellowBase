@@ -356,6 +356,10 @@ Resources:
   DatabaseSecret:
     Type: AWS::SecretsManager::Secret
     Condition: ManagedDb
+    # Kept if the stack is deleted or the secret replaced: the database's final snapshot is useless
+    # without its admin login.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Name: !Sub "polynovea/${AWS::StackName}/database-admin"
       Description: Polynovea database admin login. Read once by the setup wizard through the server's role.
