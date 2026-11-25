@@ -1,186 +1,142 @@
 # MellowBase
 
-MellowBase is an open-source, self-hosted backend and headless CMS by [Polynovea](https://github.com/Polynovea). It is workspace-scoped and covers:
-- structured content and visual schema modelling;
-- editorial workflow and releases;
-- delivery operations;
-- discoverability and content health.
+MellowBase is an open-source, self-hosted content and data platform by [Polynovea](https://github.com/Polynovea). A team runs it on its own server, keeps its content and structured data in one place, and sends it to every website, app and AI tool it uses.
 
-It ships with a browser admin, a scoped developer API, a TypeScript SDK, a CLI, an MCP transport and governed extensions.
+- **Installs from the browser.** A one-time setup code protects a first-run wizard that connects the database, creates the owner with two-step sign-in and opens the admin. No terminal needed after the server starts.
+- **Real tables, typed code.** Every content model is a real PostgreSQL table, changed only through reviewed, plain-words migration plans that keep the site online. Developers get a per-model API and TypeScript types generated from their own models.
+- **AI agents with rules.** AI tools connect over MCP with their own identity and permissions, down to single fields, and their changes go through the same approvals as anyone's.
+- **Runs itself.** Daily backups with a monthly restore test, a System Doctor, and signed one-click upgrades that switch back on their own if the new version is unhealthy.
+- **Your cloud, your data.** One package on your own server, on PostgreSQL 15, 16 or 17: on the same server, Amazon RDS or Azure Database for PostgreSQL. Polynovea never holds your data.
 
-> MellowBase was previously published as **Polynovea CMS** (repository `Polynovea/OSS1`; old links redirect here). Package names, environment variables (`POLYNOVEA_*`, `CMS_*`) and CLI commands keep their current names for now, so existing installs and scripts keep working.
+It ships with a browser admin, a typed REST API, a TypeScript SDK, a CLI, an MCP server and governed extensions, under the MIT licence.
 
-## Where MellowBase is going
+> MellowBase was previously published as **Polynovea CMS** (repository `Polynovea/OSS1`; old links redirect here). Package names, environment variables (`POLYNOVEA_*`, `CMS_*`) and CLI commands keep those names, so existing installs and scripts keep working.
 
-MellowBase is becoming a backend that you deploy into your own AWS or Azure account, set up entirely from the browser:
+## What's inside
 
-- **Your own tables.** Each content model gets a real PostgreSQL table with typed columns, plus a generated API and a typed SDK for your schema.
-- **Built-in auth.** No external auth service. The owner account, MFA and sessions are created in a first-run setup wizard, protected by a one-time setup code.
-- **Your choice of database.** PostgreSQL on the server's own disk with automatic backups, an existing managed database (Amazon RDS or Azure Database for PostgreSQL), or one created for you by a one-click template in your own cloud account.
+| Area | What you get |
+| --- | --- |
+| Content | Content models with text, rich text, media, dates, choices, relations and repeating sections; versions and restore; private previews; translations |
+| Workflow | Review steps, releases published together now or on a schedule, a content calendar |
+| Quality | SEO and social card checks, structured data, broken links, image sizes, a content health view |
+| Delivery | A per-model REST API, webhooks with retries, sitemaps, redirects and menus |
+| Data | Real PostgreSQL tables per model, safe schema changes (lock timeouts, background index builds, expand-and-contract renames), deletion as a separate confirmed step |
+| Security | Built-in sign-in (passkeys, authenticator apps, recovery codes, breached-password check), two-step sign-in for owners and admins, field-level permissions applied everywhere, an audit log |
+| Operations | Setup wizard, backups to S3 or Azure Blob, monthly restore tests, System Doctor, signed upgrades with automatic switch-back |
+| Developers | `@polynovea/cms-sdk`, `@polynovea/cms-cli`, `@polynovea/cms-mcp`, OpenAPI, and a sample Next.js site |
 
-The work is in phases; see the [implementation plan](docs/Upgrade%20Plans/Polynovea%20CMS%20Upgrade%20Implementation%20Plan.md) and the [design](docs/Upgrade%20Plans/Polynovea%20CMS%20Self-Hosted%20Platform%20Upgrade%20Design.md). Phase 0 is merged, and in phase 1 every data area moved to a direct PostgreSQL data layer, tested on plain PostgreSQL; the per-area switch that kept Supabase as a fallback during the move is gone. Until the later phases land, the supported runtime is the one below.
+## Install
 
-## Supported V1 runtime
+MellowBase runs as one container image (the app, its background workers and an optional bundled PostgreSQL) on a single Linux server. There are three ways to run it.
 
-The supported V1 application profile is:
+### 1. One-click cloud templates
 
-- Node.js 22+
-- PostgreSQL 15+
-- PostgREST-compatible data API
-- GoTrue-compatible Supabase Auth
-- persistent delivery worker
-- optional S3-compatible media storage
+Templates for AWS (CloudFormation), Azure (Bicep) and OpenTofu create the server, its database and storage in your own cloud account, show the expected monthly cost first, and accept only Polynovea's signed release image. See [deploy/README.md](deploy/README.md), [AWS](deploy/aws/README.md), [Azure](deploy/azure/README.md) and [OpenTofu](deploy/opentofu/README.md).
 
-The application service and browser-authentication layers currently use Supabase/PostgREST semantics. A bare PostgreSQL server by itself is therefore **not** a supported application runtime yet. Vercel + Supabase is the reference deployment profile, but any Node host can run the Next.js application when connected to a supported Supabase-compatible backend.
+The templates are filled in with the signed image and server images at release time ([deploy/release-images.json](deploy/release-images.json)). Until the first signed release is published, use the container route below with an image you build yourself.
 
-> **Alpha release note:** there is no official hosted MellowBase demo. This repository is a self-hosted release; use a disposable Supabase project for evaluation and follow the quickstart below.
+### 2. The container on your own server
 
-See [PostgreSQL and self-hosting](docs/self-hosting/POSTGRESQL.md) for the exact portability boundary.
+Build the image (or use a released one), then start it with Docker Compose. Two routes reach the setup wizard safely:
 
-## Quick start
+- **SSH tunnel**, no domain needed: the app listens on the server's loopback only and you open it through `ssh -L`.
+- **HTTPS through the bundled Caddy**, with your own domain and an automatic Let's Encrypt certificate.
 
-### 1. Prerequisites
+```bash
+docker buildx build --platform linux/amd64 -t polynovea-cms:local .
+POLYNOVEA_IMAGE=polynovea-cms:local docker compose -f docker/compose.yaml --profile tunnel up -d
+```
 
-Install Node.js 22+ and provision a supported Supabase-compatible backend. For the simplest path, create a Supabase project with PostgreSQL 15+ and enable `pg_trgm`.
+Then open the address in `POLYNOVEA_PUBLIC_URL` (for the tunnel, `http://localhost:3000` through `ssh -L 3000:127.0.0.1:3000 you@your-server`) and enter the setup code from the server log. Full guide: [Running MellowBase from the server image](docs/self-hosting/container.md).
 
-### 2. Install dependencies
+### 3. From source, for development
+
+Requirements: Node.js 24.7 or later, and Docker for the local PostgreSQL stack.
 
 ```bash
 npm ci
-```
-
-### 3. Configure the environment
-
-Copy `.env.example` to `.env.local` and set at minimum:
-
-```text
-NEXT_PUBLIC_SUPABASE_URL
-NEXT_PUBLIC_SUPABASE_ANON_KEY
-SUPABASE_SERVICE_ROLE_KEY
-DATABASE_URL
-CMS_CONFIG_ENCRYPTION_KEY
-```
-
-`SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, encryption keys and integration credentials are server-only. Never expose them through `NEXT_PUBLIC_*` variables.
-
-### 4. Apply the ordered schema
-
-Against a fresh supported database:
-
-```bash
+node scripts/dev-db/setup.mjs          # starts PostgreSQL in Docker and writes .env.test.local
 npm run db:migrate
-```
-
-The migration runner applies the numbered files in `supabase/migrations/` in order and stops on the first failure. Back up an existing installation before applying upgrade migrations; never edit a migration that has already been applied to a shared or production database.
-
-### 5. Create the first administrator
-
-Create and bind the first CMS owner with the server-only bootstrap command. Prefer the environment variable form so the password is not retained in shell history:
-
-```bash
-POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD='choose-a-strong-password' npm run bootstrap:admin -- --email=owner@example.com --username=owner --display-name="Site Owner"
-```
-
-PowerShell users can set `$env:POLYNOVEA_BOOTSTRAP_ADMIN_PASSWORD` before running the command. If that auth identity already exists, the password is not changed and may be omitted. The bootstrap command requires the configured service-role key and creates or repairs the auditable `admin_users` profile, default-workspace membership and `owner` role assignment. There is no hardcoded master-email bypass in the runtime. See the [managed Supabase guide](docs/getting-started/MANAGED_SUPABASE.md) for the complete deployment sequence.
-
-### 6. Start the application
-
-Development:
-
-```bash
 npm run dev
 ```
 
-With the application running, optionally create a starter Article model and welcome draft:
+Copy `.env.example` to `.env.local` for your own settings. `npm run bootstrap:admin` creates the first owner from the command line instead of the wizard, and `npm run seed:starter` adds a starter model and a welcome draft. Run the background workers as persistent processes:
 
 ```bash
-npm run seed:starter
+npm run worker:delivery   # publishing, schedules, webhooks, indexing, health checks
+npm run worker:schema     # applies content-model changes to their tables
 ```
 
-Production-style local run:
+## Setup and self-hosting guides
+
+- [Setup wizard](docs/self-hosting/setup/README.md): [setup code](docs/self-hosting/setup/setup-code.md), [database step](docs/self-hosting/setup/database.md), [owner step](docs/self-hosting/setup/owner.md), [modes and keys](docs/self-hosting/setup/modes-and-keys.md)
+- [Built-in sign-in](docs/self-hosting/BUILT_IN_AUTH.md)
+- [PostgreSQL](docs/self-hosting/POSTGRESQL.md) and [storage](docs/self-hosting/STORAGE.md)
+- [Upgrades and rollback](docs/self-hosting/upgrades.md)
+- [VM images](docs/self-hosting/vm-images.md) and [release signing](docs/self-hosting/release-signing.md)
+
+## For developers
+
+Pull TypeScript types for your own models, then use the typed client:
 
 ```bash
-npm run build
-npm start
+POLYNOVEA_CMS_TOKEN=pnv_... npm run cms -- types pull --url https://cms.example.com
 ```
 
-### 7. Run the durable worker
+```ts
+import { createCmsClient } from "@polynovea/cms-sdk";
+import { schema, type Models } from "./polynovea-cms";
 
-Run the worker as a persistent process when using publishing, scheduled releases, webhooks, indexing, image processing, health checks or analytics sync:
+const cms = createCmsClient<Models>({ baseUrl: "https://cms.example.com", token: process.env.POLYNOVEA_CMS_TOKEN!, schema });
 
-```bash
-npm run worker:delivery
+const { data } = await cms.items("article").list({
+  filter: { and: [{ rating: { gt: 3 } }, { author: { name: { eq: "Asha" } } }] },
+  sort: ["-published_on"],
+  expand: ["author"],
+});
 ```
 
-The worker requires `DATABASE_URL` and any credentials needed by the enabled adapters.
+- **`/api/v1/models/{model}/items`**: one API per model, with filters, sorting, cursor paging and related records. Published content by default; drafts only with a preview token or permission.
+- **Per-caller documents:** `/api/v1/openapi.json` and `/api/v1/types.ts` list only the models and fields the token can read. A field the caller cannot read behaves exactly like one that does not exist, in results, filters, sorting, search and expansion.
+- **Drift checks:** `polynovea-cms types pull --check` fails a build when the types are out of date, and the SDK warns before a model change would break your app.
+- **Limits per role:** page size, filter depth, joins and query time are capped, and a workspace can lower them per role.
+- **[`packages/cms-sdk`](packages/cms-sdk)** (build with `npm run sdk:build`), **[`packages/cms-cli`](packages/cms-cli)** (`npm run cms -- --help`), **[`packages/cms-mcp`](packages/cms-mcp)** for AI assistants, and **[`examples/nextjs-site`](examples/nextjs-site)**, a sample website built against the generated types.
+- Extensions declare permissions, routes, events and allowed network origins, and need a workspace administrator's approval. See [extension manifests](docs/extensions/MANIFEST.md).
 
-## Architecture and security
+MellowBase is headless: it does not impose a public-site theme. Your own sites and apps display the content.
 
-Browser requests go through Next.js route handlers. Server routes resolve an authenticated CMS actor, enforce workspace membership and permissions, call the service layer and write audit evidence. The server-only service role may bypass database RLS; browser clients never receive it.
+## Security
 
-See:
+- The running app uses a limited database role that can read and write rows but cannot create, change or drop tables; schema changes run in a separate worker that rebuilds every plan from trusted data.
+- Database connections use full certificate checks; secrets saved in the admin are encrypted with keys kept outside the database.
+- One permission check covers the API, search, exports, releases, webhooks, previews and AI agents.
+- Releases are signed with cosign and ship with an SBOM; upgrades verify the signature and never downgrade.
 
-- [Current architecture](docs/upgrade/CURRENT_ARCHITECTURE.md)
-- [Security policy](SECURITY.md)
-- [Migration discipline](docs/upgrade/MIGRATIONS.md)
-- [Self-hosting / portability](docs/self-hosting/POSTGRESQL.md)
+Known limitation: inside the container, the CMS process can reach the database owner login (and, with the bundled database, superuser access over the local socket). Running the web process, schema worker and PostgreSQL as separate operating-system users is the next change. See [container.md](docs/self-hosting/container.md#security-what-the-cms-process-can-reach-today).
 
-Media uses an S3-compatible storage seam; the supplied reference adapter is configured with R2 variables. Configure storage before enabling media uploads.
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
-## Developer interfaces
+## Testing
 
-- `/api/v1` exposes scoped integration endpoints; use a workspace API token with the least scopes required.
-- `packages/cms-sdk` contains the TypeScript SDK; build it with `npm run sdk:build`.
-- `npm run cms -- --help` describes CLI commands for entries, workflows, releases, media, schema delivery, environments, connections, intelligence and exports.
-- `packages/cms-mcp` is a governed MCP client. It follows normal scopes, approvals, workspace isolation and audit rules; it is not a privileged backdoor.
-- Extensions declare permissions, routes, event names and allowed network origins. A workspace administrator must approve them before activation. See [extension manifests](docs/extensions/MANIFEST.md).
-
-## Release checks
-
-Run:
+Everything runs locally; no hosted CI is required.
 
 ```bash
-npm test
 npx tsc --noEmit
 npm run lint
+npm test                      # unit tests
+node scripts/dev-db/setup.mjs --pg=16 --reset
+npm run test:dual             # database tests against the local stack
 npm run build
-npm run sdk:build
-npm run cms -- --help
-git diff --check
 npm audit --omit=dev
 ```
 
-Authenticated live certification additionally requires a configured supported runtime.
+`scripts/certify-all.mjs` runs the 26 certification suites against a running app on built-in sign-in, and `scripts/image/run-smoke.sh` tests the container image end to end. Each release is tested on PostgreSQL 15, 16 and 17.
 
-With the application running at `http://localhost:3000` and a disposable Supabase project configured in `.env.local`, run the complete authenticated database, HTTP, SDK, CLI, worker, operational-intelligence, MCP and extension suite with:
+## Project
 
-```bash
-npm run certify:live
-```
+- [Upgrade design](docs/Upgrade%20Plans/Polynovea%20CMS%20Self-Hosted%20Platform%20Upgrade%20Design.md) and [implementation plan](docs/Upgrade%20Plans/Polynovea%20CMS%20Upgrade%20Implementation%20Plan.md), with the progress of each phase
+- [CHANGELOG.md](CHANGELOG.md), [ROADMAP.md](ROADMAP.md)
+- [Operations runbooks](docs/operations/RUNBOOKS.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), [SUPPORT.md](SUPPORT.md)
 
-The live suite creates isolated certification workspaces and users and verifies their removal after each phase. Never point it at a project whose availability or data-retention policy does not permit disposable certification activity.
-
-The latest recorded clean-install run is [OSS acceptance record — 2026-09-21](docs/release/OSS_ACCEPTANCE_2026-09-21.md).
-
-The database-provisioning certification is intentionally skipped by the default hermetic test run. To exercise it, provide `DATABASE_URL` in the process environment and run:
-
-```bash
-npx vitest run lib/infrastructure/databaseProvisioning.test.ts
-```
-
-The configured PostgreSQL role must be allowed to create and drop the disposable certification database. The test never loads `.env.local` automatically.
-
-## Current limitations
-
-- built-in authentication (replacing Supabase Auth) is in progress in phase 1 of the upgrade plan;
-- every data area now runs directly on PostgreSQL (`POLYNOVEA_DATABASE_URL`); the phase 1 certification runs on PostgreSQL 15, 16 and 17 are still to come;
-- the R2 adapter is the first-class supplied media adapter; other S3-compatible providers may require configuration/adapter work;
-- operators must provide a managed or independently operated Supabase-compatible backend and an external worker process.
-
-## Headless delivery
-
-MellowBase is a headless CMS and content-operations control plane. It does not impose a public-site theme. Published content is consumed through scoped `/api/v1/content/*` endpoints or the TypeScript SDK. A minimal Next.js consumer is included in [`examples/nextjs-site`](examples/nextjs-site).
-
-## Project documentation
-
-Read [operations runbooks](docs/operations/RUNBOOKS.md), [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), [SECURITY.md](SECURITY.md), [SUPPORT.md](SUPPORT.md), and [ROADMAP.md](ROADMAP.md) before operating a public instance.
+MIT licensed. Copyright Polynovea.
